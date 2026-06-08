@@ -1,0 +1,10 @@
+{
+  "name": "Production UI Import",
+  "id": "production-ui-import",
+  "api": "1.0.0",
+  "main": "code.js",
+  "ui": "ui.html",
+  "editorType": [
+    "figma"
+  ]
+}

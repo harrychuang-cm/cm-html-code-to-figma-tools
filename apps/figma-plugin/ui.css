@@ -1,0 +1,46 @@
+body {
+  color: #1f2937;
+  font: 13px/1.4 system-ui, sans-serif;
+  margin: 0;
+}
+
+main {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+}
+
+h1 {
+  font-size: 16px;
+  margin: 0;
+}
+
+h2 {
+  font-size: 13px;
+  margin: 0;
+}
+
+#import-report {
+  display: grid;
+  gap: 8px;
+}
+
+#import-report[hidden] {
+  display: none;
+}
+
+dl {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+dl div {
+  display: flex;
+  justify-content: space-between;
+}
+
+dt,
+dd {
+  margin: 0;
+}

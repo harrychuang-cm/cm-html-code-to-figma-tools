@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Production UI Capture</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main>
+      <h1>Capture</h1>
+      <button id="capture-button" type="button">Capture viewport</button>
+      <section id="capture-status" aria-live="polite">Ready</section>
+      <section id="capture-preview" hidden>
+        <img id="screenshot-preview" alt="Source screenshot preview">
+        <dl>
+          <div>
+            <dt>Fallbacks</dt>
+            <dd id="fallback-count">0</dd>
+          </div>
+          <div>
+            <dt>Missing assets</dt>
+            <dd id="missing-asset-count">0</dd>
+          </div>
+          <div>
+            <dt>Unsupported styles</dt>
+            <dd id="unsupported-style-count">0</dd>
+          </div>
+          <div>
+            <dt>Package</dt>
+            <dd id="package-generation-status">idle</dd>
+          </div>
+        </dl>
+      </section>
+      <button id="download-button" type="button" disabled>Download .figcapture</button>
+    </main>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

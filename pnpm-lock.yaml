@@ -1,0 +1,23 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .: {}
+
+  apps/chrome-extension:
+    dependencies:
+      '@figma-capture/capture-schema':
+        specifier: workspace:*
+        version: link:../../packages/capture-schema
+
+  apps/figma-plugin:
+    dependencies:
+      '@figma-capture/capture-schema':
+        specifier: workspace:*
+        version: link:../../packages/capture-schema
+
+  packages/capture-schema: {}

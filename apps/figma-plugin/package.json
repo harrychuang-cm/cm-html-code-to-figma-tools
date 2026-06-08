@@ -1,0 +1,13 @@
+{
+  "name": "@figma-capture/figma-plugin",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/code.js",
+  "scripts": {
+    "build": "node ../../scripts/build.mjs",
+    "test": "node ../../scripts/test.mjs"
+  },
+  "dependencies": {
+    "@figma-capture/capture-schema": "workspace:*"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Production UI to Figma Capture",
+  "version": "0.1.0",
+  "description": "Capture the current visible viewport into a local .figcapture package.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "downloads"
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  }
+}

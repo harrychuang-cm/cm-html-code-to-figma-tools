@@ -1,2 +1,4 @@
 .spectra/
 openspec/.vector-search.db*
+node_modules/
+**/dist/

@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Production UI Import</title>
+    <link rel="stylesheet" href="ui.css">
+  </head>
+  <body>
+    <main>
+      <h1>Import .figcapture</h1>
+      <input id="capture-file" type="file" accept=".figcapture">
+      <section id="import-status" aria-live="polite">Ready</section>
+      <section id="import-report" hidden>
+        <h2>Import report</h2>
+        <dl>
+          <div><dt>Frames</dt><dd id="created-frame-count">0</dd></div>
+          <div><dt>Nodes</dt><dd id="created-node-count">0</dd></div>
+          <div><dt>Fallbacks</dt><dd id="import-fallback-count">0</dd></div>
+          <div><dt>Missing assets</dt><dd id="import-missing-asset-count">0</dd></div>
+          <div><dt>Unsupported styles</dt><dd id="import-unsupported-style-count">0</dd></div>
+          <div><dt>Auto layout</dt><dd id="auto-layout-confidence-summary">0 applied / 0 skipped / 0</dd></div>
+        </dl>
+      </section>
+    </main>
+    <script type="module" src="ui.js"></script>
+  </body>
+</html>

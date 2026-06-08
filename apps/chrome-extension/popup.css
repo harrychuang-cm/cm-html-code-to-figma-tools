@@ -1,0 +1,62 @@
+body {
+  color: #1f2937;
+  font: 13px/1.4 system-ui, sans-serif;
+  margin: 0;
+  width: 320px;
+}
+
+main {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+h1 {
+  font-size: 16px;
+  margin: 0;
+}
+
+button {
+  border: 1px solid #1f2937;
+  border-radius: 6px;
+  background: #ffffff;
+  cursor: pointer;
+  padding: 8px 10px;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+#capture-preview {
+  display: grid;
+  gap: 8px;
+}
+
+#capture-preview[hidden] {
+  display: none;
+}
+
+#screenshot-preview {
+  border: 1px solid #d1d5db;
+  max-height: 160px;
+  object-fit: contain;
+  width: 100%;
+}
+
+dl {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+dl div {
+  display: flex;
+  justify-content: space-between;
+}
+
+dt,
+dd {
+  margin: 0;
+}
