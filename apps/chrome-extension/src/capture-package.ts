@@ -5,8 +5,13 @@ import {
 import { captureVisualAssets } from "./asset-capture.ts";
 import { createManifestFromCapture } from "./capture-core.ts";
 
-export function buildConfirmedExportPackage(capture, screenshotDataUrl, options = {}) {
-  const assetResult = captureVisualAssets(capture, options);
+export async function buildConfirmedExportPackage(capture, screenshotDataUrl, options = {}) {
+  const fallbackRasterProvider = options.fallbackRasterProvider ??
+    createScreenshotCropFallbackProvider(screenshotDataUrl, capture.viewport);
+  const assetResult = await captureVisualAssets(capture, {
+    ...options,
+    fallbackRasterProvider
+  });
   const figmaPlan = createInitialFigmaPlan(assetResult.capture, assetResult.sourceNodeMap);
   const packageData = {
     manifest: createManifestFromCapture(assetResult.capture, {
@@ -33,10 +38,11 @@ export async function downloadFigcaptureArchive(chromeApi, exportPackage) {
     throw new Error("Chrome downloads API is unavailable");
   }
 
-  const url = bytesToObjectUrl(exportPackage.bytes, "application/zip");
+  const url = bytesToDataUrl(exportPackage.bytes, "application/octet-stream");
   return chromeApi.downloads.download({
     url,
     filename: exportPackage.filename,
+    conflictAction: "uniquify",
     saveAs: true
   });
 }
@@ -70,12 +76,6 @@ export function createInitialFigmaPlan(capture, sourceNodeMap = []) {
         role: "Editable Accurate",
         name: `${title} / ${size} / Editable Accurate`,
         nodes
-      },
-      {
-        id: "frame-autolayout",
-        role: "Auto Layout Experimental",
-        name: `${title} / ${size} / Auto Layout Experimental`,
-        nodes: nodes.map((node) => ({ ...node, confidence: Math.min(node.confidence, 0.8) }))
       }
     ],
     sourceNodeMap
@@ -99,11 +99,106 @@ export function dataUrlToBytes(dataUrl) {
   return Uint8Array.from(Buffer.from(payload, "base64"));
 }
 
-function bytesToObjectUrl(bytes, type) {
-  if (typeof URL !== "undefined" && typeof Blob !== "undefined") {
-    return URL.createObjectURL(new Blob([bytes], { type }));
+export function createScreenshotCropFallbackProvider(screenshotDataUrl, viewport = {}) {
+  let bitmapPromise = null;
+
+  return async function screenshotCropFallback(node) {
+    if (
+      typeof globalThis.createImageBitmap !== "function" ||
+      typeof globalThis.OffscreenCanvas !== "function" ||
+      typeof globalThis.Blob !== "function"
+    ) {
+      return null;
+    }
+
+    const bitmap = await getBitmap();
+    if (!bitmap?.width || !bitmap?.height) {
+      return null;
+    }
+
+    const crop = cropRectForBitmap(node?.rect, viewport, bitmap);
+    if (crop.width <= 0 || crop.height <= 0) {
+      return null;
+    }
+
+    const canvas = new globalThis.OffscreenCanvas(crop.width, crop.height);
+    const context = canvas.getContext?.("2d");
+    if (!context?.drawImage || typeof canvas.convertToBlob !== "function") {
+      return null;
+    }
+
+    context.drawImage(
+      bitmap,
+      crop.x,
+      crop.y,
+      crop.width,
+      crop.height,
+      0,
+      0,
+      crop.width,
+      crop.height
+    );
+    const blob = await canvas.convertToBlob({ type: "image/png" });
+    return new Uint8Array(await blob.arrayBuffer());
+  };
+
+  function getBitmap() {
+    if (!bitmapPromise) {
+      bitmapPromise = decodeScreenshotBitmap(screenshotDataUrl);
+    }
+    return bitmapPromise;
   }
-  return `data:${type};base64,${Buffer.from(bytes).toString("base64")}`;
+}
+
+async function decodeScreenshotBitmap(screenshotDataUrl) {
+  const bytes = dataUrlToBytes(screenshotDataUrl);
+  if (bytes.length === 0) {
+    return null;
+  }
+  const blob = new globalThis.Blob([bytes], {
+    type: dataUrlMediaType(screenshotDataUrl) || "image/png"
+  });
+  return globalThis.createImageBitmap(blob);
+}
+
+function cropRectForBitmap(rect = {}, viewport = {}, bitmap = {}) {
+  const viewportWidth = Number(viewport.width ?? bitmap.width ?? 0);
+  const viewportHeight = Number(viewport.height ?? bitmap.height ?? 0);
+  const scaleX = viewportWidth > 0 ? bitmap.width / viewportWidth : 1;
+  const scaleY = viewportHeight > 0 ? bitmap.height / viewportHeight : 1;
+  const left = Math.max(0, Math.round(Number(rect.x ?? 0) * scaleX));
+  const top = Math.max(0, Math.round(Number(rect.y ?? 0) * scaleY));
+  const right = Math.min(bitmap.width, Math.round((Number(rect.x ?? 0) + Number(rect.width ?? 0)) * scaleX));
+  const bottom = Math.min(bitmap.height, Math.round((Number(rect.y ?? 0) + Number(rect.height ?? 0)) * scaleY));
+
+  return {
+    x: left,
+    y: top,
+    width: Math.max(0, right - left),
+    height: Math.max(0, bottom - top)
+  };
+}
+
+function dataUrlMediaType(dataUrl) {
+  const match = String(dataUrl).match(/^data:([^;,]+)/);
+  return match?.[1] ?? "";
+}
+
+function bytesToDataUrl(bytes, type) {
+  return `data:${type};base64,${bytesToBase64(bytes)}`;
+}
+
+function bytesToBase64(bytes) {
+  if (typeof btoa === "function") {
+    let binary = "";
+    const chunkSize = 0x8000;
+    for (let index = 0; index < bytes.length; index += chunkSize) {
+      const chunk = bytes.slice(index, index + chunkSize);
+      binary += String.fromCharCode(...chunk);
+    }
+    return btoa(binary);
+  }
+  return Buffer.from(bytes).toString("base64");
 }
 
 function planTypeForNode(node) {

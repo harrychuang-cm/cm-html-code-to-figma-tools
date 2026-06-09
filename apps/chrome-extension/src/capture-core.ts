@@ -7,12 +7,18 @@ export const DEFAULT_STYLE_PROPERTIES = [
   "width",
   "height",
   "backgroundColor",
+  "backgroundImage",
   "color",
   "fontFamily",
   "fontSize",
   "fontWeight",
   "lineHeight",
+  "whiteSpace",
   "letterSpacing",
+  "paddingTop",
+  "paddingRight",
+  "paddingBottom",
+  "paddingLeft",
   "borderTopWidth",
   "borderRightWidth",
   "borderBottomWidth",
@@ -28,6 +34,8 @@ export const DEFAULT_STYLE_PROPERTIES = [
   "boxShadow",
   "opacity",
   "objectFit",
+  "maskImage",
+  "webkitMaskImage",
   "overflow",
   "gap",
   "rowGap",
@@ -56,7 +64,9 @@ export function createManifestFromCapture(capture, options = {}) {
 
 export function captureElementTree(inputRoot, viewport, options = {}) {
   const timestamp = options.captureTimestamp ?? new Date().toISOString();
-  const root = normalizeElement(inputRoot, "dom-1", viewport, true);
+  const root = normalizeElement(inputRoot, "dom-1", viewport, true, {
+    clipToViewport: options.clipToViewport !== false
+  });
 
   return {
     sourceUrl: options.sourceUrl ?? "about:blank",
@@ -114,25 +124,47 @@ export function normalizeRect(rect) {
   };
 }
 
-function normalizeElement(element, sourceNodeId, viewport, forceInclude = false) {
-  const rect = normalizeRect(element.rect ?? {});
-  const visible = forceInclude || isRectInViewport(rect, viewport);
+export function clampRectToViewport(rect, viewport) {
+  const normalized = normalizeRect(rect);
+  const left = Math.max(0, normalized.x);
+  const top = Math.max(0, normalized.y);
+  const right = Math.min(Number(viewport.width ?? 0), normalized.x + normalized.width);
+  const bottom = Math.min(Number(viewport.height ?? 0), normalized.y + normalized.height);
+
+  return {
+    x: round(left),
+    y: round(top),
+    width: round(Math.max(0, right - left)),
+    height: round(Math.max(0, bottom - top))
+  };
+}
+
+function normalizeElement(element, sourceNodeId, viewport, forceInclude = false, options = {}) {
+  const rawRect = normalizeRect(element.rect ?? {});
+  const visible = forceInclude || isRectInViewport(rawRect, viewport);
+  const rect = options.clipToViewport && visible
+    ? clampRectToViewport(rawRect, viewport)
+    : rawRect;
   const children = (element.children ?? [])
-    .map((child, index) => normalizeElement(child, `${sourceNodeId}.${index + 1}`, viewport, false))
+    .map((child, index) => normalizeElement(child, `${sourceNodeId}.${index + 1}`, viewport, false, options))
     .filter(Boolean);
 
   if (!visible && children.length === 0) {
     return null;
   }
 
+  const styles = { ...(element.styles ?? {}) };
+
   return {
     id: `node-${sourceNodeId.replaceAll(".", "-").replace("dom-", "")}`,
     sourceNodeId: element.sourceNodeId ?? sourceNodeId,
     nodeType: element.nodeType ?? "element",
     tagName: String(element.tagName ?? "div").toLowerCase(),
-    textContent: typeof element.textContent === "string" ? element.textContent : "",
+    textContent: typeof element.textContent === "string"
+      ? normalizeDirectTextContent(element.textContent, styles.whiteSpace)
+      : "",
     rect,
-    styles: { ...(element.styles ?? {}) },
+    styles,
     attributes: { ...(element.attributes ?? {}) },
     ...(element.assetRef ? { assetRef: element.assetRef } : {}),
     ...(element.fallbackRef ? { fallbackRef: element.fallbackRef } : {}),
@@ -144,30 +176,80 @@ function snapshotDomElement(element, documentRef, windowRef) {
   const computed = windowRef.getComputedStyle(element);
   const rect = normalizeRect(element.getBoundingClientRect());
   const attributes = {};
+  const tagName = element.tagName?.toLowerCase() ?? "div";
 
   for (const attribute of Array.from(element.attributes ?? [])) {
-    if (attribute.name.startsWith("data-") || ["id", "class", "role", "aria-label", "alt", "src", "type"].includes(attribute.name)) {
+    if (attribute.name.startsWith("data-") || ["id", "class", "role", "aria-label", "alt", "src", "srcset", "type", "href", "xlink:href"].includes(attribute.name)) {
       attributes[attribute.name] = attribute.value;
     }
   }
+  if (tagName === "img" && element.currentSrc) {
+    attributes.currentSrc = element.currentSrc;
+  }
+  if (tagName === "svg" && element.outerHTML) {
+    attributes.svgMarkup = element.outerHTML;
+  }
+  if (tagName === "canvas") {
+    const canvasDataUrl = serializeCanvasDataUrl(element);
+    if (canvasDataUrl) {
+      attributes.canvasDataUrl = canvasDataUrl;
+    }
+  }
+
+  const styles = pickStyles(computed);
 
   return {
-    tagName: element.tagName?.toLowerCase() ?? "div",
+    tagName,
     nodeType: "element",
-    textContent: directTextContent(element),
+    textContent: directTextContent(element, styles.whiteSpace),
     rect,
-    styles: pickStyles(computed),
+    styles,
     attributes,
     children: Array.from(element.children ?? []).map((child) => snapshotDomElement(child, documentRef, windowRef))
   };
 }
 
-function directTextContent(element) {
-  return Array.from(element.childNodes ?? [])
+function serializeCanvasDataUrl(element) {
+  if (typeof element.toDataURL !== "function") {
+    return "";
+  }
+  try {
+    const dataUrl = element.toDataURL("image/png");
+    return typeof dataUrl === "string" && dataUrl.startsWith("data:image/png")
+      ? dataUrl
+      : "";
+  } catch {
+    return "";
+  }
+}
+
+function directTextContent(element, whiteSpace) {
+  const text = Array.from(element.childNodes ?? [])
     .filter((node) => node.nodeType === 3)
     .map((node) => node.textContent ?? "")
-    .join("")
-    .trim();
+    .join("");
+  return normalizeDirectTextContent(text, whiteSpace);
+}
+
+function normalizeDirectTextContent(text, whiteSpace) {
+  const mode = String(whiteSpace || "normal").trim().toLowerCase();
+  if (mode === "pre" || mode === "pre-wrap" || mode === "break-spaces") {
+    return String(text ?? "");
+  }
+  if (mode === "pre-line") {
+    const lines = String(text ?? "")
+      .replace(/\r\n?/g, "\n")
+      .split("\n")
+      .map((line) => line.replace(/[ \t\f\r]+/g, " ").trim());
+    while (lines.length > 0 && lines[0] === "") {
+      lines.shift();
+    }
+    while (lines.length > 0 && lines[lines.length - 1] === "") {
+      lines.pop();
+    }
+    return lines.join("\n");
+  }
+  return String(text ?? "").replace(/[ \t\n\f\r]+/g, " ").trim();
 }
 
 function pickStyles(computed) {

@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Production UI Import Fixture</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: Inter, Arial, sans-serif;
+        background: rgb(246, 248, 251);
+        color: rgb(17, 24, 39);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+      }
+
+      .shell {
+        display: grid;
+        grid-template-columns: 240px minmax(0, 1fr);
+        min-height: 1400px;
+      }
+
+      aside {
+        background: rgb(17, 24, 39);
+        color: white;
+        padding: 28px 24px;
+      }
+
+      nav {
+        display: grid;
+        gap: 14px;
+      }
+
+      nav a {
+        color: white;
+        text-decoration: none;
+        font-size: 14px;
+        line-height: 20px;
+      }
+
+      main {
+        padding: 32px 40px 80px;
+      }
+
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 28px;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 24px;
+        line-height: 32px;
+      }
+
+      button {
+        height: 40px;
+        padding: 0 16px;
+        border: 0;
+        border-radius: 6px;
+        background: rgb(37, 99, 235);
+        color: white;
+        font-weight: 600;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 20px;
+      }
+
+      .card {
+        min-height: 220px;
+        padding: 24px;
+        border: 1px solid rgb(229, 231, 235);
+        border-radius: 8px;
+        background: white;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+      }
+
+      .metric {
+        margin: 12px 0 20px;
+        font-size: 32px;
+        line-height: 40px;
+        font-weight: 700;
+      }
+
+      .chart-row {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+      }
+
+      img,
+      canvas {
+        width: 120px;
+        height: 72px;
+        border-radius: 6px;
+      }
+
+      .below-fold {
+        margin-top: 240px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <aside>
+        <nav aria-label="Dashboard">
+          <a href="#overview">Overview</a>
+          <a href="#revenue">Revenue</a>
+          <a href="#customers">Customers</a>
+        </nav>
+      </aside>
+      <main>
+        <header>
+          <h1>Revenue Dashboard</h1>
+          <button type="button">Export report</button>
+        </header>
+
+        <section class="grid" id="overview">
+          <article class="card">
+            <span>Revenue</span>
+            <div class="metric">$128,400</div>
+            <div class="chart-row">
+              <img alt="Revenue chart" src="data:image/png;base64,iVBORw0KGgo=">
+              <canvas width="120" height="72" aria-label="Canvas chart"></canvas>
+            </div>
+          </article>
+          <article class="card">
+            <span>Conversion</span>
+            <div class="metric">8.2%</div>
+            <p>Up 1.4 points from previous period.</p>
+          </article>
+          <article class="card">
+            <span>Customers</span>
+            <div class="metric">42,810</div>
+            <p>Visible viewport card with editable text and shape styles.</p>
+          </article>
+        </section>
+
+        <section class="card below-fold">
+          <h2>Below fold content</h2>
+          <p>This block exists to confirm visible viewport capture does not require full-page capture in V1.</p>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>

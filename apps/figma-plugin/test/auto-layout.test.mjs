@@ -5,7 +5,11 @@ import {
   createAutoLayoutNodeModels,
   detectAutoLayoutCandidates
 } from "../dist/auto-layout.js";
-import { createMemoryFigmaAdapter, renderThreeFrames } from "../dist/renderer.js";
+import {
+  createMemoryFigmaAdapter,
+  renderAutoLayoutExperimental,
+  renderThreeFrames
+} from "../dist/renderer.js";
 
 function node(sourceNodeId, tagName, rect, options = {}) {
   return {
@@ -85,7 +89,7 @@ test("risky layouts are skipped with reasons", () => {
   assert.equal(reasons.get("dom-virtualized"), "virtualized list");
 });
 
-test("auto layout experimental frame contains applied candidate frames", () => {
+test("auto layout candidates are detected but not emitted as a default frame", () => {
   const button = node("dom-button", "button", { x: 20, y: 20, width: 160, height: 40 }, {
     children: [
       node("dom-icon", "span", { x: 32, y: 30, width: 16, height: 16 }),
@@ -95,10 +99,14 @@ test("auto layout experimental frame contains applied candidate frames", () => {
   const packageData = packageWithChildren([button]);
   const adapter = createMemoryFigmaAdapter();
   const result = renderThreeFrames(adapter, packageData);
-  const experimental = result.frames[2];
+  const createdNodes = renderAutoLayoutExperimental(adapter, {
+    role: "Auto Layout Experimental",
+    children: []
+  }, packageData);
 
   assert.deepEqual(createAutoLayoutNodeModels(packageData.capture).map((item) => item.sourceNodeId), ["dom-button"]);
-  assert.equal(experimental.role, "Auto Layout Experimental");
-  assert.equal(experimental.children[0].layoutMode, "HORIZONTAL");
-  assert.equal(experimental.children[0].pattern, "button inner content");
+  assert.equal(result.frames.length, 2);
+  assert.equal(result.autoLayoutFrameEnabled, false);
+  assert.equal(createdNodes[0].layoutMode, "HORIZONTAL");
+  assert.equal(createdNodes[0].pattern, "button inner content");
 });

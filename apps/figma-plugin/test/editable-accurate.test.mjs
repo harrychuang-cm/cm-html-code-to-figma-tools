@@ -116,10 +116,16 @@ test("renderThreeFrames appends accurate editable layers to Editable Accurate fr
   const adapter = createMemoryFigmaAdapter();
   const result = renderThreeFrames(adapter, createRenderablePackage());
   const editableFrame = result.frames[1];
+  const editableNodes = flattenNodes(editableFrame.children);
 
   assert.equal(editableFrame.role, "Editable Accurate");
-  assert.equal(editableFrame.children.some((node) => node.type === "TEXT" && node.characters === "Revenue"), true);
-  assert.equal(editableFrame.children.some((node) => node.type === "IMAGE" && node.assetRef === "assets/image-1.png"), true);
-  assert.equal(editableFrame.children.some((node) => node.type === "IMAGE" && node.fallbackReason === "canvas fallback"), true);
-  assert.equal(editableFrame.children.some((node) => node.type === "RECTANGLE" && node.style.cornerRadius === 8), true);
+  assert.equal(editableFrame.children.every((node) => node.type === "FRAME"), true);
+  assert.equal(editableNodes.some((node) => node.type === "TEXT" && node.characters === "Revenue"), true);
+  assert.equal(editableNodes.some((node) => node.type === "IMAGE" && node.assetRef === "assets/image-1.png"), true);
+  assert.equal(editableNodes.some((node) => node.type === "IMAGE" && node.fallbackReason === "canvas fallback"), true);
+  assert.equal(editableNodes.some((node) => node.type === "RECTANGLE" && node.style.cornerRadius === 8), true);
 });
+
+function flattenNodes(nodes) {
+  return nodes.flatMap((node) => [node, ...flattenNodes(node.children ?? [])]);
+}

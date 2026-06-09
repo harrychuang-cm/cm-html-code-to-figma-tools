@@ -1,10 +1,10 @@
-import { detectAutoLayoutCandidates } from "./auto-layout.ts";
-
 export function createImportReport(packageData, renderResult) {
-  const autoLayoutCandidates = detectAutoLayoutCandidates(packageData.capture);
-  const applied = autoLayoutCandidates.filter((candidate) => candidate.applied);
-  const skipped = autoLayoutCandidates.filter((candidate) => !candidate.applied);
-  const confidenceValues = applied.map((candidate) => candidate.confidence);
+  const autoLayoutSummary = renderResult.autoLayoutSummary ?? {
+    appliedCount: 0,
+    skippedCount: 0,
+    averageConfidence: 0,
+    skippedReasons: []
+  };
 
   return {
     createdFrameCount: renderResult.frames.length,
@@ -12,14 +12,12 @@ export function createImportReport(packageData, renderResult) {
     fallbackCount: packageData.diagnostics.counts.fallbacks,
     missingAssetCount: packageData.diagnostics.counts.missingAssets,
     unsupportedStyleCount: packageData.diagnostics.counts.unsupportedStyles,
+    fontSubstitutions: renderResult.fontSubstitutions ?? [],
     autoLayoutConfidenceSummary: {
-      appliedCount: applied.length,
-      skippedCount: skipped.length,
-      averageConfidence: confidenceValues.length === 0 ? 0 : round(confidenceValues.reduce((sum, value) => sum + value, 0) / confidenceValues.length),
-      skippedReasons: skipped.map((candidate) => ({
-        sourceNodeId: candidate.sourceNodeId,
-        reason: candidate.skippedReason
-      }))
+      appliedCount: autoLayoutSummary.appliedCount,
+      skippedCount: autoLayoutSummary.skippedCount,
+      averageConfidence: autoLayoutSummary.averageConfidence,
+      skippedReasons: autoLayoutSummary.skippedReasons
     }
   };
 }
@@ -30,6 +28,7 @@ export function renderImportReport(documentRef, report) {
   setText(documentRef, "import-fallback-count", String(report.fallbackCount));
   setText(documentRef, "import-missing-asset-count", String(report.missingAssetCount));
   setText(documentRef, "import-unsupported-style-count", String(report.unsupportedStyleCount));
+  setText(documentRef, "font-substitution-count", String(report.fontSubstitutions?.length ?? 0));
   setText(documentRef, "auto-layout-confidence-summary", `${report.autoLayoutConfidenceSummary.appliedCount} applied / ${report.autoLayoutConfidenceSummary.skippedCount} skipped / ${report.autoLayoutConfidenceSummary.averageConfidence}`);
 
   const root = documentRef.getElementById("import-report");
@@ -59,8 +58,4 @@ function setText(documentRef, id, text) {
   if (element) {
     element.textContent = text;
   }
-}
-
-function round(value) {
-  return Math.round(value * 100) / 100;
 }

@@ -64,13 +64,14 @@ test("import report combines renderer output and diagnostics counts", () => {
   const renderResult = renderThreeFrames(createMemoryFigmaAdapter(), packageData);
   const report = createImportReport(packageData, renderResult);
 
-  assert.equal(report.createdFrameCount, 3);
+  assert.equal(report.createdFrameCount, 2);
   assert(report.createdNodeCount >= 3);
   assert.equal(report.fallbackCount, 2);
   assert.equal(report.missingAssetCount, 1);
   assert.equal(report.unsupportedStyleCount, 3);
-  assert.equal(report.autoLayoutConfidenceSummary.appliedCount, 1);
-  assert.equal(report.autoLayoutConfidenceSummary.averageConfidence, 0.92);
+  assert.equal(report.autoLayoutConfidenceSummary.appliedCount, 0);
+  assert.equal(report.autoLayoutConfidenceSummary.skippedCount, 1);
+  assert.equal(report.autoLayoutConfidenceSummary.skippedReasons[0].reason, "complex-grid");
 });
 
 test("plugin UI renders import report numbers without raw JSON inspection", () => {
@@ -81,6 +82,7 @@ test("plugin UI renders import report numbers without raw JSON inspection", () =
     ["import-fallback-count", { textContent: "" }],
     ["import-missing-asset-count", { textContent: "" }],
     ["import-unsupported-style-count", { textContent: "" }],
+    ["font-substitution-count", { textContent: "" }],
     ["auto-layout-confidence-summary", { textContent: "" }]
   ]);
   const documentRef = {
@@ -94,9 +96,10 @@ test("plugin UI renders import report numbers without raw JSON inspection", () =
   renderImportReport(documentRef, report);
 
   assert.equal(elements.get("import-report").hidden, false);
-  assert.equal(elements.get("created-frame-count").textContent, "3");
+  assert.equal(elements.get("created-frame-count").textContent, "2");
   assert.equal(elements.get("import-fallback-count").textContent, "2");
   assert.equal(elements.get("import-missing-asset-count").textContent, "1");
   assert.equal(elements.get("import-unsupported-style-count").textContent, "3");
-  assert.equal(elements.get("auto-layout-confidence-summary").textContent, "1 applied / 0 skipped / 0.92");
+  assert.equal(elements.get("font-substitution-count").textContent, "0");
+  assert.equal(elements.get("auto-layout-confidence-summary").textContent, "0 applied / 1 skipped / 0");
 });

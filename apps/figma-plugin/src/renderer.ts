@@ -1,9 +1,12 @@
 import { createAutoLayoutNodeModels } from "./auto-layout.ts";
+import {
+  createEditableLayoutNodeModels,
+  summarizeAutoLayoutModels
+} from "./layout-tree.ts";
 
 export const FRAME_ROLES = [
   "Source Screenshot",
-  "Editable Accurate",
-  "Auto Layout Experimental"
+  "Editable Accurate"
 ];
 
 export function createFrameModels(packageData) {
@@ -34,12 +37,37 @@ export function renderThreeFrames(adapter, packageData) {
   });
 
   adapter.appendChild(sourceFrame, screenshotLayer);
-  renderEditableAccurate(adapter, frames[1], packageData);
-  renderAutoLayoutExperimental(adapter, frames[2], packageData);
+  const editableResult = renderEditableAccurate(adapter, frames[1], packageData);
 
   return {
     frames,
-    sourceScreenshotLayer: screenshotLayer
+    sourceScreenshotLayer: screenshotLayer,
+    autoLayoutFrameEnabled: false,
+    autoLayoutSummary: editableResult.autoLayoutSummary
+  };
+}
+
+export async function renderThreeFramesAsync(adapter, packageData) {
+  const models = createFrameModels(packageData);
+  const frames = await Promise.all(models.map((model) => maybeAsync(adapter.createFrame(model))));
+  const sourceFrame = frames[0];
+  const screenshotLayer = await maybeAsync(adapter.createImageLayer({
+    name: "Source screenshot",
+    bytes: packageData.screenshot,
+    width: packageData.manifest.viewportWidth,
+    height: packageData.manifest.viewportHeight,
+    locked: true
+  }));
+
+  adapter.appendChild(sourceFrame, screenshotLayer);
+  const editableResult = await renderEditableAccurateAsync(adapter, frames[1], packageData);
+
+  return {
+    frames,
+    sourceScreenshotLayer: screenshotLayer,
+    autoLayoutFrameEnabled: false,
+    autoLayoutSummary: editableResult.autoLayoutSummary,
+    fontSubstitutions: adapter.fontSubstitutions ?? []
   };
 }
 
@@ -54,15 +82,49 @@ export function renderAutoLayoutExperimental(adapter, frame, packageData) {
   return createdNodes;
 }
 
-export function renderEditableAccurate(adapter, frame, packageData) {
-  const nodeModels = createAccurateNodeModels(packageData);
-  const createdNodes = nodeModels.map((model) => createLayerForModel(adapter, model));
+export async function renderAutoLayoutExperimentalAsync(adapter, frame, packageData) {
+  const nodeModels = createAutoLayoutNodeModels(packageData.capture);
+  const createdNodes = await Promise.all(nodeModels.map((model) => maybeAsync(adapter.createAutoLayoutFrame(model))));
 
   for (const node of createdNodes) {
     adapter.appendChild(frame, node);
   }
 
   return createdNodes;
+}
+
+export function renderEditableAccurate(adapter, frame, packageData) {
+  const nodeModels = createEditableLayoutNodeModels(packageData);
+  const createdNodes = nodeModels.map((model) => createLayerTreeForModel(adapter, model));
+
+  for (const node of createdNodes) {
+    adapter.appendChild(frame, node);
+  }
+
+  return {
+    nodes: createdNodes,
+    models: nodeModels,
+    autoLayoutSummary: summarizeAutoLayoutModels(nodeModels)
+  };
+}
+
+export async function renderEditableAccurateAsync(adapter, frame, packageData) {
+  const nodeModels = createEditableLayoutNodeModels(packageData);
+  const createdNodes = [];
+
+  for (const model of nodeModels) {
+    createdNodes.push(await createLayerTreeForModelAsync(adapter, model));
+  }
+
+  for (const node of createdNodes) {
+    adapter.appendChild(frame, node);
+  }
+
+  return {
+    nodes: createdNodes,
+    models: nodeModels,
+    autoLayoutSummary: summarizeAutoLayoutModels(nodeModels)
+  };
 }
 
 export function createAccurateNodeModels(packageData) {
@@ -84,6 +146,7 @@ export function createAccurateNodeModels(packageData) {
       rect: node.rect,
       text: node.textContent,
       assetRef: node.assetRef ?? node.fallbackRef ?? null,
+      assetKind: assetKindForNode(node),
       fallbackReason: node.fallbackRef ? fallbackReasons.get(node.sourceNodeId) ?? "raster fallback" : null,
       style: extractVisualStyle(node)
     });
@@ -93,6 +156,9 @@ export function createAccurateNodeModels(packageData) {
 }
 
 function createLayerForModel(adapter, model) {
+  if (model.type === "FRAME") {
+    return adapter.createFrameLayer(model);
+  }
   if (model.type === "TEXT") {
     return adapter.createTextLayer(model);
   }
@@ -105,6 +171,26 @@ function createLayerForModel(adapter, model) {
     });
   }
   return adapter.createRectLayer(model);
+}
+
+function createLayerTreeForModel(adapter, model) {
+  const node = createLayerForModel(adapter, model);
+  for (const childModel of model.children ?? []) {
+    adapter.appendChild(node, createLayerTreeForModel(adapter, childModel));
+  }
+  return node;
+}
+
+async function createLayerTreeForModelAsync(adapter, model) {
+  const node = await maybeAsync(createLayerForModel(adapter, model));
+  for (const childModel of model.children ?? []) {
+    adapter.appendChild(node, await createLayerTreeForModelAsync(adapter, childModel));
+  }
+  return node;
+}
+
+function maybeAsync(value) {
+  return value && typeof value.then === "function" ? value : Promise.resolve(value);
 }
 
 export function createMemoryFigmaAdapter() {
@@ -135,6 +221,7 @@ export function createMemoryFigmaAdapter() {
         sourceNodeId: model.sourceNodeId,
         rect: model.rect,
         assetRef: model.assetRef,
+        assetKind: model.assetKind,
         fallbackReason: model.fallbackReason,
         width: model.width,
         height: model.height,
@@ -151,6 +238,7 @@ export function createMemoryFigmaAdapter() {
         sourceNodeId: model.sourceNodeId,
         rect: model.rect,
         characters: model.text,
+        textAutoResize: model.textAutoResize,
         style: model.style
       };
     },
@@ -162,6 +250,27 @@ export function createMemoryFigmaAdapter() {
         rect: model.rect,
         style: model.style
       };
+    },
+    createFrameLayer(model) {
+      const frame = {
+        type: "FRAME",
+        name: model.name,
+        sourceNodeId: model.sourceNodeId,
+        rect: model.rect,
+        style: model.style,
+        layoutMode: model.autoLayout?.applied ? model.autoLayout.layoutMode : "NONE",
+        itemSpacing: model.autoLayout?.applied ? model.autoLayout.itemSpacing : 0,
+        primaryAxisAlignItems: model.autoLayout?.applied ? model.autoLayout.primaryAxisAlignItems : undefined,
+        counterAxisAlignItems: model.autoLayout?.applied ? model.autoLayout.counterAxisAlignItems : undefined,
+        paddingLeft: model.autoLayout?.applied ? model.autoLayout.paddingLeft : 0,
+        paddingRight: model.autoLayout?.applied ? model.autoLayout.paddingRight : 0,
+        paddingTop: model.autoLayout?.applied ? model.autoLayout.paddingTop : 0,
+        paddingBottom: model.autoLayout?.applied ? model.autoLayout.paddingBottom : 0,
+        skippedReason: model.autoLayout?.skippedReason,
+        children: []
+      };
+      createdFrames.push(frame);
+      return frame;
     },
     createAutoLayoutFrame(model) {
       return {
@@ -240,9 +349,22 @@ function layerNameForNode(node) {
     return `Fallback / ${node.tagName}`;
   }
   if (node.assetRef || node.tagName === "img") {
-    return `Image / ${node.attributes.alt || node.tagName}`;
+    return assetKindForNode(node) === "svg"
+      ? `Vector / ${node.attributes.alt || node.tagName}`
+      : `Image / ${node.attributes.alt || node.tagName}`;
   }
   return `Shape / ${node.tagName}`;
+}
+
+function assetKindForNode(node) {
+  if (node.attributes?.assetKind) {
+    return node.attributes.assetKind;
+  }
+  const ref = node.assetRef ?? node.fallbackRef ?? "";
+  if (typeof ref === "string" && ref.toLowerCase().endsWith(".svg")) {
+    return "svg";
+  }
+  return "raster";
 }
 
 function extractVisualStyle(node) {

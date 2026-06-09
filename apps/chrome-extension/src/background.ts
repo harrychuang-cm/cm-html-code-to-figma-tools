@@ -1,11 +1,25 @@
-export const CAPTURE_ACTIVE_TAB_MESSAGE = "FIGCAPTURE_CAPTURE_ACTIVE_TAB";
-export const EXPORT_CONFIRMED_MESSAGE = "FIGCAPTURE_EXPORT_CONFIRMED";
+import {
+  CAPTURE_ACTIVE_TAB_MESSAGE,
+  EXPORT_CONFIRMED_MESSAGE,
+  handleCaptureActiveTab,
+  handleConfirmExport,
+  resolveActiveTab
+} from "./runtime.ts";
+
+export {
+  CAPTURE_ACTIVE_TAB_MESSAGE,
+  EXPORT_CONFIRMED_MESSAGE,
+  handleCaptureActiveTab,
+  handleConfirmExport,
+  resolveActiveTab
+};
 
 export function describeBackgroundRuntime() {
   return {
     localFirst: true,
     uploadEndpoints: [],
     requiredPermissions: ["activeTab", "scripting", "downloads"],
+    hostPermissions: ["<all_urls>"],
     credentialFields: [],
     captureTarget: "active-current-window-tab"
   };
@@ -14,52 +28,23 @@ export function describeBackgroundRuntime() {
 export function assertLocalFirstManifest(manifest) {
   const runtime = describeBackgroundRuntime();
   const permissions = manifest.permissions ?? [];
+  const hostPermissions = manifest.host_permissions ?? [];
   const extraPermissions = permissions.filter((permission) => !runtime.requiredPermissions.includes(permission));
+  const extraHostPermissions = hostPermissions.filter((permission) => !runtime.hostPermissions.includes(permission));
 
   return {
-    ok: extraPermissions.length === 0 && !hasCredentialInput(manifest),
+    ok: extraPermissions.length === 0 && extraHostPermissions.length === 0 && !hasCredentialInput(manifest),
     extraPermissions,
+    extraHostPermissions,
     hasCredentialInput: hasCredentialInput(manifest)
-  };
-}
-
-export async function resolveActiveTab(chromeApi = globalThis.chrome) {
-  if (!chromeApi?.tabs?.query) {
-    throw new Error("Chrome tabs API is unavailable");
-  }
-
-  const tabs = await chromeApi.tabs.query({ active: true, currentWindow: true });
-  const tab = tabs?.[0];
-  if (!tab?.id) {
-    throw new Error("No active tab is available for capture");
-  }
-
-  return {
-    id: tab.id,
-    url: tab.url ?? "",
-    title: tab.title ?? ""
-  };
-}
-
-export async function handleCaptureActiveTab(chromeApi = globalThis.chrome) {
-  const tab = await resolveActiveTab(chromeApi);
-  return {
-    status: "ready",
-    localFirst: true,
-    tab
   };
 }
 
 export function registerBackgroundRuntime(chromeApi = globalThis.chrome) {
   chromeApi?.runtime?.onMessage?.addListener?.((message, _sender, sendResponse) => {
     if (message?.type === EXPORT_CONFIRMED_MESSAGE) {
-      sendResponse({
-        status: "error",
-        error: {
-          category: "missing-capture-preview",
-          message: "Run capture preview before confirming export"
-        }
-      });
+      handleConfirmExport(chromeApi)
+        .then((response) => sendResponse(response));
       return true;
     }
 
@@ -72,7 +57,7 @@ export function registerBackgroundRuntime(chromeApi = globalThis.chrome) {
       .catch((error) => sendResponse({
         status: "error",
         error: {
-          category: "missing-permissions",
+          category: error.category ?? "capture-script-failed",
           message: error.message
         }
       }));
