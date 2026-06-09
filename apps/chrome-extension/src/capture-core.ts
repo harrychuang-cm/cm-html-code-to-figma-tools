@@ -44,7 +44,13 @@ export const DEFAULT_STYLE_PROPERTIES = [
   "justifyContent",
   "flexDirection",
   "gridTemplateColumns",
-  "gridTemplateRows"
+  "gridTemplateRows",
+  "visibility",
+  "content",
+  "top",
+  "right",
+  "bottom",
+  "left"
 ];
 
 export function createManifestFromCapture(capture, options = {}) {
@@ -172,7 +178,7 @@ function normalizeElement(element, sourceNodeId, viewport, forceInclude = false,
   };
 }
 
-function snapshotDomElement(element, documentRef, windowRef) {
+function snapshotDomElement(element, documentRef, windowRef, containingBlockRect = null) {
   const computed = windowRef.getComputedStyle(element);
   const rect = normalizeRect(element.getBoundingClientRect());
   const attributes = {};
@@ -197,6 +203,9 @@ function snapshotDomElement(element, documentRef, windowRef) {
   }
 
   const styles = pickStyles(computed);
+  const nextContainingBlockRect = establishesContainingBlock(styles)
+    ? rect
+    : containingBlockRect;
 
   return {
     tagName,
@@ -205,8 +214,119 @@ function snapshotDomElement(element, documentRef, windowRef) {
     rect,
     styles,
     attributes,
-    children: Array.from(element.children ?? []).map((child) => snapshotDomElement(child, documentRef, windowRef))
+    children: [
+      ...Array.from(element.children ?? []).map((child) => snapshotDomElement(child, documentRef, windowRef, nextContainingBlockRect)),
+      ...snapshotPseudoElements(element, rect, nextContainingBlockRect, windowRef)
+    ]
   };
+}
+
+function snapshotPseudoElements(element, ownerRect, containingBlockRect, windowRef) {
+  return ["::before", "::after"]
+    .map((pseudoName) => snapshotPseudoElement(element, pseudoName, ownerRect, containingBlockRect, windowRef))
+    .filter(Boolean);
+}
+
+function snapshotPseudoElement(element, pseudoName, ownerRect, containingBlockRect, windowRef) {
+  const computed = safePseudoComputedStyle(element, pseudoName, windowRef);
+  if (!computed) {
+    return null;
+  }
+  const styles = pickStyles(computed);
+  if (!isVisiblePseudoElement(styles)) {
+    return null;
+  }
+  const rect = inferPseudoRect(ownerRect, containingBlockRect, styles);
+  if (rect.width <= 0 || rect.height <= 0) {
+    return null;
+  }
+
+  return {
+    tagName: pseudoName,
+    nodeType: "pseudo",
+    textContent: "",
+    rect,
+    styles,
+    attributes: { "data-pseudo": pseudoName },
+    children: []
+  };
+}
+
+function safePseudoComputedStyle(element, pseudoName, windowRef) {
+  try {
+    return windowRef.getComputedStyle(element, pseudoName);
+  } catch {
+    return null;
+  }
+}
+
+function isVisiblePseudoElement(styles) {
+  const content = String(styles.content ?? "").trim();
+  if (
+    styles.display === "none" ||
+    styles.visibility === "hidden" ||
+    styles.opacity === "0" ||
+    content === "" ||
+    content === "none" ||
+    content === "normal"
+  ) {
+    return false;
+  }
+
+  return visibleColor(styles.backgroundColor) ||
+    visibleBorder(styles) ||
+    visibleShadow(styles.boxShadow);
+}
+
+function inferPseudoRect(ownerRect, containingBlockRect, styles) {
+  const position = cssKeyword(styles.position);
+  const parent = normalizeRect(position === "absolute" || position === "fixed"
+    ? (containingBlockRect ?? ownerRect)
+    : ownerRect);
+  const hasLeft = hasCssNumber(styles.left);
+  const hasRight = hasCssNumber(styles.right);
+  const hasTop = hasCssNumber(styles.top);
+  const hasBottom = hasCssNumber(styles.bottom);
+  const left = parseCssNumber(styles.left);
+  const right = parseCssNumber(styles.right);
+  const top = parseCssNumber(styles.top);
+  const bottom = parseCssNumber(styles.bottom);
+  let width = parseCssNumber(styles.width);
+  let height = parseCssNumber(styles.height);
+
+  if (width <= 0 && hasLeft && hasRight) {
+    width = Math.max(0, parent.width - left - right);
+  }
+  if (height <= 0 && hasTop && hasBottom) {
+    height = Math.max(0, parent.height - top - bottom);
+  }
+
+  const x = hasLeft
+    ? parent.x + left
+    : hasRight
+      ? parent.x + parent.width - right - width
+      : parent.x;
+  const y = hasTop
+    ? parent.y + top
+    : hasBottom
+      ? parent.y + parent.height - bottom - height
+      : parent.y;
+
+  return {
+    x: round(x),
+    y: round(y),
+    width: round(width),
+    height: round(height)
+  };
+}
+
+function establishesContainingBlock(styles) {
+  const position = cssKeyword(styles.position);
+  return position.length > 0 && position !== "static";
+}
+
+function cssKeyword(value) {
+  return String(value ?? "").trim().toLowerCase();
 }
 
 function serializeCanvasDataUrl(element) {
@@ -261,6 +381,45 @@ function pickStyles(computed) {
     }
   }
   return styles;
+}
+
+function hasCssNumber(value) {
+  if (typeof value === "number") {
+    return Number.isFinite(value);
+  }
+  if (typeof value !== "string") {
+    return false;
+  }
+  return Number.isFinite(Number.parseFloat(value));
+}
+
+function parseCssNumber(value) {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : 0;
+  }
+  if (typeof value !== "string") {
+    return 0;
+  }
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function visibleColor(value) {
+  return typeof value === "string" &&
+    value.length > 0 &&
+    value !== "transparent" &&
+    value !== "rgba(0, 0, 0, 0)";
+}
+
+function visibleBorder(styles) {
+  return parseCssNumber(styles.borderTopWidth) > 0 && visibleColor(styles.borderTopColor) ||
+    parseCssNumber(styles.borderRightWidth) > 0 && visibleColor(styles.borderRightColor) ||
+    parseCssNumber(styles.borderBottomWidth) > 0 && visibleColor(styles.borderBottomColor) ||
+    parseCssNumber(styles.borderLeftWidth) > 0 && visibleColor(styles.borderLeftColor);
+}
+
+function visibleShadow(value) {
+  return typeof value === "string" && value.length > 0 && value !== "none";
 }
 
 function round(value) {

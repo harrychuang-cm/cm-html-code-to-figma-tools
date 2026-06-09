@@ -576,6 +576,122 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
             children: []
           },
           {
+            id: "node-member-points-link",
+            sourceNodeId: "dom-member-points-link",
+            nodeType: "element",
+            tagName: "a",
+            textContent: "P點:",
+            rect: { x: 620, y: 0, width: 50.08, height: 16 },
+            styles: {
+              display: "flex",
+              flexDirection: "row",
+              alignItems: "center",
+              fontFamily: "Inter",
+              fontSize: "12px",
+              lineHeight: "16px",
+              color: "rgb(255, 255, 255)",
+              backgroundColor: "rgba(0, 0, 0, 0)"
+            },
+            attributes: { class: "cm-blackbar__headerMemberLinkText cm-blackbar__headerMemberRow" },
+            children: [
+              {
+                id: "node-member-points-svg",
+                sourceNodeId: "dom-member-points-svg",
+                nodeType: "element",
+                tagName: "svg",
+                rect: { x: 620, y: 0, width: 16, height: 16 },
+                styles: {},
+                attributes: { assetKind: "svg" },
+                assetRef: "assets/vector-1.svg",
+                children: []
+              },
+              {
+                id: "node-member-points-count",
+                sourceNodeId: "dom-member-points-count",
+                nodeType: "text",
+                tagName: "span",
+                textContent: "4",
+                rect: { x: 662.88, y: 0, width: 7.2, height: 16 },
+                styles: {
+                  fontFamily: "Inter",
+                  fontSize: "12px",
+                  lineHeight: "16px",
+                  color: "rgb(255, 255, 255)"
+                },
+                attributes: { class: "cm-blackbar__headerMemberCoins" },
+                children: []
+              }
+            ]
+          },
+          {
+            id: "node-member-name",
+            sourceNodeId: "dom-member-name",
+            nodeType: "text",
+            tagName: "a",
+            textContent: "harry_chuang",
+            rect: { x: 692, y: 0, width: 48, height: 16 },
+            styles: {
+              display: "block",
+              fontFamily: "Inter",
+              fontSize: "12px",
+              lineHeight: "16px",
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              width: "48px",
+              color: "rgb(255, 255, 255)",
+              backgroundColor: "rgba(0, 0, 0, 0)"
+            },
+            attributes: { class: "cm-blackbar__headerMemberLinkText cm-blackbar__headerMemberName" },
+            children: []
+          },
+          {
+            id: "node-active-tab",
+            sourceNodeId: "dom-active-tab",
+            nodeType: "element",
+            tagName: "div",
+            rect: { x: 760, y: 0, width: 64, height: 60 },
+            styles: {
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              backgroundColor: "rgba(0, 0, 0, 0)"
+            },
+            attributes: { class: "nav__cate nav__item--active" },
+            children: [
+              {
+                id: "node-active-tab-label",
+                sourceNodeId: "dom-active-tab-label",
+                nodeType: "text",
+                tagName: "#text",
+                textContent: "討論",
+                rect: { x: 776, y: 18, width: 32, height: 24 },
+                styles: {
+                  fontFamily: "Inter",
+                  fontSize: "16px",
+                  lineHeight: "24px",
+                  color: "rgb(54, 54, 54)"
+                },
+                attributes: {},
+                children: []
+              },
+              {
+                id: "node-active-tab-after",
+                sourceNodeId: "dom-active-tab-after",
+                nodeType: "pseudo",
+                tagName: "::after",
+                rect: { x: 776, y: 58, width: 32, height: 2 },
+                styles: {
+                  content: "\"\"",
+                  display: "block",
+                  position: "absolute",
+                  backgroundColor: "rgb(194, 41, 46)"
+                },
+                attributes: { "data-pseudo": "::after" },
+                children: []
+              }
+            ]
+          },
+          {
             id: "node-svg",
             sourceNodeId: "dom-svg",
             nodeType: "element",
@@ -629,6 +745,11 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
   const visibleBadgeText = visibleBadgeFrame
     ? flattenNodes([visibleBadgeFrame]).find((node) => node.type === "TEXT" && node.characters === "讚")
     : null;
+  const memberPointsFrame = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-member-points-link");
+  const memberPointsChildren = memberPointsFrame ? memberPointsFrame.children : [];
+  const memberNameText = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-member-name");
+  const activeTabFrame = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-active-tab");
+  const activeTabUnderline = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-active-tab-after");
   const placeholder = nestedNodes.find((node) => node.pluginData.assetRef === "assets/image-1.png");
   const vectorNode = nestedNodes.find((node) => node.type === "VECTOR" && node.pluginData.assetRef === "assets/vector-1.svg");
 
@@ -687,6 +808,26 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
   assert.equal(visibleBadgeText.textAutoResize, "WIDTH_AND_HEIGHT");
   assert.equal(visibleBadgeText.layoutSizingHorizontal, "HUG");
   assert.equal(visibleBadgeText.layoutSizingVertical, "HUG");
+  assert(memberPointsFrame);
+  assert.equal(memberPointsFrame.layoutMode, "HORIZONTAL");
+  assert.equal(memberPointsChildren[0].type, "VECTOR");
+  assert.equal(memberPointsChildren[1].characters, "P點:");
+  assert.equal(memberPointsChildren[1].pluginData.sourceNodeId, "dom-member-points-link::text");
+  assert.equal(memberPointsChildren[2].characters, "4");
+  assert(memberNameText);
+  assert.equal(memberNameText.textAutoResize, "TRUNCATE");
+  assert.equal(memberNameText.layoutSizingHorizontal, "FIXED");
+  assert.equal(memberNameText.width, 48);
+  assert(activeTabFrame);
+  assert.equal(activeTabFrame.layoutMode, "");
+  assert.equal(activeTabFrame.pluginData.autoLayoutSkippedReason, "absolute-position-child");
+  assert(activeTabUnderline);
+  assert.equal(activeTabUnderline.type, "RECTANGLE");
+  assert.equal(activeTabUnderline.fills[0].color.r, 194 / 255);
+  assert.equal(activeTabUnderline.fills[0].color.g, 41 / 255);
+  assert.equal(activeTabUnderline.fills[0].color.b, 46 / 255);
+  assert.equal(activeTabUnderline.x, 16);
+  assert.equal(activeTabUnderline.y, 58);
   assert(placeholder);
   assert.equal(placeholder.fills[0].type, "SOLID");
   assert.equal(placeholder.pluginData.fallbackReason, "external or unsupported image asset");

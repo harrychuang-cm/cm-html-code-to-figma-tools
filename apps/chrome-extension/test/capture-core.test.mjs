@@ -277,6 +277,136 @@ test("document capture records computed padding styles", () => {
   assert.equal(capture.root.children[0].styles.paddingLeft, "16px");
 });
 
+test("document capture records visible pseudo-element decoration boxes", () => {
+  function createElement(tagName, options = {}) {
+    return {
+      tagName,
+      attributes: options.attributes ?? [],
+      childNodes: options.childNodes ?? [],
+      children: options.children ?? [],
+      getBoundingClientRect() {
+        return options.rect;
+      }
+    };
+  }
+
+  const activeTab = createElement("div", {
+    rect: { x: 100, y: 20, width: 64, height: 60 },
+    attributes: [{ name: "class", value: "nav__cate nav__item--active" }]
+  });
+  const body = createElement("body", {
+    rect: { x: 0, y: 0, width: 400, height: 300 },
+    children: [activeTab]
+  });
+  const capture = captureVisibleViewportFromDocument({
+    body,
+    documentElement: body,
+    title: "Pseudo",
+    location: { href: "https://app.example.com/pseudo" }
+  }, {
+    innerWidth: 400,
+    innerHeight: 300,
+    devicePixelRatio: 2,
+    scrollX: 0,
+    scrollY: 0,
+    location: { href: "https://app.example.com/pseudo" },
+    getComputedStyle(element, pseudoElement) {
+      if (element === activeTab && pseudoElement === "::after") {
+        return {
+          content: "\"\"",
+          display: "block",
+          position: "absolute",
+          left: "16px",
+          bottom: "0px",
+          width: "32px",
+          height: "2px",
+          backgroundColor: "rgb(194, 41, 46)",
+          opacity: "1"
+        };
+      }
+      return { display: "block", backgroundColor: "rgba(0, 0, 0, 0)" };
+    }
+  }, {
+    captureTimestamp: "2026-06-08T09:00:00.000Z"
+  });
+
+  const pseudo = capture.root.children[0].children[0];
+  assert.equal(pseudo.tagName, "::after");
+  assert.equal(pseudo.nodeType, "pseudo");
+  assert.equal(pseudo.attributes["data-pseudo"], "::after");
+  assert.deepEqual(pseudo.rect, { x: 116, y: 78, width: 32, height: 2 });
+  assert.equal(pseudo.styles.backgroundColor, "rgb(194, 41, 46)");
+});
+
+test("absolute pseudo-element rect uses nearest positioned containing block", () => {
+  function createElement(tagName, options = {}) {
+    return {
+      tagName,
+      attributes: options.attributes ?? [],
+      childNodes: options.childNodes ?? [],
+      children: options.children ?? [],
+      getBoundingClientRect() {
+        return options.rect;
+      }
+    };
+  }
+
+  const activeLabel = createElement("div", {
+    rect: { x: 116, y: 38, width: 32, height: 24 },
+    attributes: [{ name: "class", value: "nav__cate nav__item--active" }]
+  });
+  const positionedTab = createElement("li", {
+    rect: { x: 100, y: 20, width: 64, height: 60 },
+    attributes: [{ name: "class", value: "nav__item" }],
+    children: [activeLabel]
+  });
+  const body = createElement("body", {
+    rect: { x: 0, y: 0, width: 400, height: 300 },
+    children: [positionedTab]
+  });
+  const capture = captureVisibleViewportFromDocument({
+    body,
+    documentElement: body,
+    title: "Pseudo containing block",
+    location: { href: "https://app.example.com/pseudo-containing-block" }
+  }, {
+    innerWidth: 400,
+    innerHeight: 300,
+    devicePixelRatio: 2,
+    scrollX: 0,
+    scrollY: 0,
+    location: { href: "https://app.example.com/pseudo-containing-block" },
+    getComputedStyle(element, pseudoElement) {
+      if (element === activeLabel && pseudoElement === "::after") {
+        return {
+          content: "\"\"",
+          display: "block",
+          position: "absolute",
+          left: "0px",
+          top: "57px",
+          width: "64px",
+          height: "3px",
+          backgroundColor: "rgb(194, 41, 46)",
+          opacity: "1"
+        };
+      }
+      if (element === positionedTab) {
+        return { display: "block", position: "relative", backgroundColor: "rgba(0, 0, 0, 0)" };
+      }
+      if (element === activeLabel) {
+        return { display: "block", position: "static", backgroundColor: "rgba(0, 0, 0, 0)" };
+      }
+      return { display: "block", backgroundColor: "rgba(0, 0, 0, 0)" };
+    }
+  }, {
+    captureTimestamp: "2026-06-08T09:00:00.000Z"
+  });
+
+  const pseudo = capture.root.children[0].children[0].children[0];
+  assert.equal(pseudo.tagName, "::after");
+  assert.deepEqual(pseudo.rect, { x: 100, y: 77, width: 64, height: 3 });
+});
+
 test("content capture records visual asset sources from DOM and computed styles", () => {
   function createElement(tagName, options = {}) {
     return {

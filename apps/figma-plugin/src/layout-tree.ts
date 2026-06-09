@@ -55,15 +55,20 @@ function createModel(node, context) {
     }))
     .filter(Boolean);
 
-  if (node.textContent) {
-    const textAutoResize = inferTextAutoResize(node, rect);
-    const textModel = baseModel(node, "TEXT", rect, absoluteRect, {
-      text: node.textContent,
-      textAutoResize,
-      ...textLayoutSizingForAutoResize(textAutoResize),
+  if (node.textContent && children.length > 0) {
+    const textModel = createDirectTextModel(node, absoluteRect, children);
+    const mixedChildren = insertMixedContentTextChild(children, textModel, node);
+    const autoLayout = inferAutoLayout(node, mixedChildren);
+    return baseModel(node, "FRAME", rect, absoluteRect, {
       style: extractVisualStyle(node),
-      children: []
+      autoLayout,
+      clipsContent: shouldClipContent(node),
+      children: orderedChildrenForAutoLayout(mixedChildren, autoLayout)
     });
+  }
+
+  if (node.textContent) {
+    const textModel = createTextModel(node, rect, absoluteRect, inferTextAutoResize(node, rect));
     if (hasVisualBoxStyle(node.styles)) {
       const backingPadding = explicitCssPadding(node.styles);
       const shouldUsePaddedBacking = hasPositivePadding(backingPadding);
@@ -136,8 +141,109 @@ function baseModel(node, type, rect, absoluteRect, overrides = {}) {
     sourceNodeId: node.sourceNodeId,
     rect,
     absoluteRect,
+    styles: node.styles ?? {},
     ...overrides
   };
+}
+
+function createTextModel(node, rect, absoluteRect, textAutoResize) {
+  return baseModel(node, "TEXT", rect, absoluteRect, {
+    text: node.textContent,
+    textAutoResize,
+    ...textLayoutSizingForAutoResize(textAutoResize),
+    style: extractVisualStyle(node),
+    children: []
+  });
+}
+
+function createDirectTextModel(node, parentAbsoluteRect, children) {
+  const absoluteRect = inferDirectTextRect(node, parentAbsoluteRect, children);
+  const rect = relativeRect(absoluteRect, parentAbsoluteRect);
+  const textNode = {
+    ...node,
+    sourceNodeId: `${node.sourceNodeId}::text`,
+    tagName: "#text",
+    children: [],
+    rect: absoluteRect
+  };
+  return createTextModel(textNode, rect, absoluteRect, inferTextContentAutoResize(textNode, rect));
+}
+
+function insertMixedContentTextChild(children, textModel, node) {
+  const flexDirection = node.styles?.flexDirection ?? "row";
+  const layoutMode = flexDirection.startsWith("column") ? "VERTICAL" : "HORIZONTAL";
+  return [...children, textModel].sort((a, b) => layoutMode === "HORIZONTAL"
+    ? a.absoluteRect.x - b.absoluteRect.x
+    : a.absoluteRect.y - b.absoluteRect.y);
+}
+
+function inferDirectTextRect(node, parentRect, children) {
+  const styles = node.styles ?? {};
+  const flexDirection = styles.flexDirection ?? "row";
+  const layoutMode = flexDirection.startsWith("column") ? "VERTICAL" : "HORIZONTAL";
+  const parentStart = layoutMode === "HORIZONTAL" ? parentRect.x : parentRect.y;
+  const parentEnd = parentStart + (layoutMode === "HORIZONTAL" ? parentRect.width : parentRect.height);
+  const sorted = [...children].sort((a, b) => layoutMode === "HORIZONTAL"
+    ? a.absoluteRect.x - b.absoluteRect.x
+    : a.absoluteRect.y - b.absoluteRect.y);
+  const segments = [];
+  let cursor = parentStart;
+
+  for (const child of sorted) {
+    const childStart = layoutMode === "HORIZONTAL" ? child.absoluteRect.x : child.absoluteRect.y;
+    const childEnd = childStart + (layoutMode === "HORIZONTAL" ? child.absoluteRect.width : child.absoluteRect.height);
+    addDirectTextSegment(segments, cursor, childStart, cursor > parentStart, true);
+    cursor = Math.max(cursor, childEnd);
+  }
+  addDirectTextSegment(segments, cursor, parentEnd, cursor > parentStart, false);
+
+  const bestSegment = segments.sort((a, b) => b.size - a.size)[0];
+  if (!bestSegment) {
+    return { ...parentRect };
+  }
+
+  const estimatedTextSize = Math.min(bestSegment.size, estimateTextPrimarySize(node.textContent, styles));
+  const start = bestSegment.hasPrevious && bestSegment.hasNext
+    ? bestSegment.end - estimatedTextSize
+    : bestSegment.start;
+  if (layoutMode === "HORIZONTAL") {
+    return {
+      x: round(start),
+      y: parentRect.y,
+      width: round(Math.max(1, estimatedTextSize)),
+      height: parentRect.height
+    };
+  }
+  return {
+    x: parentRect.x,
+    y: round(start),
+    width: parentRect.width,
+    height: round(Math.max(1, estimatedTextSize))
+  };
+}
+
+function addDirectTextSegment(segments, start, end, hasPrevious, hasNext) {
+  const size = end - start;
+  if (size > 0.5) {
+    segments.push({ start, end, size, hasPrevious, hasNext });
+  }
+}
+
+function estimateTextPrimarySize(text, styles = {}) {
+  const fontSize = parseCssNumber(styles.fontSize) || 14;
+  let width = 0;
+  for (const char of String(text ?? "")) {
+    if (/\s/.test(char)) {
+      width += fontSize * 0.33;
+    } else if (/[\u3000-\u9fff\u3400-\u4dbf\uf900-\ufaff]/.test(char)) {
+      width += fontSize;
+    } else if (/[.,:;!|]/.test(char)) {
+      width += fontSize * 0.33;
+    } else {
+      width += fontSize * 0.56;
+    }
+  }
+  return round(Math.max(fontSize * 0.5, width));
 }
 
 function inferAutoLayout(node, children) {
@@ -159,6 +265,9 @@ function inferAutoLayout(node, children) {
   }
   if (!hasUsableBounds(node.rect) || children.some((child) => !hasUsableBounds(child.absoluteRect))) {
     return skippedLayout("missing-bounds");
+  }
+  if (hasAbsolutePositionedChild(children)) {
+    return skippedLayout("absolute-position-child");
   }
 
   const parentRect = normalizeRect(node.rect);
@@ -230,6 +339,10 @@ function orderedChildrenForAutoLayout(children, autoLayout) {
 function isReverseFlexDirection(value) {
   const normalized = normalizeCssKeyword(value);
   return normalized === "row-reverse" || normalized === "column-reverse";
+}
+
+function hasAbsolutePositionedChild(children) {
+  return children.some((child) => normalizeCssKeyword(child.styles?.position) === "absolute");
 }
 
 function inferSingleChildTextAutoLayout(node, child, parentRect) {
@@ -416,12 +529,33 @@ function inferTextContentAutoResize(node, rect) {
   }
 
   const styles = node.styles ?? {};
+  if (isClippedSingleLineText(node, rect, styles)) {
+    return "TRUNCATE";
+  }
+
   const lineHeight = parseCssNumber(styles.lineHeight) || parseCssNumber(styles.fontSize) * 1.2;
   if (lineHeight > 0 && rect.height > lineHeight * 1.75) {
     return "HEIGHT";
   }
 
   return "WIDTH_AND_HEIGHT";
+}
+
+function isClippedSingleLineText(node, rect, styles) {
+  const overflow = normalizeCssKeyword(styles.overflow);
+  const textOverflow = normalizeCssKeyword(styles.textOverflow);
+  const whiteSpace = normalizeCssKeyword(styles.whiteSpace);
+  const clipsInline = textOverflow === "ellipsis" ||
+    overflow === "hidden" ||
+    overflow === "clip";
+  const preventsWrapping = whiteSpace === "nowrap" ||
+    whiteSpace === "pre" ||
+    whiteSpace === "pre-wrap";
+  if (!clipsInline || !preventsWrapping || rect.width <= 0) {
+    return false;
+  }
+
+  return estimateTextPrimarySize(node.textContent, styles) > rect.width + 1;
 }
 
 function textBackingAutoLayout(padding, textAutoResize) {

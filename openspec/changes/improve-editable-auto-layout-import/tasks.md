@@ -98,3 +98,24 @@
 
 - [x] 18.1 實作 `Skip Non-Uniform Implicit Flex Spacing` / `Non-uniform implicit flex spacing is skipped`：flex containers with strongly non-uniform implicit primary-axis child gaps and no equivalent captured alignment SHALL remain nested absolute frames with skipped reason `non-uniform-spacing`; verify with `apps/figma-plugin/test/layout-tree.test.mjs`.
 - [x] 18.2 更新 classic runtime parity, docs, and verification：manual-loaded `code-classic.js` SHALL apply the same `Skip Non-Uniform Implicit Flex Spacing` guard without modern syntax or non-extensible node writes, docs SHALL describe the skipped reason, and `corepack pnpm build`, `corepack pnpm test`, `corepack pnpm test:e2e`, `spectra analyze improve-editable-auto-layout-import --json`, and `spectra validate improve-editable-auto-layout-import` SHALL pass.
+
+## 19. Mixed Inline Content From Figma Review
+
+- [x] 19.1 實作 `Preserve Mixed Inline Content` / `Mixed inline content preserves direct text and child nodes`：captured elements with both direct text and SVG/img/span children SHALL import as frames that keep all child models and add a synthesized editable direct-text node with sourceNodeId suffix `::text`; verify with `apps/figma-plugin/test/layout-tree.test.mjs`.
+- [x] 19.2 更新 classic runtime parity and verification：manual-loaded `code-classic.js` SHALL apply the same mixed inline content behavior without modern syntax or non-extensible node writes, and `corepack pnpm build`, `corepack pnpm test`, `corepack pnpm test:e2e`, `spectra analyze improve-editable-auto-layout-import --json`, and `spectra validate improve-editable-auto-layout-import` SHALL pass.
+
+## 20. Clipped Single-Line Text From Figma Review
+
+- [x] 20.1 實作 `Preserve Clipped Single-Line Text Bounds`：single-line text with CSS nowrap clipping and estimated full width larger than its captured rect SHALL use fixed/truncate text sizing instead of HUG sizing; verify with `apps/figma-plugin/test/layout-tree.test.mjs`.
+- [x] 20.2 更新 classic runtime parity and verification：manual-loaded `code-classic.js` SHALL apply the same clipped single-line text behavior without modern syntax or non-extensible node writes, and `corepack pnpm build`, `corepack pnpm test`, `corepack pnpm test:e2e`, `spectra analyze improve-editable-auto-layout-import --json`, and `spectra validate improve-editable-auto-layout-import` SHALL pass.
+
+## 21. Visible CSS Pseudo-Elements From Figma Review
+
+- [x] 21.1 實作 `Preserve Visible CSS Pseudo-Elements` / `Visible CSS pseudo-elements import as decoration layers`：Chrome capture SHALL emit visible `::before`/`::after` decoration boxes as synthetic pseudo child nodes with inferred rects and visual styles; verify with `apps/chrome-extension/test/capture-core.test.mjs`.
+- [x] 21.2 實作 pseudo decoration import behavior：Figma layout tree and classic runtime SHALL import pseudo decoration nodes as rectangle layers, and containers with absolute-positioned pseudo children SHALL skip Auto Layout with `absolute-position-child`; verify with `apps/figma-plugin/test/layout-tree.test.mjs` and `apps/figma-plugin/test/plugin-scaffold.test.mjs`.
+- [x] 21.3 更新 verification：manual-loaded Chrome/Figma runtime output SHALL build cleanly, and `corepack pnpm build`, `corepack pnpm test`, `corepack pnpm test:e2e`, `spectra analyze improve-editable-auto-layout-import --json`, and `spectra validate improve-editable-auto-layout-import` SHALL pass.
+
+## 22. Pseudo-Element Containing Block From Figma Review
+
+- [x] 22.1 實作 `Absolute pseudo-element uses positioned containing block`：Chrome capture SHALL infer absolute/fixed pseudo-element decoration rects against the nearest positioned containing block instead of always the pseudo owner box; verify with `apps/chrome-extension/test/capture-core.test.mjs`.
+- [x] 22.2 更新 classic content runtime and verification：manual-loaded Chrome Extension content script SHALL use the same containing-block pseudo rect inference, and `corepack pnpm build`, `corepack pnpm test`, `corepack pnpm test:e2e`, `spectra analyze improve-editable-auto-layout-import --json`, and `spectra validate improve-editable-auto-layout-import` SHALL pass.

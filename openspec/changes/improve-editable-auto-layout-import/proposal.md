@@ -24,6 +24,10 @@
 - 第十一輪 flex ordering guardrail：captured `flex-direction: row-reverse` and `column-reverse` SHALL preserve browser visual child order in Figma Auto Layout by reversing Auto Layout child insertion order.
 - 第十二輪 visible text backing guardrail：text nodes with visible backgrounds and explicit CSS padding SHALL import as fixed-size padded Auto Layout backing frames with editable HUG text, so pill labels and badges preserve browser padding without forcing the text layer to fill the whole box.
 - 第十三輪 flex spacing guardrail：flex containers with strongly non-uniform implicit child gaps, such as start-cluster plus right-aligned actions, SHALL stay absolute instead of mapping the largest gap to every Figma Auto Layout item.
+- 第十四輪 mixed inline content guardrail：elements that combine direct text with child SVG/img/span nodes SHALL import as frames containing all inline children plus a synthesized editable direct-text node, so icons and adjacent text such as cart, points, and counters are not dropped.
+- 第十五輪 clipped text sizing guardrail：single-line text that is fixed-width and clipped by CSS overflow/ellipsis SHALL stay fixed-width in Figma instead of using HUG sizing, preventing truncated header names and labels from expanding beyond their captured container.
+- 第十六輪 pseudo-element decoration guardrail：visible CSS `::before` and `::after` decoration boxes SHALL be captured as synthetic child nodes and imported as editable shape layers, so CSS-only active tab underlines and similar UI indicators are not missing in Figma.
+- 第十七輪 pseudo-positioning guardrail：absolute/fixed pseudo-element decoration rects SHALL be inferred against the nearest positioned containing block instead of always using the pseudo owner box, so CSS-only tab underlines and badges keep browser-accurate x/y placement.
 
 ## Capabilities
 

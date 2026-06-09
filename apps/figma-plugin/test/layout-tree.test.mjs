@@ -189,6 +189,134 @@ test("non-uniform implicit flex spacing remains absolute instead of using a sing
   assert.deepEqual(model.children.map((child) => child.rect.x), [0, 60.16, 633]);
 });
 
+test("mixed direct text and SVG children preserve all inline content", () => {
+  const link = node("dom-checkout-link", "a", { x: 100, y: 6, width: 40, height: 16 }, {
+    textContent: "結帳",
+    styles: {
+      display: "flex",
+      flexDirection: "row",
+      alignItems: "center",
+      fontSize: "12px",
+      lineHeight: "16px"
+    },
+    children: [
+      node("dom-cart-svg", "svg", { x: 100, y: 6, width: 16, height: 16 }, {
+        attributes: { assetKind: "svg", svgMarkup: "<svg />" },
+        assetRef: "assets/cart.svg"
+      })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(link))[0];
+  const [icon, label] = model.children;
+
+  assert.equal(model.type, "FRAME");
+  assert.equal(model.autoLayout.applied, true);
+  assert.equal(model.autoLayout.layoutMode, "HORIZONTAL");
+  assert.equal(icon.type, "IMAGE");
+  assert.equal(icon.assetKind, "svg");
+  assert.equal(label.type, "TEXT");
+  assert.equal(label.text, "結帳");
+  assert.equal(label.sourceNodeId, "dom-checkout-link::text");
+  assert.deepEqual(label.rect, { x: 16, y: 0, width: 24, height: 16 });
+});
+
+test("mixed direct text between SVG and child text keeps visual order", () => {
+  const link = node("dom-points-link", "a", { x: 0, y: 0, width: 50.08, height: 16 }, {
+    textContent: "P點:",
+    styles: {
+      display: "flex",
+      flexDirection: "row",
+      alignItems: "center",
+      fontSize: "12px",
+      lineHeight: "16px"
+    },
+    children: [
+      node("dom-points-svg", "svg", { x: 0, y: 0, width: 16, height: 16 }, {
+        attributes: { assetKind: "svg", svgMarkup: "<svg />" },
+        assetRef: "assets/points.svg"
+      }),
+      text("dom-points-count", "4", { x: 42.88, y: 0, width: 7.2, height: 16 }, {
+        fontSize: "12px",
+        lineHeight: "16px"
+      })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(link))[0];
+  const [icon, label, count] = model.children;
+
+  assert.equal(model.type, "FRAME");
+  assert.equal(model.autoLayout.applied, true);
+  assert.equal(icon.type, "IMAGE");
+  assert.equal(label.type, "TEXT");
+  assert.equal(label.text, "P點:");
+  assert(label.rect.x > 19 && label.rect.x < 21);
+  assert(label.rect.width > 22 && label.rect.width < 23);
+  assert.equal(count.type, "TEXT");
+  assert.equal(count.text, "4");
+});
+
+test("visible pseudo-element decoration imports as a rectangle child", () => {
+  const tab = node("dom-tab-active", "div", { x: 100, y: 20, width: 64, height: 60 }, {
+    attributes: { class: "nav__cate nav__item--active" },
+    children: [
+      text("dom-tab-label", "討論", { x: 116, y: 38, width: 32, height: 24 }, {
+        fontSize: "16px",
+        lineHeight: "24px"
+      }),
+      node("dom-tab-active-after", "::after", { x: 116, y: 78, width: 32, height: 2 }, {
+        nodeType: "pseudo",
+        styles: {
+          content: "\"\"",
+          display: "block",
+          position: "absolute",
+          backgroundColor: "rgb(194, 41, 46)"
+        },
+        attributes: { "data-pseudo": "::after" }
+      })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(tab))[0];
+  const [label, underline] = model.children;
+
+  assert.equal(model.type, "FRAME");
+  assert.equal(label.type, "TEXT");
+  assert.equal(label.text, "討論");
+  assert.equal(underline.type, "RECTANGLE");
+  assert.equal(underline.sourceNodeId, "dom-tab-active-after");
+  assert.deepEqual(underline.rect, { x: 16, y: 58, width: 32, height: 2 });
+  assert.deepEqual(underline.style.fills, ["rgb(194, 41, 46)"]);
+});
+
+test("absolute pseudo-element decoration keeps parent out of auto layout flow", () => {
+  const tab = node("dom-flex-active-tab", "div", { x: 100, y: 20, width: 64, height: 60 }, {
+    styles: { display: "flex", alignItems: "center", justifyContent: "center" },
+    children: [
+      text("dom-flex-active-tab-label", "討論", { x: 116, y: 38, width: 32, height: 24 }, {
+        fontSize: "16px",
+        lineHeight: "24px"
+      }),
+      node("dom-flex-active-tab-after", "::after", { x: 116, y: 78, width: 32, height: 2 }, {
+        nodeType: "pseudo",
+        styles: {
+          content: "\"\"",
+          display: "block",
+          position: "absolute",
+          backgroundColor: "rgb(194, 41, 46)"
+        },
+        attributes: { "data-pseudo": "::after" }
+      })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(tab))[0];
+
+  assert.equal(model.autoLayout.applied, false);
+  assert.equal(model.autoLayout.skippedReason, "absolute-position-child");
+  assert.deepEqual(model.children.map((child) => child.rect), [
+    { x: 16, y: 18, width: 32, height: 24 },
+    { x: 16, y: 58, width: 32, height: 2 }
+  ]);
+});
+
 test("column-reverse flex preserves browser visual child order", () => {
   const stack = node("dom-stack", "div", { x: 0, y: 0, width: 120, height: 120 }, {
     styles: {
@@ -550,11 +678,18 @@ test("text resize mode uses auto width only for captured single-line text", () =
       text("dom-volume", "成交量\n          44,279 張", { x: 24, y: 108, width: 226, height: 42 }, {
         fontSize: "14px",
         lineHeight: "21px"
+      }),
+      text("dom-member-name", "harry_chuang", { x: 24, y: 168, width: 48, height: 16 }, {
+        fontSize: "12px",
+        lineHeight: "16px",
+        whiteSpace: "nowrap",
+        overflow: "hidden",
+        width: "48px"
       })
     ]
   });
   const model = createEditableLayoutNodeModels(packageWithRoot(root))[0];
-  const [userName, topic, volume] = model.children;
+  const [userName, topic, volume, memberName] = model.children;
 
   assert.equal(userName.textAutoResize, "WIDTH_AND_HEIGHT");
   assert.equal(userName.layoutSizingHorizontal, "HUG");
@@ -565,4 +700,8 @@ test("text resize mode uses auto width only for captured single-line text", () =
   assert.equal(volume.textAutoResize, "HEIGHT");
   assert.equal(volume.layoutSizingHorizontal, "FIXED");
   assert.equal(volume.layoutSizingVertical, "HUG");
+  assert.equal(memberName.textAutoResize, "TRUNCATE");
+  assert.equal(memberName.layoutSizingHorizontal, "FIXED");
+  assert.equal(memberName.layoutSizingVertical, "HUG");
+  assert.equal(memberName.rect.width, 48);
 });

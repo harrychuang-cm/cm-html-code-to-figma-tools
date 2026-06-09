@@ -188,10 +188,12 @@
       );
     }
 
-    return createRectNode(model.name, {
+    layer = createRectNode(model.name, {
       rect: model.rect,
       styles: model.styles || {}
     });
+    writeNodeMetadata(layer, "sourceNodeId", model.sourceNodeId);
+    return layer;
   }
 
   function createFrameLayer(model) {
@@ -457,12 +459,18 @@
       }
     }
 
+    if (node.textContent && children.length > 0) {
+      childModel = createDirectTextModel(node, absoluteRect, children);
+      children = insertMixedContentTextChild(children, childModel, node);
+      model = baseLayoutModel(node, "FRAME", rect, absoluteRect, children);
+      model.autoLayout = inferAutoLayout(node, children);
+      model.children = orderedChildrenForAutoLayout(children, model.autoLayout);
+      model.clipsContent = shouldClipContent(node);
+      return model;
+    }
+
     if (node.textContent) {
-      model = baseLayoutModel(node, "TEXT", rect, absoluteRect, []);
-      model.text = node.textContent;
-      model.textAutoResize = inferTextAutoResize(node, rect);
-      model.layoutSizingHorizontal = textLayoutSizingHorizontal(model.textAutoResize);
-      model.layoutSizingVertical = textLayoutSizingVertical(model.textAutoResize);
+      model = createTextModel(node, rect, absoluteRect, inferTextAutoResize(node, rect));
       if (hasVisualBoxStyle(node.styles)) {
         var backingPadding = explicitCssPadding(node.styles);
         var shouldUsePaddedBacking = hasPositivePadding(backingPadding);
@@ -527,6 +535,137 @@
     };
   }
 
+  function createTextModel(node, rect, absoluteRect, textAutoResize) {
+    var model = baseLayoutModel(node, "TEXT", rect, absoluteRect, []);
+    model.text = node.textContent;
+    model.textAutoResize = textAutoResize;
+    model.layoutSizingHorizontal = textLayoutSizingHorizontal(textAutoResize);
+    model.layoutSizingVertical = textLayoutSizingVertical(textAutoResize);
+    return model;
+  }
+
+  function createDirectTextModel(node, parentAbsoluteRect, children) {
+    var absoluteRect = inferDirectTextRect(node, parentAbsoluteRect, children);
+    var rect = relativeModelRect(absoluteRect, parentAbsoluteRect);
+    var textNode = {};
+    Object.keys(node).forEach(function (key) {
+      textNode[key] = node[key];
+    });
+    textNode.sourceNodeId = String(node.sourceNodeId || "") + "::text";
+    textNode.tagName = "#text";
+    textNode.children = [];
+    textNode.rect = absoluteRect;
+    return createTextModel(textNode, rect, absoluteRect, inferTextContentAutoResize(textNode, rect));
+  }
+
+  function insertMixedContentTextChild(children, textModel, node) {
+    var flexDirection = node.styles && node.styles.flexDirection || "row";
+    var layoutMode = String(flexDirection).indexOf("column") === 0 ? "VERTICAL" : "HORIZONTAL";
+    return children.concat([textModel]).sort(function (a, b) {
+      return layoutMode === "HORIZONTAL"
+        ? a.absoluteRect.x - b.absoluteRect.x
+        : a.absoluteRect.y - b.absoluteRect.y;
+    });
+  }
+
+  function inferDirectTextRect(node, parentRect, children) {
+    var styles = node.styles || {};
+    var flexDirection = styles.flexDirection || "row";
+    var layoutMode = String(flexDirection).indexOf("column") === 0 ? "VERTICAL" : "HORIZONTAL";
+    var parentStart = layoutMode === "HORIZONTAL" ? parentRect.x : parentRect.y;
+    var parentEnd = parentStart + (layoutMode === "HORIZONTAL" ? parentRect.width : parentRect.height);
+    var sorted = children.slice().sort(function (a, b) {
+      return layoutMode === "HORIZONTAL"
+        ? a.absoluteRect.x - b.absoluteRect.x
+        : a.absoluteRect.y - b.absoluteRect.y;
+    });
+    var segments = [];
+    var cursor = parentStart;
+    var index;
+    var child;
+    var childStart;
+    var childEnd;
+    var bestSegment;
+    var estimatedTextSize;
+    var start;
+
+    for (index = 0; index < sorted.length; index += 1) {
+      child = sorted[index];
+      childStart = layoutMode === "HORIZONTAL" ? child.absoluteRect.x : child.absoluteRect.y;
+      childEnd = childStart + (layoutMode === "HORIZONTAL" ? child.absoluteRect.width : child.absoluteRect.height);
+      addDirectTextSegment(segments, cursor, childStart, cursor > parentStart, true);
+      cursor = Math.max(cursor, childEnd);
+    }
+    addDirectTextSegment(segments, cursor, parentEnd, cursor > parentStart, false);
+
+    segments.sort(function (a, b) {
+      return b.size - a.size;
+    });
+    bestSegment = segments[0];
+    if (!bestSegment) {
+      return {
+        x: parentRect.x,
+        y: parentRect.y,
+        width: parentRect.width,
+        height: parentRect.height
+      };
+    }
+
+    estimatedTextSize = Math.min(bestSegment.size, estimateTextPrimarySize(node.textContent, styles));
+    start = bestSegment.hasPrevious && bestSegment.hasNext
+      ? bestSegment.end - estimatedTextSize
+      : bestSegment.start;
+    if (layoutMode === "HORIZONTAL") {
+      return {
+        x: round(start),
+        y: parentRect.y,
+        width: round(Math.max(1, estimatedTextSize)),
+        height: parentRect.height
+      };
+    }
+    return {
+      x: parentRect.x,
+      y: round(start),
+      width: parentRect.width,
+      height: round(Math.max(1, estimatedTextSize))
+    };
+  }
+
+  function addDirectTextSegment(segments, start, end, hasPrevious, hasNext) {
+    var size = end - start;
+    if (size > 0.5) {
+      segments.push({
+        start: start,
+        end: end,
+        size: size,
+        hasPrevious: hasPrevious,
+        hasNext: hasNext
+      });
+    }
+  }
+
+  function estimateTextPrimarySize(text, styles) {
+    var safeStyles = styles || {};
+    var fontSize = numberFromCss(safeStyles.fontSize) || 14;
+    var width = 0;
+    var chars = String(text || "");
+    var index;
+    var char;
+    for (index = 0; index < chars.length; index += 1) {
+      char = chars.charAt(index);
+      if (/\s/.test(char)) {
+        width += fontSize * 0.33;
+      } else if (/[\u3000-\u9fff\u3400-\u4dbf\uf900-\ufaff]/.test(char)) {
+        width += fontSize;
+      } else if (/[.,:;!|]/.test(char)) {
+        width += fontSize * 0.33;
+      } else {
+        width += fontSize * 0.56;
+      }
+    }
+    return round(Math.max(fontSize * 0.5, width));
+  }
+
   function inferAutoLayout(node, children) {
     var styles = node.styles || {};
     var display = styles.display || "";
@@ -562,6 +701,9 @@
       if (!hasUsableBounds(children[index].absoluteRect)) {
         return skippedLayout("missing-bounds");
       }
+    }
+    if (hasAbsolutePositionedChild(children)) {
+      return skippedLayout("absolute-position-child");
     }
     parentRect = normalizeModelRect(node.rect);
     if (hasOutOfBoundsChild(parentRect, children)) {
@@ -635,6 +777,12 @@
   function isReverseFlexDirection(value) {
     var normalized = normalizeCssKeyword(value);
     return normalized === "row-reverse" || normalized === "column-reverse";
+  }
+
+  function hasAbsolutePositionedChild(children) {
+    return children.some(function (child) {
+      return normalizeCssKeyword(child.styles && child.styles.position) === "absolute";
+    });
   }
 
   function inferSingleChildTextAutoLayout(node, child, parentRect) {
@@ -856,12 +1004,33 @@
     }
 
     styles = node.styles || {};
+    if (isClippedSingleLineText(node, rect, styles)) {
+      return "TRUNCATE";
+    }
+
     lineHeight = numberFromCss(styles.lineHeight) || numberFromCss(styles.fontSize) * 1.2;
     if (lineHeight > 0 && rect.height > lineHeight * 1.75) {
       return "HEIGHT";
     }
 
     return "WIDTH_AND_HEIGHT";
+  }
+
+  function isClippedSingleLineText(node, rect, styles) {
+    var overflow = normalizeCssKeyword(styles.overflow);
+    var textOverflow = normalizeCssKeyword(styles.textOverflow);
+    var whiteSpace = normalizeCssKeyword(styles.whiteSpace);
+    var clipsInline = textOverflow === "ellipsis" ||
+      overflow === "hidden" ||
+      overflow === "clip";
+    var preventsWrapping = whiteSpace === "nowrap" ||
+      whiteSpace === "pre" ||
+      whiteSpace === "pre-wrap";
+    if (!clipsInline || !preventsWrapping || rect.width <= 0) {
+      return false;
+    }
+
+    return estimateTextPrimarySize(node.textContent, styles) > rect.width + 1;
   }
 
   function textBackingAutoLayout(padding, textAutoResize) {

@@ -112,11 +112,35 @@ Some production rows visually combine a left cluster and a right-aligned action 
 
 The importer SHALL detect strongly non-uniform implicit gaps on the primary axis. When there are at least three children, no equivalent distributed alignment is available, and the largest gap is far larger than the expected CSS or measured base gap, the container SHALL stay as a nested non-auto-layout frame with skipped reason `non-uniform-spacing`. Child frames keep parent-relative x/y geometry, preserving the browser screenshot. This guard is generic and applies to any flex row or column that cannot be represented by one Figma Auto Layout gap.
 
+### Preserve Mixed Inline Content
+
+HTML elements can render direct text and child elements in the same inline or flex row. Examples include an anchor with an inline SVG icon plus direct label text, or a points link with an SVG icon, direct text `P點:`, and a child span containing the numeric count. Treating `textContent` as an unconditional leaf model drops the child SVG/span nodes and loses visible UI.
+
+The importer SHALL treat nodes with both direct `textContent` and renderable children as mixed-content containers, not text leaves. It SHALL create a frame for the original element, keep all existing child models, and synthesize one editable text child for the element's direct text. The synthesized text uses a stable debug source id suffix `::text`, inherits the element text styles, and derives its bounds from the remaining free segment in the parent box after child bounds are accounted for.
+
+Child order SHALL follow browser visual order on the relevant flex axis. If direct text sits between an icon and a later child span, the synthesized text model must be inserted between those models. This preserves generic inline UI such as icon + label, label + badge, icon + label + counter, and top bar member menu rows without site-specific selectors.
+
+### Preserve Visible CSS Pseudo-Elements
+
+Production UIs often draw active tab underlines, badges, separators, and small decorative indicators with CSS `::before` or `::after`. These nodes do not exist in the DOM tree, so a DOM-only capture loses the visible decoration even when the reference screenshot clearly shows it.
+
+Chrome capture SHALL inspect `getComputedStyle(element, "::before")` and `getComputedStyle(element, "::after")` for every visible element. When a pseudo-element has `content`, is displayed, has a nonzero inferred box, and carries visible background, border, or shadow style, capture SHALL append a synthetic child node with `nodeType: "pseudo"`, `tagName: "::before"` or `"::after"`, `attributes["data-pseudo"]`, computed styles, and an absolute viewport rect inferred from computed `left`/`right`/`top`/`bottom`/`width`/`height`.
+
+Absolute and fixed pseudo-element rect inference SHALL use the nearest positioned containing block that the capture traversal has seen, not blindly the pseudo owner element's own border box. This matches browser behavior for common structures where a static active label owns `::after`, but a positioned ancestor such as the tab item supplies the containing block. If no positioned containing block is available, capture falls back to the pseudo owner box as the conservative base; static pseudo-elements also continue to use the owner element box.
+
+The importer SHALL treat these synthetic pseudo nodes like normal visual boxes, usually producing rectangle layers. If a pseudo-element is `position:absolute`, its parent SHALL NOT be converted into Auto Layout flow that would treat the decoration as an ordinary item; the parent remains a nested absolute frame with skipped reason `absolute-position-child`.
+
 ### Preserve Screenshot-First Text Fidelity
 
 Editable text 仍應是 Figma Text node，但 resize mode 需要依 captured layout 分流。多行文字、明確換行文字、寬欄內容使用 fixed-width auto-height behavior，讓右側話題和段落 wrapping 與截圖更接近。單行短文字、navigation label、username、股票代碼與短數字使用 auto-width behavior，避免 Figma 字型差異把原本單行文字擠成兩行。
 
 For auto-width text, the importer SHALL set both the text resize mode and the Auto Layout child sizing intent. `WIDTH_AND_HEIGHT` text maps to horizontal and vertical HUG sizing so top bar menu labels size to their content when they sit beside dropdown arrows or inside single-child menu items. Fixed-width auto-height text maps to fixed horizontal sizing and hug vertical sizing so paragraph wrapping and visible text boxes remain stable.
+
+### Preserve Clipped Single-Line Text Bounds
+
+Some production UI intentionally clips a single-line text node with CSS, commonly `white-space: nowrap`, fixed width, and `overflow: hidden` or `text-overflow: ellipsis`. Header account names and compact labels may store the full string in DOM but only render a clipped width on screen. If the importer treats these nodes as auto-width/HUG text, Figma expands the full string and pushes neighboring icons or menu items beyond the captured viewport.
+
+The importer SHALL detect single-line text whose estimated text width exceeds the captured rect while CSS indicates inline clipping. These nodes SHALL keep fixed horizontal sizing and use Figma truncate/fixed text behavior when available. This guard is generic: it is based on computed CSS and captured bounds, not on project-specific class names.
 
 當 captured text node 本身有 visible background、visible border 或 shadow 時，layout model 將建立一個 visual parent frame，裡面放置 parent-relative text，並在需要時保留 corner radius。這保留像股票價格 tag 的綠底白字，同時維持文字可編輯。
 
@@ -201,9 +225,14 @@ Classic runtime 不使用 modern syntax，不直接寫入 Figma node 自訂欄�
 - Auto Layout eligibility SHALL skip containers whose children depend on out-of-bounds placement, large negative offsets, or 0/1px nonvisual wrapper frames.
 - Auto Layout eligibility SHALL skip flex containers whose primary-axis child gaps are strongly non-uniform and not represented by captured CSS alignment, recording `non-uniform-spacing`.
 - Auto Layout frames SHALL map supported CSS `align-items` and `justify-content` values to Figma axis alignment properties instead of representing all alignment as inferred padding.
+- Nodes that combine direct text and renderable children SHALL import as mixed-content frames that preserve all child SVG/img/span models and add an editable direct-text model instead of dropping either side of the inline content.
+- Visible CSS `::before` and `::after` pseudo-elements SHALL be captured as synthetic visual child nodes and imported as rectangle layers when their computed styles describe a visible decoration box.
+- Absolute/fixed pseudo-element decoration rects SHALL be inferred against the nearest positioned containing block, preserving browser-accurate x/y placement when the pseudo owner itself is static.
+- Containers with absolute-positioned child decoration SHALL stay out of Auto Layout flow, recording `absolute-position-child`, so pseudo underlines keep captured x/y geometry.
 - Captured direct text SHALL normalize raw DOM whitespace according to captured CSS `white-space` semantics before it is written to `.figcapture`.
 - Visible viewport capture SHALL clamp captured element rects to the current viewport intersection so root/body/long page containers do not create full-page-height frames in a visible-viewport package.
 - Text nodes SHALL use auto width when captured geometry indicates single-line content and fixed width when captured geometry indicates multiline or constrained content. Text nodes with visible visual styles SHALL include a visual backing layer. Text nodes with only invisible decorative styles, such as transparent background plus border radius and no visible border or shadow, SHALL NOT receive a backing frame.
+- Single-line text nodes that are clipped by CSS overflow/ellipsis and whose full text would exceed the captured width SHALL keep fixed width/truncate behavior instead of HUG sizing.
 - Text backing frames with explicit CSS padding SHALL apply that padding through Figma Auto Layout and keep single-line nested text in HUG sizing.
 - Canvas fallback assets SHALL use captured bitmap bytes when available and SHALL fall back to a screenshot crop of the same viewport rect when direct canvas serialization is unavailable but screenshot crop APIs are available.
 - Image assets SHALL skip transparent placeholder `currentSrc` / `src` values when a real lazy image candidate is available in captured image attributes.
@@ -235,6 +264,9 @@ Classic runtime 不使用 modern syntax，不直接寫入 Figma node 自訂欄�
 - Tests cover CMoney-style nonvisual wrappers, out-of-bounds Auto Layout skips, fixed-width text, text background preservation, and canvas bitmap fallback assets.
 - Tests cover single-child line-height and flex-aligned text containers staying vertically centered instead of absolute top-aligned.
 - Tests cover single-child flex menu labels with equal parent/child captured heights still mapping to centered Auto Layout.
+- Tests cover mixed direct text and child SVG/span content preserving the visible icon, synthesized direct text, and following child text in visual order.
+- Tests cover fixed-width clipped single-line text using fixed/truncate behavior instead of HUG sizing.
+- Tests cover visible CSS pseudo-element decoration capture, rectangle import, and absolute-positioned pseudo children skipping Auto Layout flow.
 - Tests cover raw template indentation normalization for `white-space: normal`, preservation for `pre` / `pre-wrap` / `break-spaces`, and line-preserving collapse for `pre-line`.
 - Tests cover transparent rounded button labels staying as auto-width text without a `Text Background` frame.
 - Tests cover visible viewport rect clamping for a long body/root and screenshot-cropped fallback bytes replacing the transparent placeholder when direct canvas serialization is unavailable.
@@ -245,7 +277,7 @@ Classic runtime 不使用 modern syntax，不直接寫入 Figma node 自訂欄�
 
 **Scope boundaries:**
 
-- In scope: DOM tree preserving renderer, conservative flex Auto Layout, reverse flex visual child order, non-uniform implicit spacing skip guard, CSS padding capture and Auto Layout padding mapping, single-child text alignment including equal-height flex line boxes, text visual backing, invisible text backing avoidance, Figma HUG sizing for auto-width single-line text, CSS `white-space` text normalization, visible viewport rect clamping, canvas bitmap fallback with screenshot crop fallback, lazy image source selection, report counts, tests, docs.
+- In scope: DOM tree preserving renderer, conservative flex Auto Layout, mixed inline content preservation, visible CSS pseudo-element decoration capture/import, clipped single-line text fixed sizing, reverse flex visual child order, non-uniform implicit spacing skip guard, CSS padding capture and Auto Layout padding mapping, single-child text alignment including equal-height flex line boxes, text visual backing, invisible text backing avoidance, Figma HUG sizing for auto-width single-line text, CSS `white-space` text normalization, visible viewport rect clamping, canvas bitmap fallback with screenshot crop fallback, lazy image source selection, report counts, tests, docs.
 - Out of scope: full-page screenshot stitching, canvas/SVG vectorization, variable generation, components, variants, responsive multi-viewport behavior.
 
 ## Risks / Trade-offs
