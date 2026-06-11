@@ -68,6 +68,83 @@ test("layout tree preserves parent-child hierarchy and parent-relative geometry"
   assert.deepEqual(navModel.children[1].rect, { x: 60, y: 10, width: 32, height: 20 });
 });
 
+test("placeholder input creates editable placeholder text from captured metadata", () => {
+  const searchInput = node("dom-search-input", "input", { x: 808, y: 42, width: 450, height: 32 }, {
+    attributes: {
+      id: "SearchbarSearchInput",
+      placeholder: "搜尋股票/ETF代碼、名稱或人名"
+    },
+    styles: {
+      display: "block",
+      width: "450px",
+      height: "32px",
+      paddingLeft: "36px",
+      paddingRight: "8px",
+      fontSize: "14px",
+      lineHeight: "21px",
+      color: "rgb(0, 0, 0)",
+      placeholderColor: "rgb(143, 143, 143)",
+      backgroundColor: "rgb(247, 247, 247)",
+      overflow: "clip",
+      overflowX: "clip",
+      overflowY: "clip",
+      textOverflow: "clip"
+    }
+  });
+
+  const model = createEditableLayoutNodeModels(packageWithRoot(searchInput))[0];
+  const placeholder = model.children.find((child) => child.sourceNodeId === "dom-search-input::placeholder");
+
+  assert.equal(model.type, "FRAME");
+  assert.equal(model.name, "Input / 搜尋股票/ETF代碼、名稱或人名");
+  assert.equal(placeholder.type, "TEXT");
+  assert.equal(placeholder.text, "搜尋股票/ETF代碼、名稱或人名");
+  assert.equal(placeholder.textAutoResize, "TRUNCATE");
+  assert.equal(placeholder.layoutSizingHorizontal, "FIXED");
+  assert.deepEqual(placeholder.rect, { x: 36, y: 5.5, width: 406, height: 21 });
+  assert.equal(placeholder.style.text.color, "rgb(143, 143, 143)");
+});
+
+test("placeholder input skips placeholder text when capture reports a value", () => {
+  const filledInput = node("dom-filled-input", "input", { x: 808, y: 42, width: 450, height: 32 }, {
+    attributes: {
+      placeholder: "搜尋股票/ETF代碼、名稱或人名",
+      "data-has-value": "true"
+    },
+    styles: {
+      display: "block",
+      width: "450px",
+      height: "32px",
+      backgroundColor: "rgb(247, 247, 247)"
+    }
+  });
+
+  const model = createEditableLayoutNodeModels(packageWithRoot(filledInput))[0];
+
+  assert.equal(model.type, "RECTANGLE");
+  assert.equal(model.children.length, 0);
+});
+
+test("near-fit explicit-width text keeps hug sizing to avoid Figma wrapping", () => {
+  const memberCount = node("dom-member-count", "div", { x: 683.78, y: 341, width: 49, height: 24 }, {
+    textContent: "63334",
+    styles: {
+      display: "block",
+      width: "49px",
+      height: "24px",
+      fontSize: "16px",
+      lineHeight: "24px",
+      color: "rgb(51, 51, 51)"
+    }
+  });
+
+  const model = createEditableLayoutNodeModels(packageWithRoot(memberCount))[0];
+
+  assert.equal(model.type, "TEXT");
+  assert.equal(model.textAutoResize, "WIDTH_AND_HEIGHT");
+  assert.equal(model.layoutSizingHorizontal, "HUG");
+});
+
 test("horizontal flex row receives auto layout with explicit gap and inferred padding", () => {
   const toolbar = node("dom-toolbar", "div", { x: 100, y: 20, width: 240, height: 48 }, {
     styles: { display: "flex", flexDirection: "row", gap: "16px" },
@@ -86,6 +163,116 @@ test("horizontal flex row receives auto layout with explicit gap and inferred pa
   assert.equal(model.autoLayout.paddingTop, 12);
   assert.equal(model.autoLayout.paddingRight, 76);
   assert.equal(model.autoLayout.paddingBottom, 16);
+});
+
+test("edge-pinned two-child flex infers space-between to preserve right-aligned search", () => {
+  const headerMiddle = node("dom-header-middle", "div", { x: 368, y: 28, width: 890, height: 60 }, {
+    styles: {
+      display: "flex",
+      flexDirection: "row",
+      gap: "24px",
+      columnGap: "24px",
+      alignItems: "center"
+    },
+    children: [
+      node("dom-header-nav", "nav", { x: 368, y: 28, width: 317.79, height: 60 }, {
+        children: [
+          text("dom-discuss", "討論", { x: 368, y: 46, width: 32, height: 24 })
+        ]
+      }),
+      node("dom-header-search", "div", { x: 808, y: 28, width: 450, height: 60 }, {
+        styles: {
+          display: "block",
+          width: "450px",
+          height: "60px"
+        },
+        children: [
+          node("dom-search-input", "input", { x: 808, y: 42, width: 450, height: 32 }, {
+            attributes: { placeholder: "搜尋股票/ETF代碼、名稱或人名" },
+            styles: {
+              display: "block",
+              width: "450px",
+              height: "32px",
+              paddingLeft: "36px",
+              paddingRight: "8px",
+              fontSize: "14px",
+              lineHeight: "21px",
+              backgroundColor: "rgb(247, 247, 247)"
+            }
+          })
+        ]
+      })
+    ]
+  });
+
+  const model = createEditableLayoutNodeModels(packageWithRoot(headerMiddle))[0];
+
+  assert.equal(model.autoLayout.applied, true);
+  assert.equal(model.autoLayout.layoutMode, "HORIZONTAL");
+  assert.equal(model.autoLayout.primaryAxisAlignItems, "SPACE_BETWEEN");
+  assert.equal(model.autoLayout.itemSpacing, 0);
+  assert.equal(model.autoLayout.paddingLeft, 0);
+  assert.equal(model.autoLayout.paddingRight, 0);
+  assert.deepEqual(model.children.map((child) => child.sourceNodeId), ["dom-header-nav", "dom-header-search"]);
+  assert.deepEqual(model.children.map((child) => child.rect.x), [0, 440]);
+});
+
+test("transparent transformed carousel track uses visible child bounds", () => {
+  const carousel = node("dom-carousel", "div", { x: 0, y: 159, width: 390, height: 93.75 }, {
+    styles: {
+      display: "block",
+      position: "relative",
+      width: "390px",
+      height: "93.75px",
+      overflow: "hidden",
+      overflowX: "hidden",
+      overflowY: "hidden"
+    },
+    children: [
+      node("dom-carousel-track", "div", { x: -390, y: 159, width: 390, height: 93.75 }, {
+        styles: {
+          display: "flex",
+          width: "390px",
+          height: "93.75px",
+          transform: "matrix(1, 0, 0, 1, -390, 0)"
+        },
+        children: [
+          node("dom-carousel-slide", "div", { x: 0, y: 159, width: 390, height: 93.75 }, {
+            styles: {
+              display: "block",
+              position: "relative",
+              width: "390px",
+              height: "93.75px"
+            },
+            children: [
+              node("dom-carousel-image", "img", { x: 0, y: 159, width: 390, height: 93.75 }, {
+                assetRef: "assets/image-9.webp",
+                attributes: { assetKind: "raster", alt: "0經驗也能上手，從基金起步" },
+                styles: {
+                  display: "block",
+                  width: "390px",
+                  height: "93.75px",
+                  objectFit: "cover"
+                }
+              })
+            ]
+          })
+        ]
+      })
+    ]
+  });
+
+  const model = createEditableLayoutNodeModels(packageWithRoot(carousel))[0];
+  const [track] = model.children;
+  const [slide] = track.children;
+  const [image] = slide.children;
+
+  assert.equal(model.clipsContent, true);
+  assert.deepEqual(track.rect, { x: 0, y: 0, width: 390, height: 93.75 });
+  assert.deepEqual(track.absoluteRect, { x: 0, y: 159, width: 390, height: 93.75 });
+  assert.deepEqual(slide.rect, { x: 0, y: 0, width: 390, height: 93.75 });
+  assert.equal(image.type, "IMAGE");
+  assert.deepEqual(image.rect, { x: 0, y: 0, width: 390, height: 93.75 });
 });
 
 test("space-between flex column preserves inferred padding", () => {
@@ -183,6 +370,269 @@ test("non-auto-layout siblings use numeric CSS z-index for Figma layer stacking 
   assert.deepEqual(model.children.map((child) => child.sourceNodeId), ["dom-back", "dom-middle", "dom-front"]);
   assert.equal(model.children[0].cssZIndex, "-1");
   assert.equal(model.children[2].cssZIndex, "10");
+});
+
+test("fixed overlay descendants in nonvisual wrappers preserve page stacking", () => {
+  const stack = node("dom-footer", "div", { x: 0, y: 2132.41, width: 1548, height: 0 }, {
+    styles: { display: "block" },
+    children: [
+      node("dom-forum-chat", "div", { x: 0, y: 2132.41, width: 1548, height: 0 }, {
+        styles: { display: "block" },
+        children: [
+          node("dom-chat-wrapper", "div", { x: 927, y: 493, width: 601, height: 520 }, {
+            styles: {
+              position: "fixed",
+              zIndex: "7",
+              backgroundColor: "rgb(255, 255, 255)"
+            }
+          })
+        ]
+      }),
+      node("dom-forum-to-top", "div", { x: 0, y: 2132.41, width: 1548, height: 0 }, {
+        styles: { display: "block" },
+        children: [
+          node("dom-to-top", "div", { x: 1464, y: 897, width: 44, height: 44 }, {
+            styles: {
+              position: "fixed",
+              zIndex: "auto",
+              backgroundColor: "rgb(176, 176, 176)"
+            }
+          })
+        ]
+      })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(stack))[0];
+
+  assert.equal(model.autoLayout, null);
+  assert.deepEqual(model.children.map((child) => child.sourceNodeId), ["dom-forum-to-top", "dom-forum-chat"]);
+  assert.equal(model.children[1].children[0].sourceNodeId, "dom-chat-wrapper");
+  assert.equal(model.children[1].children[0].cssZIndex, "7");
+});
+
+test("descendant z-index does not promote static sibling containers above fixed footer content", () => {
+  const stack = node("dom-page", "div", { x: 0, y: 0, width: 390, height: 844 }, {
+    styles: { display: "block", position: "relative" },
+    children: [
+      node("dom-body", "div", { x: 0, y: 0, width: 390, height: 844 }, {
+        children: [
+          text("dom-deep-popup", "Deep popup", { x: 16, y: 16, width: 100, height: 24 }, {
+            position: "relative",
+            zIndex: "100"
+          })
+        ]
+      }),
+      node("dom-footer", "div", { x: 0, y: 7800, width: 390, height: 0 }, {
+        children: [
+          node("dom-fixed-cta", "div", { x: 95, y: 732, width: 200, height: 100 }, {
+            styles: {
+              position: "fixed",
+              zIndex: "3",
+              transform: "matrix(1, 0, 0, 1, -100, 0)"
+            },
+            children: [
+              node("dom-fixed-cta-image", "img", { x: 95, y: 732, width: 200, height: 100 }, {
+                assetRef: "assets/app-download.png"
+              })
+            ]
+          })
+        ]
+      })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(stack))[0];
+
+  assert.equal(model.autoLayout, null);
+  assert.deepEqual(model.children.map((child) => child.sourceNodeId), ["dom-body", "dom-footer"]);
+  assert.equal(model.children[1].children[0].sourceNodeId, "dom-fixed-cta");
+  assert.deepEqual(model.children[1].children[0].absoluteRect, { x: 95, y: 732, width: 200, height: 100 });
+});
+
+test("absolute active indicator is layered between radio group background and labels", () => {
+  const switcher = node("dom-switcher-wrapper", "div", { x: 0, y: 0, width: 104, height: 24 }, {
+    styles: { display: "block", position: "relative" },
+    children: [
+      node("dom-switcher-group", "div", { x: 0, y: 0, width: 104, height: 24 }, {
+        styles: {
+          display: "flex",
+          flexDirection: "row",
+          gap: "4px",
+          paddingTop: "2px",
+          paddingRight: "2px",
+          paddingBottom: "2px",
+          paddingLeft: "2px",
+          backgroundColor: "rgb(228, 228, 228)"
+        },
+        children: [
+          node("dom-switcher-day", "label", { x: 2, y: 2, width: 48, height: 20 }, {
+            styles: { position: "relative", zIndex: "1" },
+            children: [
+              node("dom-switcher-day-text", "span", { x: 2, y: 2, width: 48, height: 20 }, {
+                textContent: "日盤",
+                styles: {
+                  display: "inline-block",
+                  width: "48px",
+                  height: "20px",
+                  paddingTop: "1px",
+                  paddingRight: "10.5px",
+                  paddingBottom: "1px",
+                  paddingLeft: "10.5px",
+                  fontSize: "12px",
+                  lineHeight: "16px",
+                  textAlign: "center",
+                  whiteSpace: "nowrap"
+                }
+              })
+            ]
+          }),
+          node("dom-switcher-night", "label", { x: 54, y: 2, width: 48, height: 20 }, {
+            styles: { position: "relative", zIndex: "1" },
+            children: [
+              node("dom-switcher-night-text", "span", { x: 54, y: 2, width: 48, height: 20 }, {
+                textContent: "夜盤",
+                styles: {
+                  display: "inline-block",
+                  width: "48px",
+                  height: "20px",
+                  paddingTop: "1px",
+                  paddingRight: "10.5px",
+                  paddingBottom: "1px",
+                  paddingLeft: "10.5px",
+                  fontSize: "12px",
+                  lineHeight: "16px",
+                  textAlign: "center",
+                  whiteSpace: "nowrap"
+                }
+              })
+            ]
+          })
+        ]
+      }),
+      node("dom-switcher-active-bg", "div", { x: 2, y: 2, width: 48, height: 20 }, {
+        styles: {
+          position: "absolute",
+          backgroundColor: "rgb(255, 255, 255)",
+          borderTopLeftRadius: "4px",
+          borderTopRightRadius: "4px",
+          borderBottomRightRadius: "4px",
+          borderBottomLeftRadius: "4px"
+        }
+      })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(switcher))[0];
+  const [group] = model.children;
+  const [activeBg, dayLabel, nightLabel] = group.children;
+  const dayText = dayLabel.children[0];
+  const nightText = nightLabel.children[0];
+
+  assert.equal(model.autoLayout, null);
+  assert.deepEqual(model.children.map((child) => child.sourceNodeId), ["dom-switcher-group"]);
+  assert.equal(group.autoLayout.applied, true);
+  assert.deepEqual(group.children.map((child) => child.sourceNodeId), [
+    "dom-switcher-active-bg",
+    "dom-switcher-day",
+    "dom-switcher-night"
+  ]);
+  assert.equal(activeBg.layoutPositioning, "ABSOLUTE");
+  assert.deepEqual(activeBg.rect, { x: 2, y: 2, width: 48, height: 20 });
+  assert.deepEqual([dayText.text, nightText.text], ["日盤", "夜盤"]);
+  assert.deepEqual([dayText.rect.y, dayText.rect.height], [2, 16]);
+  assert.deepEqual([nightText.rect.y, nightText.rect.height], [2, 16]);
+});
+
+test("static after pseudo icon in flex flow uses trailing edge when captured rect overlaps text", () => {
+  const sortButton = node("dom-sort-selected", "div", { x: 100, y: 40, width: 40, height: 29 }, {
+    styles: {
+      display: "flex",
+      flexDirection: "row",
+      paddingTop: "4px",
+      paddingBottom: "4px",
+      whiteSpace: "nowrap"
+    },
+    children: [
+      text("dom-sort-label", "最熱", { x: 100, y: 44, width: 28, height: 21 }, {
+        fontSize: "14px",
+        lineHeight: "21px"
+      }),
+      node("dom-sort-arrow", "::after", { x: 100, y: 40, width: 8, height: 21 }, {
+        nodeType: "pseudo",
+        styles: {
+          content: "url(\"data:image/svg+xml;base64,PHN2Zy8+\")",
+          display: "block",
+          width: "8px",
+          height: "21px"
+        },
+        assetRef: "assets/sort-arrow.svg",
+        attributes: { "data-pseudo": "::after" }
+      })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(sortButton))[0];
+
+  assert.equal(model.autoLayout.applied, true);
+  assert.deepEqual(model.children.map((child) => child.sourceNodeId), ["dom-sort-label", "dom-sort-arrow"]);
+  assert.deepEqual(model.children.map((child) => child.rect.x), [0, 32]);
+  assert.equal(model.autoLayout.itemSpacing, 4);
+});
+
+test("absolute read-more overlays with ellipsis pseudo inherit nearest backdrop fill", () => {
+  const card = node("dom-card", "section", { x: 0, y: 0, width: 728, height: 180 }, {
+    styles: { backgroundColor: "rgb(255, 255, 255)" },
+    children: [
+      node("dom-text-rule", "div", { x: 16, y: 16, width: 696, height: 135 }, {
+        styles: {
+          position: "relative",
+          overflow: "hidden",
+          overflowX: "hidden",
+          overflowY: "hidden"
+        },
+        children: [
+          node("dom-long-line", "div", { x: 16, y: 97, width: 696, height: 54 }, {
+            children: [
+              text("dom-long-text", "會不會因此讓美股大跌？這也是大多數台股分析師都很擔憂的事。", {
+                x: 16,
+                y: 98,
+                width: 690,
+                height: 52
+              })
+            ]
+          }),
+          node("dom-read-more", "button", { x: 624, y: 126, width: 88, height: 25 }, {
+            textContent: "閱讀更多",
+            styles: {
+              position: "absolute",
+              left: "608px",
+              top: "110px",
+              fontSize: "18px",
+              color: "rgb(194, 41, 46)",
+              backgroundColor: "rgba(0, 0, 0, 0)",
+              whiteSpace: "nowrap"
+            },
+            children: [
+              node("dom-read-more-ellipsis", "::before", { x: 624, y: 128, width: 30, height: 22 }, {
+                nodeType: "pseudo",
+                textContent: "...",
+                styles: {
+                  content: "\"...\"",
+                  display: "inline",
+                  fontSize: "18px",
+                  color: "rgb(54, 54, 54)"
+                },
+                attributes: { "data-pseudo": "::before" }
+              })
+            ]
+          })
+        ]
+      })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(card))[0];
+  const readMore = model.children[0].children.find((child) => child.sourceNodeId === "dom-read-more");
+
+  assert.deepEqual(readMore.style.fills, ["rgb(255, 255, 255)"]);
+  assert.equal(readMore.layoutPositioning, "ABSOLUTE");
+  assert.deepEqual(readMore.children.map((child) => child.text), ["...", "閱讀更多"]);
 });
 
 test("auto-layout siblings keep flow order even when they carry CSS z-index metadata", () => {
@@ -288,6 +738,111 @@ test("mixed direct text between SVG and child text keeps visual order", () => {
   assert.equal(count.text, "4");
 });
 
+test("mixed direct text merges inline separator text into a single readable line", () => {
+  const quoteTime = node("dom-quote-time", "div", { x: 100, y: 20, width: 142.27, height: 16 }, {
+    textContent: "報價時間 06/11 10:42",
+    styles: {
+      display: "block",
+      fontSize: "14px",
+      lineHeight: "16px",
+      color: "rgb(143, 143, 143)"
+    },
+    children: [
+      text("dom-quote-time-separator", "|", { x: 160.67, y: 18, width: 2.73, height: 20 }, {
+        fontSize: "14px",
+        lineHeight: "16px",
+        color: "rgb(229, 229, 229)"
+      })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(quoteTime))[0];
+  const [label] = model.children;
+
+  assert.equal(model.type, "FRAME");
+  assert.equal(model.children.length, 1);
+  assert.equal(label.type, "TEXT");
+  assert.equal(label.text, "報價時間 | 06/11 10:42");
+  assert.equal(label.rect.x, 0);
+  assert(label.rect.width > 130);
+});
+
+test("multiline mixed direct text keeps the paragraph text box instead of shifting after inline children", () => {
+  const desc = node("dom-club-desc", "p", { x: 366, y: 373, width: 696, height: 40 }, {
+    textContent: "歡迎來到盤中強勢股社團！ 新手小白有興趣不知道從何開始❓ 快加入盤中強勢股討論社的討論，讓你快速成為股市大神🤩",
+    styles: {
+      display: "block",
+      width: "696px",
+      height: "40px",
+      fontSize: "14px",
+      lineHeight: "20px",
+      whiteSpace: "normal",
+      color: "rgb(103, 103, 103)"
+    },
+    children: [
+      node("dom-club-desc-read-more", "span", { x: 441.87, y: 393, width: 68.49, height: 20 }, {
+        textContent: "...繼續閱讀",
+        styles: {
+          display: "inline-block",
+          width: "68.49px",
+          height: "20px",
+          fontSize: "14px",
+          lineHeight: "20px",
+          color: "rgb(194, 41, 46)"
+        }
+      })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(desc))[0];
+  const paragraphText = model.children.find((child) => child.sourceNodeId === "dom-club-desc::text");
+  const readMore = model.children.find((child) => child.sourceNodeId === "dom-club-desc-read-more");
+
+  assert.equal(model.type, "FRAME");
+  assert(paragraphText);
+  assert(readMore);
+  assert.deepEqual(paragraphText.rect, { x: 0, y: 0, width: 696, height: 40 });
+  assert.equal(paragraphText.textAutoResize, "HEIGHT");
+  assert.equal(paragraphText.layoutSizingHorizontal, "FIXED");
+  assert.deepEqual(readMore.rect, { x: 75.87, y: 20, width: 68.49, height: 20 });
+});
+
+test("auto-layout keeps before pseudo-elements at the start of the flex flow", () => {
+  const member = node("dom-member-meta", "li", { x: 100, y: 20, width: 100.97, height: 24 }, {
+    styles: {
+      display: "flex",
+      flexDirection: "row",
+      alignItems: "center",
+      gap: "4px"
+    },
+    children: [
+      text("dom-member-label", "成員", { x: 115.57, y: 20, width: 32.41, height: 24 }, {
+        fontSize: "16px",
+        lineHeight: "24px"
+      }),
+      text("dom-member-count", "63334", { x: 151.97, y: 20, width: 49, height: 24 }, {
+        fontSize: "16px",
+        lineHeight: "24px"
+      }),
+      node("dom-member-before", "::before", { x: 100, y: 20, width: 11.56, height: 24 }, {
+        nodeType: "pseudo",
+        textContent: "|",
+        styles: {
+          content: "\"|\"",
+          display: "block",
+          fontSize: "16px",
+          lineHeight: "24px",
+          color: "rgb(212, 212, 212)"
+        },
+        attributes: { "data-pseudo": "::before" }
+      })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(member))[0];
+
+  assert.equal(model.autoLayout.applied, true);
+  assert.deepEqual(model.children.map((child) => child.text), ["|", "成員", "63334"]);
+  assert.equal(model.children[0].pseudoType, "::before");
+});
+
 test("mixed direct text keeps after pseudo icon after the label", () => {
   const label = node("dom-creator-label", "div", { x: 100, y: 20, width: 120, height: 28 }, {
     textContent: "創作者計畫",
@@ -374,6 +929,105 @@ test("linear-gradient background imports as a visible fill", () => {
   assert.deepEqual(model.style.fills, [
     "linear-gradient(to right, rgba(255, 255, 255, 0), rgb(255, 255, 255))"
   ]);
+});
+
+test("flex header text with explicit CSS column widths stays fixed in auto layout", () => {
+  const header = node("dom-stock-header", "div", { x: 366, y: 868, width: 492, height: 36 }, {
+    styles: {
+      display: "flex",
+      flexDirection: "row",
+      alignItems: "center"
+    },
+    children: [
+      node("dom-stock-header-rank", "div", { x: 366, y: 878, width: 40, height: 16 }, {
+        textContent: "排名",
+        styles: {
+          display: "block",
+          width: "40px",
+          height: "16px",
+          fontSize: "14px",
+          lineHeight: "16px",
+          textAlign: "center"
+        }
+      }),
+      node("dom-stock-header-symbol", "div", { x: 406, y: 878, width: 115, height: 16 }, {
+        textContent: "股票",
+        styles: {
+          display: "block",
+          width: "115px",
+          height: "16px",
+          paddingLeft: "8px",
+          paddingRight: "8px",
+          fontSize: "14px",
+          lineHeight: "16px",
+          textAlign: "left"
+        }
+      }),
+      node("dom-stock-header-price", "div", { x: 521, y: 878, width: 132, height: 16 }, {
+        textContent: "股價",
+        styles: {
+          display: "block",
+          width: "132px",
+          height: "16px",
+          paddingLeft: "8px",
+          paddingRight: "8px",
+          fontSize: "14px",
+          lineHeight: "16px",
+          textAlign: "right"
+        }
+      }),
+      node("dom-stock-header-trend", "div", { x: 653, y: 878, width: 205, height: 16 }, {
+        textContent: "今日走勢",
+        styles: {
+          display: "block",
+          width: "205px",
+          height: "16px",
+          paddingLeft: "8px",
+          paddingRight: "8px",
+          fontSize: "14px",
+          lineHeight: "16px",
+          textAlign: "center"
+        }
+      })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(header))[0];
+  const [rank, symbol, price, trend] = model.children;
+
+  assert.equal(model.autoLayout.applied, true);
+  assert.deepEqual(model.children.map((child) => child.rect.width), [40, 115, 132, 205]);
+  assert.deepEqual(model.children.map((child) => child.textAutoResize), ["HEIGHT", "HEIGHT", "HEIGHT", "HEIGHT"]);
+  assert.deepEqual(model.children.map((child) => child.layoutSizingHorizontal), ["FIXED", "FIXED", "FIXED", "FIXED"]);
+  assert.equal(rank.style.text.textAlign, "center");
+  assert.equal(symbol.style.text.textAlign, "left");
+  assert.equal(price.style.text.textAlign, "right");
+  assert.equal(trend.style.text.textAlign, "center");
+});
+
+test("background-clipped linear-gradient text imports as text fill without backing frame", () => {
+  const gradient = "linear-gradient(to right, rgb(222, 190, 135), rgb(192, 139, 78))";
+  const rank = node("dom-rank", "span", { x: 48, y: 18, width: 40, height: 33 }, {
+    textContent: "1",
+    styles: {
+      backgroundColor: "rgba(0, 0, 0, 0)",
+      backgroundImage: gradient,
+      backgroundClip: "text",
+      webkitBackgroundClip: "text",
+      webkitTextFillColor: "rgba(0, 0, 0, 0)",
+      color: "rgb(149, 149, 149)",
+      fontFamily: "Inter",
+      fontSize: "28px",
+      fontWeight: "700",
+      lineHeight: "33px"
+    }
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(rank))[0];
+
+  assert.equal(model.type, "TEXT");
+  assert.equal(model.name, "Text / 1");
+  assert.deepEqual(model.style.fills, []);
+  assert.deepEqual(model.style.text.fills, [gradient]);
+  assert.equal(model.style.text.color, "rgb(149, 149, 149)");
 });
 
 test("visible pseudo-element decoration imports as a rectangle child", () => {
@@ -762,6 +1416,48 @@ test("active tab bottom border imports as underline decoration instead of all-si
   assert.equal(underline.style.fills[0], "rgb(194, 41, 46)");
 });
 
+test("rounded partial borders import as native side strokes instead of square border rectangles", () => {
+  const moreButton = node("dom-more-button", "button", { x: 322.93, y: 60, width: 67.07, height: 48 }, {
+    textContent: "更多",
+    styles: {
+      display: "flex",
+      width: "67.0703px",
+      height: "48px",
+      paddingLeft: "8px",
+      paddingRight: "8px",
+      borderTopWidth: "1px",
+      borderTopStyle: "solid",
+      borderTopColor: "rgb(229, 229, 229)",
+      borderLeftWidth: "1px",
+      borderLeftStyle: "solid",
+      borderLeftColor: "rgb(229, 229, 229)",
+      borderTopLeftRadius: "100px",
+      borderTopRightRadius: "4px",
+      borderBottomRightRadius: "4px",
+      borderBottomLeftRadius: "100px",
+      fontSize: "16px",
+      lineHeight: "24px"
+    },
+    children: [
+      node("dom-more-icon", "img", { x: 366, y: 76.5, width: 16, height: 16 }, {
+        assetRef: "assets/more.svg",
+        attributes: { assetKind: "svg" }
+      })
+    ]
+  });
+
+  const model = createEditableLayoutNodeModels(packageWithRoot(moreButton))[0];
+
+  assert.equal(model.type, "FRAME");
+  assert.deepEqual(model.style.strokes, [{ color: "rgb(229, 229, 229)", width: 1 }]);
+  assert.deepEqual(model.style.borderSides, [
+    { side: "top", color: "rgb(229, 229, 229)", width: 1 },
+    { side: "left", color: "rgb(229, 229, 229)", width: 1 }
+  ]);
+  assert.equal(model.style.cornerRadius, 100);
+  assert.equal(model.children.some((child) => child.name === "Border / top" || child.name === "Border / left"), false);
+});
+
 test("text backing frames with CSS padding become padded auto layout", () => {
   const badge = text("dom-mark", "讚", { x: 380, y: 904.6, width: 20, height: 20.5 }, {
     backgroundColor: "rgb(54, 54, 54)",
@@ -796,6 +1492,216 @@ test("text backing frames with CSS padding become padded auto layout", () => {
   assert.equal(label.layoutSizingHorizontal, "HUG");
   assert.equal(label.layoutSizingVertical, "HUG");
   assert.deepEqual(label.rect, { x: 4, y: 2, width: 12, height: 16.5 });
+});
+
+test("padded single-line chat bubbles keep hug text inside fixed backing", () => {
+  const bubble = text("dom-chat-unsend", "Tim.JJ2fv1已收回訊息", { x: 1209, y: 621, width: 199.15, height: 33 }, {
+    display: "block",
+    width: "199.148px",
+    height: "33px",
+    backgroundColor: "rgb(248, 248, 248)",
+    backgroundImage: "none",
+    color: "rgb(143, 143, 143)",
+    webkitTextFillColor: "rgb(143, 143, 143)",
+    fontFamily: "Inter, \"Noto Sans TC\", \"Pingfang TC\", \"Microsoft Jhenghei\", Helvetica, Arial, sans-serif",
+    fontSize: "16px",
+    fontStyle: "normal",
+    fontWeight: "400",
+    lineHeight: "16px",
+    whiteSpace: "normal",
+    textAlign: "start",
+    letterSpacing: "normal",
+    paddingTop: "8px",
+    paddingRight: "20px",
+    paddingBottom: "8px",
+    paddingLeft: "20px",
+    borderTopWidth: "0.5px",
+    borderRightWidth: "0.5px",
+    borderBottomWidth: "0.5px",
+    borderLeftWidth: "0.5px",
+    borderTopStyle: "solid",
+    borderRightStyle: "solid",
+    borderBottomStyle: "solid",
+    borderLeftStyle: "solid",
+    borderTopColor: "rgb(212, 212, 212)",
+    borderRightColor: "rgb(212, 212, 212)",
+    borderBottomColor: "rgb(212, 212, 212)",
+    borderLeftColor: "rgb(212, 212, 212)",
+    borderTopLeftRadius: "19px",
+    borderTopRightRadius: "19px",
+    borderBottomRightRadius: "19px",
+    borderBottomLeftRadius: "19px",
+    boxShadow: "none",
+    overflow: "visible",
+    overflowX: "visible",
+    overflowY: "visible",
+    maxWidth: "none",
+    maxHeight: "none",
+    textOverflow: "clip"
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(bubble))[0];
+  const label = model.children[0];
+
+  assert.equal(model.type, "FRAME");
+  assert.equal(model.name, "Text Background / Tim.JJ2fv1已收回訊息");
+  assert.equal(model.autoLayout.applied, true);
+  assert.equal(model.autoLayout.layoutMode, "HORIZONTAL");
+  assert.equal(model.autoLayout.primaryAxisAlignItems, "CENTER");
+  assert.equal(model.autoLayout.counterAxisAlignItems, "CENTER");
+  assert.equal(model.autoLayout.paddingLeft, 20);
+  assert.equal(model.autoLayout.paddingRight, 20);
+  assert.equal(model.autoLayout.paddingTop, 8);
+  assert.equal(model.autoLayout.paddingBottom, 8);
+  assert.equal(label.type, "TEXT");
+  assert.equal(label.textAutoResize, "WIDTH_AND_HEIGHT");
+  assert.equal(label.layoutSizingHorizontal, "HUG");
+  assert.equal(label.layoutSizingVertical, "HUG");
+  assert.deepEqual(label.rect, { x: 20, y: 8, width: 159.15, height: 17 });
+});
+
+test("transparent padded emoji text uses content box inside parent bubble", () => {
+  const bubble = node("dom-chat-bubble", "div", { x: 1209, y: 712, width: 54, height: 39 }, {
+    styles: {
+      display: "block",
+      position: "relative",
+      width: "54px",
+      height: "39px",
+      backgroundColor: "rgb(240, 240, 240)",
+      borderTopLeftRadius: "19px",
+      borderTopRightRadius: "19px",
+      borderBottomRightRadius: "19px",
+      borderBottomLeftRadius: "19px"
+    },
+    children: [
+      node("dom-chat-emoji", "pre", { x: 1209, y: 712, width: 54, height: 39 }, {
+        textContent: "🥰",
+        attributes: { class: "message__pre text-dark-800" },
+        styles: {
+          display: "block",
+          width: "54px",
+          height: "39px",
+          backgroundColor: "rgba(0, 0, 0, 0)",
+          color: "rgb(54, 54, 54)",
+          fontSize: "16px",
+          lineHeight: "21px",
+          whiteSpace: "pre-wrap",
+          paddingLeft: "19px",
+          paddingRight: "19px",
+          paddingTop: "9px",
+          paddingBottom: "9px"
+        }
+      })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(bubble))[0];
+  const label = model.children.find((child) => child.sourceNodeId === "dom-chat-emoji");
+
+  assert.equal(model.type, "FRAME");
+  assert.equal(label.type, "TEXT");
+  assert.equal(label.text, "🥰");
+  assert.equal(label.textAutoResize, "WIDTH_AND_HEIGHT");
+  assert.equal(label.layoutSizingHorizontal, "HUG");
+  assert.equal(label.layoutSizingVertical, "HUG");
+  assert.deepEqual(label.rect, { x: 19, y: 9, width: 16, height: 21 });
+});
+
+test("transparent padded interactive tabs preserve wrapper frames in flex rows", () => {
+  const nav = node("dom-etf-subtabs", "nav", { x: 271, y: 420, width: 992, height: 37 }, {
+    styles: {
+      display: "flex",
+      flexDirection: "row",
+      gap: "4px",
+      columnGap: "4px",
+      width: "992px",
+      height: "37px",
+      paddingLeft: "8px",
+      paddingRight: "8px",
+      paddingTop: "0px",
+      paddingBottom: "0px",
+      overflow: "auto",
+      overflowX: "auto",
+      overflowY: "hidden"
+    },
+    children: [
+      node("dom-etf-subtab-hot", "a", { x: 279, y: 420, width: 69.875, height: 37 }, {
+        nodeType: "element",
+        textContent: "熱門ETF",
+        attributes: {
+          class: "etfRankPage__subTab etfRankPage__subTab--active"
+        },
+        styles: {
+          display: "flex",
+          alignItems: "center",
+          width: "69.875px",
+          height: "37px",
+          backgroundColor: "rgba(0, 0, 0, 0)",
+          color: "rgb(54, 54, 54)",
+          fontSize: "14px",
+          fontWeight: "500",
+          lineHeight: "21px",
+          whiteSpace: "nowrap",
+          paddingLeft: "8px",
+          paddingRight: "8px",
+          paddingTop: "8px",
+          paddingBottom: "8px"
+        }
+      }),
+      node("dom-etf-subtab-dividend", "a", { x: 352.875, y: 420, width: 44.063, height: 37 }, {
+        nodeType: "element",
+        textContent: "配息",
+        attributes: {
+          class: "etfRankPage__subTab"
+        },
+        styles: {
+          display: "flex",
+          alignItems: "center",
+          width: "44.063px",
+          height: "37px",
+          backgroundColor: "rgba(0, 0, 0, 0)",
+          color: "rgb(54, 54, 54)",
+          fontSize: "14px",
+          fontWeight: "500",
+          lineHeight: "21px",
+          whiteSpace: "nowrap",
+          paddingLeft: "8px",
+          paddingRight: "8px",
+          paddingTop: "8px",
+          paddingBottom: "8px"
+        }
+      })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(nav))[0];
+  const [hotTab, dividendTab] = model.children;
+  const hotLabel = hotTab.children[0];
+
+  assert.equal(model.autoLayout.applied, true);
+  assert.equal(model.autoLayout.layoutMode, "HORIZONTAL");
+  assert.equal(model.autoLayout.itemSpacing, 4);
+  assert.equal(model.autoLayout.paddingLeft, 8);
+  assert.equal(model.autoLayout.paddingRight, 8);
+  assert.deepEqual(model.children.map((child) => child.type), ["FRAME", "FRAME"]);
+  assert.deepEqual(model.children.map((child) => child.sourceNodeId), [
+    "dom-etf-subtab-hot",
+    "dom-etf-subtab-dividend"
+  ]);
+  assert.deepEqual(hotTab.rect, { x: 8, y: 0, width: 69.875, height: 37 });
+  assert.equal(hotTab.autoLayout.applied, true);
+  assert.equal(hotTab.autoLayout.layoutMode, "HORIZONTAL");
+  assert.equal(hotTab.autoLayout.primaryAxisAlignItems, "CENTER");
+  assert.equal(hotTab.autoLayout.counterAxisAlignItems, "CENTER");
+  assert.equal(hotTab.autoLayout.paddingLeft, 8);
+  assert.equal(hotTab.autoLayout.paddingRight, 8);
+  assert.equal(hotTab.autoLayout.paddingTop, 8);
+  assert.equal(hotTab.autoLayout.paddingBottom, 8);
+  assert.equal(hotLabel.type, "TEXT");
+  assert.equal(hotLabel.sourceNodeId, "dom-etf-subtab-hot::text");
+  assert.equal(hotLabel.text, "熱門ETF");
+  assert.equal(hotLabel.textAutoResize, "WIDTH_AND_HEIGHT");
+  assert.equal(hotLabel.layoutSizingHorizontal, "HUG");
+  assert.equal(hotLabel.layoutSizingVertical, "HUG");
+  assert.deepEqual(hotLabel.rect, { x: 8, y: 8, width: 53.88, height: 21 });
+  assert.deepEqual(dividendTab.rect, { x: 81.88, y: 0, width: 44.063, height: 37 });
 });
 
 test("multiline text backing frames preserve padding without centering paragraphs", () => {
@@ -1098,6 +2004,133 @@ test("text resize mode uses auto width only for captured single-line text", () =
   assert.equal(memberName.layoutSizingHorizontal, "FIXED");
   assert.equal(memberName.layoutSizingVertical, "HUG");
   assert.equal(memberName.rect.width, 48);
+});
+
+test("tiny viewport-clipped explicit-width text is omitted instead of showing an ellipsis", () => {
+  const navValue = node("dom-fund-nav-value", "div", { x: 388, y: 613.75, width: 2, height: 24 }, {
+    textContent: "751.12",
+    styles: {
+      display: "block",
+      width: "66px",
+      height: "24px",
+      fontSize: "16px",
+      lineHeight: "24px",
+      color: "rgb(54, 54, 54)"
+    }
+  });
+
+  const models = createEditableLayoutNodeModels(packageWithRoot(navValue));
+
+  assert.equal(models.length, 0);
+});
+
+test("viewport-clipped empty table spacer does not push visible columns", () => {
+  const headerRow = node("dom-header-row", "tr", { x: 16, y: 543.75, width: 374, height: 55 }, {
+    styles: {
+      display: "flex",
+      width: "900px",
+      height: "55px"
+    },
+    children: [
+      node("dom-rank-heading", "th", { x: 16, y: 543.75, width: 45, height: 55 }, {
+        textContent: "排名",
+        styles: {
+          display: "flex",
+          width: "45px",
+          height: "55px",
+          backgroundColor: "rgb(240, 240, 240)",
+          fontSize: "14px",
+          lineHeight: "21px"
+        }
+      }),
+      node("dom-name-heading", "th", { x: 61, y: 543.75, width: 150, height: 55 }, {
+        textContent: "基金名稱",
+        styles: {
+          display: "flex",
+          width: "150px",
+          height: "55px",
+          backgroundColor: "rgb(240, 240, 240)",
+          fontSize: "14px",
+          lineHeight: "21px"
+        }
+      }),
+      node("dom-hidden-nav-heading", "th", { x: 376, y: 543.75, width: 14, height: 55 }, {
+        styles: {
+          display: "flex",
+          width: "90px",
+          height: "55px",
+          backgroundColor: "rgba(0, 0, 0, 0)"
+        }
+      }),
+      node("dom-return-heading", "th", { x: 211, y: 543.75, width: 165, height: 55 }, {
+        styles: {
+          display: "flex",
+          width: "165px",
+          height: "55px"
+        },
+        children: [
+          text("dom-return-heading-text", "1年", { x: 348.33, y: 560.75, width: 19.67, height: 21 }, {
+            fontSize: "14px",
+            lineHeight: "21px"
+          })
+        ]
+      })
+    ]
+  });
+
+  const table = node("dom-table", "table", { x: 16, y: 543.75, width: 374, height: 55 }, {
+    styles: {
+      display: "table",
+      width: "900px",
+      height: "55px"
+    },
+    children: [headerRow]
+  });
+  const wrapper = node("dom-table-wrapper", "div", { x: 16, y: 543.75, width: 358, height: 55 }, {
+    styles: {
+      display: "block",
+      width: "358px",
+      height: "55px",
+      overflow: "auto hidden",
+      overflowX: "auto",
+      overflowY: "hidden"
+    },
+    children: [table]
+  });
+
+  const model = createEditableLayoutNodeModels(packageWithRoot(wrapper))[0];
+  const row = model.children[0].children[0];
+  const returnHeading = row.children.find((child) => child.sourceNodeId === "dom-return-heading");
+  const hiddenSpacer = row.children.find((child) => child.sourceNodeId === "dom-hidden-nav-heading");
+
+  assert.equal(hiddenSpacer, undefined);
+  assert.equal(returnHeading.rect.x, 195);
+  assert.equal(returnHeading.children[0].rect.x, 137.33);
+});
+
+test("overflow-hidden multiline text keeps a fixed clipped text box", () => {
+  const fundName = node("dom-fund-name", "a", { x: 73, y: 682.75, width: 126, height: 48 }, {
+    textContent: "國泰趨勢ETF傘型基金之臺韓科技基金",
+    styles: {
+      display: "flow-root",
+      width: "126px",
+      height: "48px",
+      fontSize: "16px",
+      lineHeight: "24px",
+      color: "rgb(54, 54, 54)",
+      whiteSpace: "normal",
+      overflow: "hidden",
+      overflowX: "hidden",
+      overflowY: "hidden"
+    }
+  });
+
+  const model = createEditableLayoutNodeModels(packageWithRoot(fundName))[0];
+
+  assert.equal(model.type, "TEXT");
+  assert.equal(model.textAutoResize, "TRUNCATE");
+  assert.equal(model.layoutSizingHorizontal, "FIXED");
+  assert.deepEqual(model.rect, { x: 73, y: 682.75, width: 126, height: 48 });
 });
 
 test("max-height overflow text containers clip overflowing read-more lines", () => {

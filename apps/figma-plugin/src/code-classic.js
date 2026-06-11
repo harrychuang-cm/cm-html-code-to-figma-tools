@@ -4,6 +4,8 @@
   var IMPORT_SUCCESS = "IMPORT_SUCCESS";
   var IMPORT_ERROR = "IMPORT_ERROR";
   var FALLBACK_FONT = { family: "Inter", style: "Regular" };
+  var SUPPORTED_ZIP_FLAGS = 0x0800;
+  var MAX_ARCHIVE_FILE_NAME_LENGTH = 240;
 
   function postError(category, message) {
     figma.ui.postMessage({
@@ -89,6 +91,36 @@
     if (!packageData.capture || !packageData.capture.root) {
       throw importError("invalid-package", "Capture DOM tree is missing");
     }
+    validateAssetReferences(packageData.capture.root, packageData.assets);
+  }
+
+  function validateAssetReferences(node, assets) {
+    var index;
+    if (!node || typeof node !== "object") {
+      return;
+    }
+    validateAssetReference(node.assetRef, assets, "assetRef");
+    validateAssetReference(node.fallbackRef, assets, "fallbackRef");
+    for (index = 0; index < (node.children || []).length; index += 1) {
+      validateAssetReferences(node.children[index], assets);
+    }
+  }
+
+  function validateAssetReference(value, assets, key) {
+    var reason;
+    if (typeof value !== "string") {
+      return;
+    }
+    reason = archiveFileNameError(value);
+    if (reason) {
+      throw importError("invalid-package", reason);
+    }
+    if (value.indexOf("assets/") !== 0) {
+      throw importError("invalid-package", key + " must reference a packaged asset");
+    }
+    if (!assets || !Object.prototype.hasOwnProperty.call(assets, value)) {
+      throw importError("missing-file", value + " is referenced but not packaged");
+    }
   }
 
   function renderPackage(packageData) {
@@ -156,7 +188,11 @@
     if (model.type === "FRAME") {
       layer = createFrameLayer(model);
       for (index = 0; index < model.children.length; index += 1) {
-        layer.appendChild(createLayerTreeForModel(model.children[index], packageData, fontPromises, fontSubstitutions));
+        appendModelChild(
+          layer,
+          createLayerTreeForModel(model.children[index], packageData, fontPromises, fontSubstitutions),
+          model.children[index]
+        );
       }
       return layer;
     }
@@ -167,6 +203,7 @@
       layer.name = model.name;
       writeNodeMetadata(layer, "sourceNodeId", model.sourceNodeId);
       writeNodeMetadata(layer, "cssZIndex", model.cssZIndex);
+      applyModelLayoutPositioning(layer, model);
       fontPromises.push(setTextLayer(layer, {
         textContent: model.text,
         sourceNodeId: model.sourceNodeId,
@@ -180,7 +217,7 @@
 
     if (model.type === "IMAGE" || model.type === "FALLBACK_IMAGE") {
       assetRef = model.assetRef || null;
-      return createImageNode(
+      layer = createImageNode(
         model.name,
         packageData.assets[assetRef] || new Uint8Array(0),
         model.rect,
@@ -190,8 +227,12 @@
         model.assetKind || null,
         model.style || model.styles || {},
         model.sourceNodeId,
-        model.cssZIndex
+        model.cssZIndex,
+        model.absoluteRect,
+        packageData
       );
+      applyModelLayoutPositioning(layer, model);
+      return layer;
     }
 
     layer = createRectNode(model.name, {
@@ -200,6 +241,7 @@
     });
     writeNodeMetadata(layer, "sourceNodeId", model.sourceNodeId);
     writeNodeMetadata(layer, "cssZIndex", model.cssZIndex);
+    applyModelLayoutPositioning(layer, model);
     return layer;
   }
 
@@ -208,11 +250,23 @@
     applyGeometry(frame, model.rect);
     frame.name = model.name;
     frame.clipsContent = Boolean(model.clipsContent);
-    applyVisualStyle(frame, model.styles || {});
+    applyVisualStyle(frame, model.style || model.styles || {});
     applyAutoLayout(frame, model.autoLayout);
     writeNodeMetadata(frame, "sourceNodeId", model.sourceNodeId);
     writeNodeMetadata(frame, "cssZIndex", model.cssZIndex);
+    applyModelLayoutPositioning(frame, model);
     return frame;
+  }
+
+  function applyModelLayoutPositioning(node, model) {
+    if (model.layoutPositioning) {
+      safeSetFigmaProperty(node, "layoutPositioning", model.layoutPositioning);
+    }
+  }
+
+  function appendModelChild(parent, child, model) {
+    parent.appendChild(child);
+    applyModelLayoutPositioning(child, model || {});
   }
 
   function applyAutoLayout(frame, autoLayout) {
@@ -245,11 +299,13 @@
     writeNodeMetadata(frame, "autoLayoutConfidence", autoLayout.confidence);
   }
 
-  function createImageNode(name, bytes, rect, locked, assetRef, fallbackReasonValue, assetKind, style, sourceNodeId, cssZIndex) {
+  function createImageNode(name, bytes, rect, locked, assetRef, fallbackReasonValue, assetKind, style, sourceNodeId, cssZIndex, absoluteRect, packageData) {
     var imageBytes = toUint8Array(bytes);
     var image;
     var reason = fallbackReasonValue;
     var node;
+    var screenshotFallback;
+    var canUseScreenshotCropFallback = false;
     if (isSvgAsset(assetRef, assetKind, imageBytes) && typeof figma.createNodeFromSvg === "function") {
       try {
         return createSvgImageNode(name, imageBytes, rect, locked, assetRef, style || {}, sourceNodeId, cssZIndex);
@@ -277,16 +333,88 @@
         writeNodeMetadata(node, "imageHash", image.hash);
         return node;
       } catch (error) {
+        canUseScreenshotCropFallback = true;
         reason = fallbackReasonValue || "image decode failed";
       }
     } else {
       reason = fallbackReasonValue || (imageBytes.length > 0 ? "external or unsupported image asset" : "missing image asset");
+    }
+    if (canUseScreenshotCropFallback) {
+      screenshotFallback = createScreenshotCropFallbackNode(name, rect, locked, assetRef, sourceNodeId, cssZIndex, absoluteRect, packageData, reason);
+      if (screenshotFallback) {
+        return screenshotFallback;
+      }
     }
     node.name = name + " / Placeholder";
     applyImagePlaceholderStyle(node);
     writeNodeMetadata(node, "assetRef", assetRef);
     writeNodeMetadata(node, "fallbackReason", reason);
     return node;
+  }
+
+  function createScreenshotCropFallbackNode(name, rect, locked, assetRef, sourceNodeId, cssZIndex, absoluteRect, packageData, reason) {
+    var viewportWidth = Number(packageData && packageData.manifest && packageData.manifest.viewportWidth || 0);
+    var viewportHeight = Number(packageData && packageData.manifest && packageData.manifest.viewportHeight || 0);
+    var imageHash;
+    var frame;
+    var screenshotLayer;
+    var sourceX;
+    var sourceY;
+    if (
+      !absoluteRect ||
+      !packageData ||
+      !packageData.screenshot ||
+      !rect ||
+      rect.width <= 0 ||
+      rect.height <= 0 ||
+      viewportWidth <= 0 ||
+      viewportHeight <= 0
+    ) {
+      return null;
+    }
+    try {
+      imageHash = getScreenshotImageHash(packageData);
+    } catch (error) {
+      return null;
+    }
+    if (!imageHash) {
+      return null;
+    }
+
+    frame = figma.createFrame();
+    applyGeometry(frame, rect);
+    frame.name = name + " / Screenshot Crop";
+    frame.locked = Boolean(locked);
+    frame.clipsContent = true;
+    frame.fills = [];
+    writeNodeMetadata(frame, "sourceNodeId", sourceNodeId);
+    writeNodeMetadata(frame, "cssZIndex", cssZIndex);
+    writeNodeMetadata(frame, "assetRef", assetRef);
+    writeNodeMetadata(frame, "fallbackReason", (reason || "image fallback") + "; screenshot crop fallback");
+
+    screenshotLayer = figma.createRectangle();
+    screenshotLayer.name = "Screenshot crop source";
+    sourceX = numberFromCss(absoluteRect.x);
+    sourceY = numberFromCss(absoluteRect.y);
+    screenshotLayer.x = sourceX === 0 ? 0 : -sourceX;
+    screenshotLayer.y = sourceY === 0 ? 0 : -sourceY;
+    screenshotLayer.resize(viewportWidth, viewportHeight);
+    screenshotLayer.fills = [{
+      type: "IMAGE",
+      scaleMode: "FILL",
+      imageHash: imageHash
+    }];
+    writeNodeMetadata(screenshotLayer, "assetRef", assetRef);
+    writeNodeMetadata(screenshotLayer, "fallbackReason", "screenshot crop source");
+    frame.appendChild(screenshotLayer);
+    return frame;
+  }
+
+  function getScreenshotImageHash(packageData) {
+    if (!packageData._screenshotImageHash) {
+      packageData._screenshotImageHash = figma.createImage(toUint8Array(packageData.screenshot)).hash;
+    }
+    return packageData._screenshotImageHash;
   }
 
   function createSvgImageNode(name, imageBytes, rect, locked, assetRef, style, sourceNodeId, cssZIndex) {
@@ -565,26 +693,128 @@
   }
 
   function applyVisualStyle(node, styles) {
-    var stroke = cssStrokeFromStyles(styles);
+    var borderSides = Array.isArray(styles && styles.borderSides)
+      ? styles.borderSides
+      : nativeBorderStrokeSidesFromStyles(styles || {});
+    var stroke = Array.isArray(styles && styles.strokes) && styles.strokes.length > 0
+      ? styles.strokes[0]
+      : cssStrokeFromStyles(styles);
     node.fills = fillPaintArray(styles);
-    if (stroke) {
+    if (borderSides.length > 0) {
+      applyBorderSideStrokes(node, borderSides);
+    } else if (stroke) {
       node.strokes = paintArray(stroke.color);
       node.strokeWeight = stroke.width;
     } else {
       node.strokes = [];
       node.strokeWeight = 0;
     }
-    node.cornerRadius = Math.max(
-      numberFromCss(styles.borderTopLeftRadius),
-      numberFromCss(styles.borderTopRightRadius),
-      numberFromCss(styles.borderBottomRightRadius),
-      numberFromCss(styles.borderBottomLeftRadius)
-    );
+    node.cornerRadius = Number(styles && styles.cornerRadius) > 0
+      ? Number(styles.cornerRadius)
+      : cornerRadiusFromStyles(styles);
+    node.effects = shadowEffectsFromStyle(styles);
+  }
+
+  function shadowEffectsFromStyle(styles) {
+    var safeStyles = styles || {};
+    var sourceEffects = Array.isArray(safeStyles.effects) ? safeStyles.effects : [];
+    var effects = [];
+    var index;
+    var effect;
+    if (sourceEffects.length > 0) {
+      for (index = 0; index < sourceEffects.length; index += 1) {
+        effect = cssShadowToEffect(sourceEffects[index] && sourceEffects[index].value);
+        if (effect) {
+          effects.push(effect);
+        }
+      }
+      return effects;
+    }
+    effect = cssShadowToEffect(safeStyles.boxShadow);
+    return effect ? [effect] : [];
+  }
+
+  function cssShadowToEffect(value) {
+    var shadow = firstOuterCssShadow(value);
+    var colorValue;
+    var color;
+    var lengthSource;
+    var matches;
+    var lengths;
+    if (!shadow) {
+      return null;
+    }
+    colorValue = extractCssShadowColor(shadow);
+    color = parseCssColor(colorValue) || { r: 0, g: 0, b: 0, a: 0.16 };
+    lengthSource = colorValue ? shadow.replace(colorValue, " ") : shadow;
+    matches = lengthSource.match(/-?\d*\.?\d+(?:px)?/gi) || [];
+    lengths = matches.map(function (match) {
+      return numberFromCss(match);
+    }).filter(function (number) {
+      return isFinite(number);
+    });
+    if (lengths.length < 2) {
+      return null;
+    }
+    return {
+      type: "DROP_SHADOW",
+      color: {
+        r: color.r / 255,
+        g: color.g / 255,
+        b: color.b / 255,
+        a: color.a
+      },
+      offset: {
+        x: lengths[0],
+        y: lengths[1]
+      },
+      radius: lengths.length > 2 ? lengths[2] : 0,
+      spread: lengths.length > 3 ? lengths[3] : 0,
+      visible: true,
+      blendMode: "NORMAL"
+    };
+  }
+
+  function firstOuterCssShadow(value) {
+    var shadows;
+    var index;
+    if (typeof value !== "string" || value.length === 0 || value === "none") {
+      return "";
+    }
+    shadows = splitCssArguments(value);
+    for (index = 0; index < shadows.length; index += 1) {
+      if (shadows[index] && !/\binset\b/i.test(shadows[index])) {
+        return shadows[index].replace(/^\s+|\s+$/g, "");
+      }
+    }
+    return "";
+  }
+
+  function extractCssShadowColor(value) {
+    var match = String(value || "").match(/rgba?\([^)]+\)|#[0-9a-f]{3,8}|transparent/i);
+    return match ? match[0] : "";
+  }
+
+  function applyBorderSideStrokes(node, borderSides) {
+    var first = borderSides[0];
+    var weights = { top: 0, right: 0, bottom: 0, left: 0 };
+    var index;
+    node.strokes = paintArray(first && first.color);
+    node.strokeWeight = 0;
+    for (index = 0; index < borderSides.length; index += 1) {
+      weights[borderSides[index].side] = borderSides[index].width;
+      node.strokeWeight = Math.max(node.strokeWeight, borderSides[index].width);
+    }
+    safeSetFigmaProperty(node, "strokeAlign", "INSIDE");
+    safeSetFigmaProperty(node, "strokeTopWeight", weights.top);
+    safeSetFigmaProperty(node, "strokeRightWeight", weights.right);
+    safeSetFigmaProperty(node, "strokeBottomWeight", weights.bottom);
+    safeSetFigmaProperty(node, "strokeLeftWeight", weights.left);
   }
 
   function setTextLayer(layer, captureNode, fontSubstitutions) {
     var styles = captureNode.styles || {};
-    var requestedFonts = fontNamesFromStyles(styles);
+    var requestedFonts = fontNamesFromStyles(styles, captureNode.textContent);
 
     return loadFontWithFallback(requestedFonts).then(function (loadedFont) {
         var fontName = loadedFont.fontName;
@@ -612,7 +842,9 @@
             // Keep importing text even when line-height cannot be set.
           }
         }
-        layer.fills = paintArray(styles.color);
+        var textFills = textFillPaintArray(styles);
+        layer.fills = textFills.length > 0 ? textFills : paintArray(textColorFromStyles(styles));
+        applyTextAlignment(layer, styles.textAlign);
         applyTextResizeAndLayoutSizing(layer, captureNode);
       });
   }
@@ -656,19 +888,19 @@
     return tryNext();
   }
 
-  function fontNamesFromStyles(styles) {
-    var requestedStyle = parseFontStyle(styles.fontWeight, styles.fontStyle);
-    var families = parseFontFamilyStack(styles.fontFamily);
+  function fontNamesFromStyles(styles, textContent) {
+    var requestedStyles = fontStyleCandidatesFromCss(styles.fontWeight, styles.fontStyle);
+    var families = preferFontFamiliesForText(parseFontFamilyStack(styles.fontFamily), textContent);
     var candidates = [];
     var index;
+    var styleIndex;
     var family;
 
-    for (index = 0; index < families.length; index += 1) {
-      family = families[index];
-      if (!isGenericFontFamily(family)) {
-        candidates.push({ family: family, style: requestedStyle });
-        if (requestedStyle !== "Regular") {
-          candidates.push({ family: family, style: "Regular" });
+    for (styleIndex = 0; styleIndex < requestedStyles.length; styleIndex += 1) {
+      for (index = 0; index < families.length; index += 1) {
+        family = families[index];
+        if (!isGenericFontFamily(family)) {
+          candidates.push({ family: family, style: requestedStyles[styleIndex] });
         }
       }
     }
@@ -772,16 +1004,109 @@
       key === "blinkmacsystemfont";
   }
 
-  function parseFontStyle(fontWeight, fontStyle) {
-    var bold = numberFromCss(fontWeight) >= 600;
+  function preferFontFamiliesForText(families, textContent) {
+    var preferred = [];
+    var remaining = [];
+    var index;
+    var family;
+    if (!containsCjkText(textContent)) {
+      return families;
+    }
+    for (index = 0; index < families.length; index += 1) {
+      family = families[index];
+      if (isCjkFontFamily(family)) {
+        preferred.push(family);
+      } else {
+        remaining.push(family);
+      }
+    }
+    return preferred.length > 0 ? preferred.concat(remaining) : families;
+  }
+
+  function containsCjkText(value) {
+    return /[\u3040-\u30ff\u3100-\u312f\u31a0-\u31bf\u3400-\u9fff\uf900-\ufaff\uac00-\ud7af]/.test(String(value || ""));
+  }
+
+  function isCjkFontFamily(family) {
+    return /noto\s+sans\s+(tc|sc|jp|kr)|source\s+han|pingfang|pingfang\s+tc|microsoft\s+jhenghei|jhenghei|hiragino|heiti|yahei|mingliu|pmingliu|songti|kaiti|cjk/i
+      .test(String(family || ""));
+  }
+
+  function fontStyleCandidatesFromCss(fontWeight, fontStyle) {
+    var weight = normalizedFontWeight(fontWeight);
     var italic = /italic|oblique/i.test(String(fontStyle || ""));
-    if (bold && italic) {
-      return "Bold Italic";
+    if (italic && weight >= 700) {
+      return ["Bold Italic", "Regular"];
     }
-    if (bold) {
-      return "Bold";
+    if (italic && weight >= 600) {
+      return dedupeStrings(["Semi Bold Italic", "Semibold Italic", "Demi Bold Italic", "Bold Italic", "Regular"]);
     }
-    return italic ? "Italic" : "Regular";
+    if (italic && weight >= 500) {
+      return ["Medium Italic", "Regular"];
+    }
+    if (italic && weight <= 200) {
+      return ["Extra Light Italic", "Light Italic", "Italic", "Regular"];
+    }
+    if (italic && weight <= 300) {
+      return ["Light Italic", "Italic", "Regular"];
+    }
+    if (italic) {
+      return ["Italic", "Regular"];
+    }
+    return fontWeightStyleCandidates(weight);
+  }
+
+  function fontWeightStyleCandidates(weight) {
+    if (weight >= 900) {
+      return ["Black", "Heavy", "Extra Bold", "ExtraBold", "Bold", "Regular"];
+    }
+    if (weight >= 800) {
+      return ["Extra Bold", "ExtraBold", "Bold", "Regular"];
+    }
+    if (weight >= 700) {
+      return ["Bold", "Regular"];
+    }
+    if (weight >= 600) {
+      return ["Semi Bold", "SemiBold", "Semibold", "Demi Bold", "DemiBold", "Bold", "Regular"];
+    }
+    if (weight >= 500) {
+      return ["Medium", "Regular"];
+    }
+    if (weight <= 200) {
+      return ["Thin", "Extra Light", "ExtraLight", "Light", "Regular"];
+    }
+    if (weight <= 300) {
+      return ["Light", "Regular"];
+    }
+    return ["Regular"];
+  }
+
+  function normalizedFontWeight(fontWeight) {
+    var value = String(fontWeight || "").replace(/^\s+|\s+$/g, "").toLowerCase();
+    var parsed;
+    if (value === "bold") {
+      return 700;
+    }
+    if (value === "normal") {
+      return 400;
+    }
+    parsed = parseInt(value, 10);
+    return isFinite(parsed) ? parsed : 400;
+  }
+
+  function dedupeStrings(values) {
+    var seen = {};
+    var result = [];
+    var index;
+    var value;
+    for (index = 0; index < values.length; index += 1) {
+      value = values[index];
+      if (!seen[value]) {
+        seen[value] = true;
+        result.push(value);
+      }
+    }
+    return result;
   }
 
   function applyTextResizeAndLayoutSizing(layer, captureNode) {
@@ -802,6 +1127,27 @@
     }
   }
 
+  function applyTextAlignment(layer, textAlign) {
+    var horizontal = textAlignHorizontal(textAlign);
+    if (horizontal) {
+      safeSetFigmaProperty(layer, "textAlignHorizontal", horizontal);
+    }
+  }
+
+  function textAlignHorizontal(value) {
+    var normalized = String(value || "").replace(/^\s+|\s+$/g, "").toLowerCase();
+    if (normalized === "center") {
+      return "CENTER";
+    }
+    if (normalized === "right" || normalized === "end") {
+      return "RIGHT";
+    }
+    if (normalized === "left" || normalized === "start") {
+      return "LEFT";
+    }
+    return "";
+  }
+
   function safeSetFigmaProperty(node, property, value) {
     try {
       node[property] = value;
@@ -813,7 +1159,9 @@
   function createEditableLayoutNodeModels(packageData) {
     var rootModel = createLayoutModel(packageData.capture.root, {
       parentRect: { x: 0, y: 0, width: 0, height: 0 },
-      fallbackReasons: createFallbackReasonLookup(packageData)
+      fallbackReasons: createFallbackReasonLookup(packageData),
+      backdropColor: null,
+      clippedAncestor: false
     });
     return rootModel ? [rootModel] : [];
   }
@@ -837,30 +1185,56 @@
     var index;
     var childModel;
     var model;
+    var visibleChildrenRect;
+    var inheritedBackdropColor;
+    var hasClippedAncestor;
+    var textGeometry;
 
     if (!node) {
       return null;
     }
 
+    inheritedBackdropColor = visibleColor(node.styles && node.styles.backgroundColor)
+      ? node.styles.backgroundColor
+      : context.backdropColor;
+    hasClippedAncestor = Boolean(context.clippedAncestor || shouldClipContent(node));
     absoluteRect = geometryAdjustedAbsoluteRect(node, normalizeModelRect(node.rect));
     rect = relativeModelRect(absoluteRect, context.parentRect);
     nodeChildren = node.children || [];
     for (index = 0; index < nodeChildren.length; index += 1) {
       childModel = createLayoutModel(nodeChildren[index], {
         parentRect: absoluteRect,
-        fallbackReasons: context.fallbackReasons
+        fallbackReasons: context.fallbackReasons,
+        backdropColor: inheritedBackdropColor,
+        clippedAncestor: hasClippedAncestor
       });
       if (childModel) {
         children.push(childModel);
       }
     }
+    visibleChildrenRect = visibleChildrenBoundsForTransparentTransformedWrapper(node, absoluteRect, children);
+    if (visibleChildrenRect) {
+      absoluteRect = visibleChildrenRect;
+      rect = relativeModelRect(absoluteRect, context.parentRect);
+      children = children.map(function (child) {
+        return Object.assign({}, child, {
+          rect: relativeModelRect(child.absoluteRect, absoluteRect)
+        });
+      });
+    }
+    children = repairStaticPseudoFlexGeometry(node, absoluteRect, children);
+    if (node.textContent && shouldSuppressTinyClippedText(node, rect)) {
+      return null;
+    }
     borderDecorations = createBorderDecorationModels(node, rect, absoluteRect);
 
     if (node.textContent && children.length > 0) {
-      childModel = createDirectTextModel(node, absoluteRect, children);
-      children = insertMixedContentTextChild(children, childModel, node);
+      var mixedContent = prepareMixedDirectTextContent(node, absoluteRect, children);
+      childModel = createDirectTextModel(mixedContent.node, absoluteRect, mixedContent.children);
+      children = insertMixedContentTextChild(mixedContent.children, childModel, node);
       children = children.concat(borderDecorations);
       model = baseLayoutModel(node, "FRAME", rect, absoluteRect, children);
+      applyTextOverlayBackdrop(model, node, context);
       model.autoLayout = inferAutoLayout(node, children);
       model.children = orderedChildrenForAutoLayout(children, model.autoLayout);
       model.clipsContent = shouldClipContent(node);
@@ -871,16 +1245,30 @@
       if (isDirectTableCellTextNode(node)) {
         return createTableCellTextModel(node, rect, absoluteRect, borderDecorations);
       }
-      model = createTextModel(node, rect, absoluteRect, inferTextAutoResize(node, rect));
+      if (shouldPreserveTransparentPaddedInteractiveTextFrame(node, rect)) {
+        return createTransparentPaddedTextFrameModel(node, rect, absoluteRect, borderDecorations);
+      }
+      textGeometry = hasVisualBoxStyle(node.styles)
+        ? { rect: rect, absoluteRect: absoluteRect }
+        : paddedTransparentTextGeometry(node, rect, absoluteRect);
+      model = createTextModel(
+        node,
+        textGeometry.rect,
+        textGeometry.absoluteRect,
+        inferTextAutoResize(node, textGeometry.rect)
+      );
       if (hasVisualBoxStyle(node.styles)) {
         var backingPadding = explicitCssPadding(node.styles);
         var shouldUsePaddedBacking = hasPositivePadding(backingPadding);
+        var backingContentRect = shouldUsePaddedBacking
+          ? contentRectFromPadding(rect, backingPadding)
+          : null;
         var backingTextAutoResize = shouldUsePaddedBacking
-          ? inferTextContentAutoResize(node, rect)
+          ? inferPaddedBackingTextAutoResize(node, backingContentRect)
           : "HEIGHT";
         childModel = model;
         childModel.rect = shouldUsePaddedBacking
-          ? contentRectFromPadding(rect, backingPadding)
+          ? backingContentRect
           : { x: 0, y: 0, width: rect.width, height: rect.height };
         childModel.textAutoResize = backingTextAutoResize;
         childModel.layoutSizingHorizontal = textLayoutSizingHorizontal(backingTextAutoResize);
@@ -892,6 +1280,10 @@
           : null;
       }
       return model;
+    }
+
+    if (hasVisiblePlaceholder(node)) {
+      return createPlaceholderInputModel(node, rect, absoluteRect, borderDecorations);
     }
 
     if (node.fallbackRef) {
@@ -910,7 +1302,7 @@
     }
 
     if (children.length > 0) {
-      children = children.concat(borderDecorations);
+      children = reparentAbsoluteOverlaysIntoStackingHosts(children).concat(borderDecorations);
       model = baseLayoutModel(node, "FRAME", rect, absoluteRect, children);
       model.autoLayout = inferAutoLayout(node, children);
       model.children = orderedChildrenForAutoLayout(children, model.autoLayout);
@@ -1055,6 +1447,130 @@
     return parts;
   }
 
+  function visibleChildrenBoundsForTransparentTransformedWrapper(node, absoluteRect, children) {
+    var childrenRect;
+    if (
+      children.length === 0 ||
+      hasVisualBoxStyle(node.styles) ||
+      shouldClipContent(node) ||
+      !hasTransformTranslation(node.styles && node.styles.transform)
+    ) {
+      return null;
+    }
+
+    childrenRect = unionAbsoluteRect(children);
+    if (!childrenRect || rectContains(absoluteRect, childrenRect, 1)) {
+      return null;
+    }
+    return childrenRect;
+  }
+
+  function repairStaticPseudoFlexGeometry(node, absoluteRect, children) {
+    var styles = node.styles || {};
+    var display = normalizeCssKeyword(styles.display);
+    var flexDirection;
+    var layoutMode;
+    var pseudoChildren;
+    var padding;
+    var startBase;
+    var endBase;
+    var beforeOffset = 0;
+    var afterOffset = 0;
+    if ((display !== "flex" && display !== "inline-flex") || children.length < 2) {
+      return children;
+    }
+    flexDirection = normalizeCssKeyword(styles.flexDirection);
+    layoutMode = flexDirection.indexOf("column") === 0 ? "VERTICAL" : "HORIZONTAL";
+    pseudoChildren = children.filter(function (child) {
+      return isStaticPseudoFlowModel(child) && pseudoOverlapsFlowSibling(child, children, layoutMode);
+    });
+    if (pseudoChildren.length === 0) {
+      return children;
+    }
+
+    padding = explicitCssPadding(styles) || zeroPadding();
+    startBase = layoutMode === "HORIZONTAL"
+      ? absoluteRect.x + padding.left
+      : absoluteRect.y + padding.top;
+    endBase = layoutMode === "HORIZONTAL"
+      ? absoluteRect.x + absoluteRect.width - padding.right
+      : absoluteRect.y + absoluteRect.height - padding.bottom;
+
+    return children.map(function (child) {
+      var size;
+      var start;
+      var absoluteChildRect;
+      if (pseudoChildren.indexOf(child) < 0) {
+        return child;
+      }
+      size = layoutMode === "HORIZONTAL" ? child.absoluteRect.width : child.absoluteRect.height;
+      start = isBeforePseudoModel(child)
+        ? startBase + beforeOffset
+        : endBase - afterOffset - size;
+      if (isBeforePseudoModel(child)) {
+        beforeOffset += size;
+      } else {
+        afterOffset += size;
+      }
+      absoluteChildRect = layoutMode === "HORIZONTAL"
+        ? Object.assign({}, child.absoluteRect, { x: round(start) })
+        : Object.assign({}, child.absoluteRect, { y: round(start) });
+      return Object.assign({}, child, {
+        absoluteRect: absoluteChildRect,
+        rect: relativeModelRect(absoluteChildRect, absoluteRect)
+      });
+    });
+  }
+
+  function isStaticPseudoFlowModel(model) {
+    return (isBeforePseudoModel(model) || isAfterPseudoModel(model)) &&
+      normalizeCssKeyword(model.styles && model.styles.position) !== "absolute" &&
+      hasUsableBounds(model.absoluteRect);
+  }
+
+  function pseudoOverlapsFlowSibling(pseudo, children, layoutMode) {
+    return children.some(function (child) {
+      return child !== pseudo &&
+        !isBeforePseudoModel(child) &&
+        !isAfterPseudoModel(child) &&
+        axisRangesOverlap(pseudo.absoluteRect, child.absoluteRect, layoutMode);
+    });
+  }
+
+  function axisRangesOverlap(a, b, layoutMode) {
+    return primaryAxisStart(a, layoutMode) < primaryAxisEnd(b, layoutMode) &&
+      primaryAxisEnd(a, layoutMode) > primaryAxisStart(b, layoutMode);
+  }
+
+  function hasTransformTranslation(transform) {
+    var translation = transformTranslation(transform);
+    return Math.abs(translation.x) >= 0.001 || Math.abs(translation.y) >= 0.001;
+  }
+
+  function unionAbsoluteRect(children) {
+    var visibleChildren = children.filter(function (child) {
+      return hasUsableBounds(child.absoluteRect);
+    });
+    var left;
+    var top;
+    var right;
+    var bottom;
+    if (visibleChildren.length === 0) {
+      return null;
+    }
+
+    left = Math.min.apply(null, visibleChildren.map(function (child) { return child.absoluteRect.x; }));
+    top = Math.min.apply(null, visibleChildren.map(function (child) { return child.absoluteRect.y; }));
+    right = Math.max.apply(null, visibleChildren.map(function (child) { return child.absoluteRect.x + child.absoluteRect.width; }));
+    bottom = Math.max.apply(null, visibleChildren.map(function (child) { return child.absoluteRect.y + child.absoluteRect.height; }));
+    return {
+      x: round(left),
+      y: round(top),
+      width: round(Math.max(1, right - left)),
+      height: round(Math.max(1, bottom - top))
+    };
+  }
+
   function borderDecorationRect(side, rect) {
     if (side.side === "top") {
       return { x: 0, y: 0, width: rect.width, height: side.width };
@@ -1084,6 +1600,9 @@
     if (numericZIndex(node.styles && node.styles.zIndex) !== null) {
       model.cssZIndex = String(node.styles.zIndex).replace(/^\s+|\s+$/g, "");
     }
+    if (normalizeCssKeyword(node.styles && node.styles.position) === "absolute") {
+      model.layoutPositioning = "ABSOLUTE";
+    }
     return model;
   }
 
@@ -1112,6 +1631,100 @@
       ? tableCellAutoLayout(padding, node)
       : null;
     return model;
+  }
+
+  function createTransparentPaddedTextFrameModel(node, rect, absoluteRect, borderDecorations) {
+    var padding = explicitCssPadding(node.styles) || zeroPadding();
+    var contentRect = contentRectFromPadding(rect, padding);
+    var contentAbsoluteRect = {
+      x: round(absoluteRect.x + contentRect.x),
+      y: round(absoluteRect.y + contentRect.y),
+      width: contentRect.width,
+      height: contentRect.height
+    };
+    var textNode = {};
+    var key;
+    var textAutoResize;
+    var textModel;
+    var model;
+    for (key in node) {
+      if (Object.prototype.hasOwnProperty.call(node, key)) {
+        textNode[key] = node[key];
+      }
+    }
+    textNode.sourceNodeId = String(node.sourceNodeId || "") + "::text";
+    textAutoResize = inferPaddedBackingTextAutoResize(textNode, contentRect);
+    textModel = createTextModel(
+      textNode,
+      contentRect,
+      contentAbsoluteRect,
+      textAutoResize
+    );
+    model = baseLayoutModel(node, "FRAME", rect, absoluteRect, [textModel].concat(borderDecorations));
+    model.name = "Text Wrapper / " + String(node.textContent || "").slice(0, 32);
+    model.autoLayout = borderDecorations.length === 0
+      ? textBackingAutoLayout(padding, textAutoResize)
+      : null;
+    model.clipsContent = shouldClipContent(node);
+    return model;
+  }
+
+  function createPlaceholderInputModel(node, rect, absoluteRect, borderDecorations) {
+    var placeholderTextModel = createPlaceholderTextModel(node, rect, absoluteRect);
+    var model = baseLayoutModel(node, "FRAME", rect, absoluteRect, [placeholderTextModel].concat(borderDecorations));
+    model.name = "Input / " + String((node.attributes && node.attributes.placeholder) || "").slice(0, 32);
+    model.autoLayout = null;
+    model.clipsContent = shouldClipContent(node);
+    return model;
+  }
+
+  function createPlaceholderTextModel(node, rect, absoluteRect) {
+    var placeholderTextRect = inputPlaceholderTextRect(rect, node.styles || {});
+    var placeholderAbsoluteRect = {
+      x: round(absoluteRect.x + placeholderTextRect.x),
+      y: round(absoluteRect.y + placeholderTextRect.y),
+      width: placeholderTextRect.width,
+      height: placeholderTextRect.height
+    };
+    var placeholderNode = Object.assign({}, node, {
+      sourceNodeId: node.sourceNodeId + "::placeholder",
+      tagName: "#text",
+      textContent: String((node.attributes && node.attributes.placeholder) || ""),
+      rect: placeholderAbsoluteRect,
+      styles: placeholderTextStyles(node.styles || {}),
+      children: []
+    });
+    return createTextModel(placeholderNode, placeholderTextRect, placeholderAbsoluteRect, "TRUNCATE");
+  }
+
+  function inputPlaceholderTextRect(rect, styles) {
+    var padding = explicitCssPadding(styles) || zeroPadding();
+    var lineHeight = numberFromCss(styles && styles.lineHeight) ||
+      numberFromCss(styles && styles.fontSize) * 1.2 ||
+      rect.height;
+    var textHeight = round(Math.min(rect.height, Math.max(1, lineHeight)));
+    var contentHeight = Math.max(1, rect.height - padding.top - padding.bottom);
+    return {
+      x: padding.left,
+      y: round(padding.top + Math.max(0, (contentHeight - textHeight) / 2)),
+      width: round(Math.max(1, rect.width - padding.left - padding.right)),
+      height: textHeight
+    };
+  }
+
+  function placeholderTextStyles(styles) {
+    var next = Object.assign({}, styles, {
+      color: styles.placeholderColor || styles.color,
+      whiteSpace: "nowrap",
+      overflow: "hidden",
+      overflowX: "hidden",
+      textOverflow: styles.textOverflow === "ellipsis" ? "ellipsis" : "clip"
+    });
+    delete next.webkitTextFillColor;
+    delete next.backgroundClip;
+    delete next.webkitBackgroundClip;
+    delete next.backgroundImage;
+    return next;
   }
 
   function tableCellTextAutoResize(node, rect) {
@@ -1220,6 +1833,14 @@
     return tagName === "td" || tagName === "th" || display === "table-cell";
   }
 
+  function hasVisiblePlaceholder(node) {
+    var tagName = String(node.tagName || "").toLowerCase();
+    var placeholder = String((node.attributes && node.attributes.placeholder) || "");
+    return (tagName === "input" || tagName === "textarea") &&
+      placeholder.replace(/^\s+|\s+$/g, "").length > 0 &&
+      String((node.attributes && node.attributes["data-has-value"]) || "").toLowerCase() !== "true";
+  }
+
   function classTokens(className) {
     var tokens = {};
     var parts = String(className || "").split(/\s+/);
@@ -1251,6 +1872,149 @@
     textNode.rect = absoluteRect;
     textNode.styles = textStyles;
     return createTextModel(textNode, rect, absoluteRect, inferTextContentAutoResize(textNode, rect));
+  }
+
+  function prepareMixedDirectTextContent(node, parentAbsoluteRect, children) {
+    var merge = mergeableInlineSeparator(node, parentAbsoluteRect, children);
+    var mergedNode;
+    if (!merge) {
+      return {
+        node: node,
+        children: children
+      };
+    }
+
+    mergedNode = {};
+    Object.keys(node).forEach(function (key) {
+      mergedNode[key] = node[key];
+    });
+    mergedNode.textContent = insertInlineSeparatorText(
+      node.textContent,
+      merge.separator.text,
+      merge.primaryOffset,
+      node.styles
+    );
+    return {
+      node: mergedNode,
+      children: children.filter(function (child) {
+        return child !== merge.separator;
+      })
+    };
+  }
+
+  function mergeableInlineSeparator(node, parentAbsoluteRect, children) {
+    var separators = children.filter(isInlineTextSeparatorModel);
+    var index;
+    var styles;
+    var flexDirection;
+    var padding;
+    var parentStart;
+    var parentEnd;
+    var parentSize;
+    var separator;
+    var primaryOffset;
+    var largestSegment;
+    var estimatedTextSize;
+
+    if (separators.length !== 1) {
+      return null;
+    }
+    for (index = 0; index < children.length; index += 1) {
+      if (children[index].pseudoType) {
+        return null;
+      }
+    }
+
+    styles = node.styles || {};
+    flexDirection = styles.flexDirection || "row";
+    if (String(flexDirection).indexOf("column") === 0) {
+      return null;
+    }
+
+    padding = explicitCssPadding(styles) || zeroPadding();
+    parentStart = parentAbsoluteRect.x + padding.left;
+    parentEnd = parentAbsoluteRect.x + Math.max(0, parentAbsoluteRect.width - padding.right);
+    parentSize = parentEnd - parentStart;
+    separator = separators[0];
+    primaryOffset = separator.absoluteRect.x - parentStart;
+    if (primaryOffset <= 1 || primaryOffset >= parentSize - 1) {
+      return null;
+    }
+
+    largestSegment = largestDirectTextSegmentSize(children, parentStart, parentEnd);
+    estimatedTextSize = estimateTextPrimarySize(node.textContent, styles);
+    if (estimatedTextSize <= largestSegment + 1 || estimatedTextSize > parentSize + separator.absoluteRect.width + 8) {
+      return null;
+    }
+
+    return {
+      separator: separator,
+      primaryOffset: primaryOffset
+    };
+  }
+
+  function isInlineTextSeparatorModel(child) {
+    var text;
+    if (child.type !== "TEXT" || child.pseudoType) {
+      return false;
+    }
+    text = String(child.text || "").replace(/^\s+|\s+$/g, "");
+    return text.length > 0 && text.length <= 2 && /^[|¦:：/\\·•\-–—]+$/.test(text);
+  }
+
+  function largestDirectTextSegmentSize(children, parentStart, parentEnd) {
+    var sorted = children.filter(function (child) {
+      return directTextChildOverlapsContent(child, "HORIZONTAL", parentStart, parentEnd);
+    }).sort(function (a, b) {
+      return a.absoluteRect.x - b.absoluteRect.x;
+    });
+    var segments = [];
+    var cursor = parentStart;
+    var index;
+    var child;
+    var childStart;
+    var childEnd;
+    var largest = 0;
+    for (index = 0; index < sorted.length; index += 1) {
+      child = sorted[index];
+      childStart = clampNumber(child.absoluteRect.x, parentStart, parentEnd);
+      childEnd = clampNumber(child.absoluteRect.x + child.absoluteRect.width, parentStart, parentEnd);
+      addDirectTextSegment(segments, cursor, childStart, cursor > parentStart, true);
+      cursor = Math.max(cursor, childEnd);
+    }
+    addDirectTextSegment(segments, cursor, parentEnd, cursor > parentStart, false);
+    for (index = 0; index < segments.length; index += 1) {
+      largest = Math.max(largest, segments[index].size);
+    }
+    return largest;
+  }
+
+  function insertInlineSeparatorText(text, separator, primaryOffset, styles) {
+    var source = String(text || "");
+    var index = closestTextSplitIndex(source, primaryOffset, styles || {});
+    var prefix = source.slice(0, index).replace(/\s+$/g, "");
+    var suffix = source.slice(index).replace(/^\s+/g, "");
+    var parts = [prefix, String(separator || "").replace(/^\s+|\s+$/g, ""), suffix].filter(function (part) {
+      return Boolean(part);
+    });
+    return parts.join(" ");
+  }
+
+  function closestTextSplitIndex(text, targetWidth, styles) {
+    var bestIndex = 0;
+    var bestDistance = Number.POSITIVE_INFINITY;
+    var index;
+    var width;
+    var distance;
+    for (index = 0; index <= text.length; index += 1) {
+      width = estimateTextPrimarySize(text.slice(0, index), styles);
+      distance = Math.abs(width - targetWidth);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestIndex = index;
+      }
+    }
+    return bestIndex;
   }
 
   function insertMixedContentTextChild(children, textModel, node) {
@@ -1301,6 +2065,22 @@
     var crossSize = layoutMode === "HORIZONTAL"
       ? Math.max(1, parentRect.height - padding.top - padding.bottom)
       : Math.max(1, parentRect.width - padding.left - padding.right);
+    if (shouldUseFullMultilineDirectTextRect(node, parentRect, children, layoutMode, padding)) {
+      if (layoutMode === "HORIZONTAL") {
+        return {
+          x: round(parentStart),
+          y: round(crossStart),
+          width: round(Math.max(1, parentEnd - parentStart)),
+          height: round(crossSize)
+        };
+      }
+      return {
+        x: round(crossStart),
+        y: round(parentStart),
+        width: round(crossSize),
+        height: round(Math.max(1, parentEnd - parentStart))
+      };
+    }
     var sorted = children.filter(function (child) {
       return directTextChildOverlapsContent(child, layoutMode, parentStart, parentEnd);
     }).sort(function (a, b) {
@@ -1362,6 +2142,43 @@
       width: round(crossSize),
       height: round(Math.max(1, estimatedTextSize))
     };
+  }
+
+  function shouldUseFullMultilineDirectTextRect(node, parentRect, children, layoutMode, padding) {
+    var styles;
+    var whiteSpace;
+    var lineHeight;
+    var contentHeight;
+    var firstLineBottom;
+    var index;
+    if (layoutMode !== "HORIZONTAL") {
+      return false;
+    }
+    for (index = 0; index < children.length; index += 1) {
+      if (children[index].pseudoType) {
+        return false;
+      }
+    }
+
+    styles = node.styles || {};
+    whiteSpace = normalizeCssKeyword(styles.whiteSpace);
+    if (whiteSpace === "nowrap" || whiteSpace === "pre") {
+      return false;
+    }
+
+    lineHeight = numberFromCss(styles.lineHeight) || numberFromCss(styles.fontSize) * 1.2;
+    contentHeight = Math.max(1, parentRect.height - padding.top - padding.bottom);
+    if (!(lineHeight > 0) || contentHeight < lineHeight * 1.5) {
+      return false;
+    }
+
+    firstLineBottom = parentRect.y + padding.top + lineHeight - 0.5;
+    for (index = 0; index < children.length; index += 1) {
+      if (children[index].absoluteRect.y >= firstLineBottom) {
+        return true;
+      }
+    }
+    return false;
   }
 
   function directTextChildOverlapsContent(child, layoutMode, parentStart, parentEnd) {
@@ -1477,14 +2294,18 @@
       return skippedLayout("overlapping-layout");
     }
 
-    primaryAxisAlignItems = primaryAxisAlignmentFromCss(styles.justifyContent);
+    primaryAxisAlignItems = inferPrimaryAxisAlignment(styles, children, layoutMode, parentRect);
     counterAxisAlignItems = counterAxisAlignmentFromCss(styles.alignItems);
     if (hasNonUniformImplicitSpacing(styles, children, layoutMode, primaryAxisAlignItems)) {
       return skippedLayout("non-uniform-spacing");
     }
-    spacing = explicitSpacing(styles, layoutMode);
-    if (spacing === null) {
-      spacing = measuredSpacing(children, layoutMode);
+    if (primaryAxisAlignItems === "SPACE_BETWEEN") {
+      spacing = 0;
+    } else {
+      spacing = explicitSpacing(styles, layoutMode);
+      if (spacing === null) {
+        spacing = measuredSpacing(children, layoutMode);
+      }
     }
     paddingResult = resolvePadding(styles, parentRect, children);
     padding = alignmentAwarePadding(
@@ -1511,24 +2332,47 @@
   }
 
   function orderedChildrenForAutoLayout(children, autoLayout) {
+    var pseudoOrderedChildren = orderPseudoChildrenForFlow(children, autoLayout && autoLayout.layoutMode || "HORIZONTAL");
     if (autoLayout && autoLayout.applied && autoLayout.reversedChildren) {
-      return children.slice().reverse();
+      return pseudoOrderedChildren.slice().reverse();
     }
     if (!autoLayout || !autoLayout.applied) {
-      return stackOrderedChildren(children);
+      return stackOrderedChildren(pseudoOrderedChildren);
     }
-    return children;
+    return pseudoOrderedChildren;
+  }
+
+  function orderPseudoChildrenForFlow(children, layoutMode) {
+    var hasPseudo = children.some(function (child) {
+      return isBeforePseudoModel(child) || isAfterPseudoModel(child);
+    });
+    if (!hasPseudo) {
+      return children;
+    }
+    var sorted = function (items) {
+      return items.slice().sort(function (a, b) {
+        return layoutMode === "HORIZONTAL"
+          ? a.absoluteRect.x - b.absoluteRect.x
+          : a.absoluteRect.y - b.absoluteRect.y;
+      });
+    };
+    var beforeChildren = sorted(children.filter(isBeforePseudoModel));
+    var afterChildren = sorted(children.filter(isAfterPseudoModel));
+    var flowChildren = children.filter(function (child) {
+      return !isBeforePseudoModel(child) && !isAfterPseudoModel(child);
+    });
+    return beforeChildren.concat(flowChildren).concat(afterChildren);
   }
 
   function stackOrderedChildren(children) {
     var hasExplicitZIndex = children.some(function (child) {
-      return numericZIndex(child.styles && child.styles.zIndex) !== null;
+      return siblingStackOrderZIndex(child) !== null;
     });
     if (!hasExplicitZIndex) {
       return children;
     }
     return children.map(function (child, index) {
-      var zIndex = numericZIndex(child.styles && child.styles.zIndex);
+      var zIndex = siblingStackOrderZIndex(child);
       return {
         child: child,
         index: index,
@@ -1541,12 +2385,195 @@
     });
   }
 
+  function reparentAbsoluteOverlaysIntoStackingHosts(children) {
+    var next;
+    var sourceIndex;
+    var overlay;
+    var overlayIndex;
+    var hostIndex;
+    var host;
+    var graftedOverlay;
+    if (children.length < 2) {
+      return children;
+    }
+
+    next = children.slice();
+    for (sourceIndex = 0; sourceIndex < children.length; sourceIndex += 1) {
+      overlay = children[sourceIndex];
+      if (!isAbsoluteOverlayCandidate(overlay)) {
+        continue;
+      }
+
+      overlayIndex = next.indexOf(overlay);
+      if (overlayIndex < 0) {
+        continue;
+      }
+
+      hostIndex = -1;
+      for (var index = 0; index < next.length; index += 1) {
+        if (next[index] !== overlay && canHostAbsoluteOverlay(next[index], overlay)) {
+          hostIndex = index;
+          break;
+        }
+      }
+      if (hostIndex < 0) {
+        continue;
+      }
+
+      host = next[hostIndex];
+      graftedOverlay = {};
+      Object.keys(overlay).forEach(function (key) {
+        graftedOverlay[key] = overlay[key];
+      });
+      graftedOverlay.rect = relativeModelRect(overlay.absoluteRect, host.absoluteRect);
+      graftedOverlay.layoutPositioning = "ABSOLUTE";
+
+      next[hostIndex] = copyModelWithChildren(host, [graftedOverlay].concat(host.children || []));
+      next.splice(overlayIndex, 1);
+    }
+
+    return next;
+  }
+
+  function copyModelWithChildren(model, children) {
+    var copy = {};
+    Object.keys(model).forEach(function (key) {
+      copy[key] = model[key];
+    });
+    copy.children = children;
+    return copy;
+  }
+
+  function isAbsoluteOverlayCandidate(model) {
+    return normalizeCssKeyword(model.styles && model.styles.position) === "absolute" &&
+      hasUsableBounds(model.absoluteRect);
+  }
+
+  function canHostAbsoluteOverlay(host, overlay) {
+    var hostZIndex;
+    var overlayZIndex;
+    if (host.type !== "FRAME" || !host.autoLayout || !host.autoLayout.applied || !hasModelVisualStyle(host.style)) {
+      return false;
+    }
+    if (!rectContains(host.absoluteRect, overlay.absoluteRect, 1)) {
+      return false;
+    }
+    hostZIndex = stackOrderZIndex(host);
+    overlayZIndex = stackOrderZIndex(overlay);
+    if (overlayZIndex === null) {
+      overlayZIndex = 0;
+    }
+    return hostZIndex !== null && hostZIndex > overlayZIndex;
+  }
+
+  function rectContains(outer, inner, tolerance) {
+    var safeTolerance = tolerance || 0;
+    return inner.x >= outer.x - safeTolerance &&
+      inner.y >= outer.y - safeTolerance &&
+      inner.x + inner.width <= outer.x + outer.width + safeTolerance &&
+      inner.y + inner.height <= outer.y + outer.height + safeTolerance;
+  }
+
+  function stackOrderZIndex(model) {
+    var ownZIndex = numericZIndex(model.styles && model.styles.zIndex);
+    var descendantZIndex = null;
+    var index;
+    var childZIndex;
+    if (ownZIndex !== null) {
+      return ownZIndex;
+    }
+    for (index = 0; index < (model.children || []).length; index += 1) {
+      childZIndex = stackOrderZIndex(model.children[index]);
+      if (childZIndex !== null) {
+        descendantZIndex = descendantZIndex === null
+          ? childZIndex
+          : Math.max(descendantZIndex, childZIndex);
+      }
+    }
+    return descendantZIndex;
+  }
+
+  function siblingStackOrderZIndex(model) {
+    var ownZIndex = numericZIndex(model.styles && model.styles.zIndex);
+    if (ownZIndex !== null) {
+      return ownZIndex;
+    }
+    if (!isNonVisualOverlayWrapper(model)) {
+      return null;
+    }
+    return positionedOverlayDescendantZIndex(model);
+  }
+
   function numericZIndex(value) {
     var normalized = String(value == null ? "" : value).replace(/^\s+|\s+$/g, "");
     if (!/^-?\d+$/.test(normalized)) {
       return null;
     }
     return Number(normalized);
+  }
+
+  function isNonVisualOverlayWrapper(model) {
+    var position;
+    var isStaticLike;
+    var collapsed;
+    var children;
+    var index;
+    var childPosition;
+    if (model.type !== "FRAME" || hasModelVisualStyle(model.style)) {
+      return false;
+    }
+    position = normalizeCssKeyword(model.styles && model.styles.position);
+    isStaticLike = !position || position === "static" || position === "relative";
+    if (!isStaticLike) {
+      return false;
+    }
+    collapsed = model.rect.width <= 1 ||
+      model.rect.height <= 1 ||
+      model.absoluteRect.width <= 1 ||
+      model.absoluteRect.height <= 1;
+    if (collapsed) {
+      return true;
+    }
+    children = model.children || [];
+    if (children.length === 0) {
+      return false;
+    }
+    for (index = 0; index < children.length; index += 1) {
+      childPosition = normalizeCssKeyword(children[index].styles && children[index].styles.position);
+      if (
+        childPosition !== "fixed" &&
+        childPosition !== "absolute" &&
+        !isNonVisualOverlayWrapper(children[index])
+      ) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  function positionedOverlayDescendantZIndex(model) {
+    var result = null;
+    var index;
+    var child;
+    var position;
+    var childZIndex;
+    var descendantZIndex;
+    function include(value) {
+      if (value !== null) {
+        result = result === null ? value : Math.max(result, value);
+      }
+    }
+    for (index = 0; index < (model.children || []).length; index += 1) {
+      child = model.children[index];
+      position = normalizeCssKeyword(child.styles && child.styles.position);
+      childZIndex = (position === "fixed" || position === "absolute")
+        ? numericZIndex(child.styles && child.styles.zIndex)
+        : null;
+      descendantZIndex = positionedOverlayDescendantZIndex(child);
+      include(childZIndex);
+      include(descendantZIndex);
+    }
+    return result;
   }
 
   function isReverseFlexDirection(value) {
@@ -1782,6 +2809,15 @@
     if (isClippedSingleLineText(node, rect, styles)) {
       return "TRUNCATE";
     }
+    if (isCapturedRectClippedExplicitTextBox(node, rect, styles)) {
+      return "TRUNCATE";
+    }
+    if (isOverflowClippedTextBox(node, rect, styles)) {
+      return "TRUNCATE";
+    }
+    if (shouldPreserveExplicitTextBoxWidth(node, rect, styles)) {
+      return "HEIGHT";
+    }
 
     lineHeight = numberFromCss(styles.lineHeight) || numberFromCss(styles.fontSize) * 1.2;
     if (lineHeight > 0 && rect.height > lineHeight * 1.75) {
@@ -1794,9 +2830,177 @@
     return "WIDTH_AND_HEIGHT";
   }
 
+  function inferPaddedBackingTextAutoResize(node, rect) {
+    var styles;
+    var lineHeight;
+
+    if (String(node.textContent || "").indexOf("\n") >= 0) {
+      return "HEIGHT";
+    }
+
+    styles = node.styles || {};
+    if (isClippedSingleLineText(node, rect, styles)) {
+      return "TRUNCATE";
+    }
+    if (isOverflowClippedTextBox(node, rect, styles)) {
+      return "TRUNCATE";
+    }
+
+    lineHeight = numberFromCss(styles.lineHeight) || numberFromCss(styles.fontSize) * 1.2;
+    if (lineHeight > 0 && rect.height > lineHeight * 1.75) {
+      return "HEIGHT";
+    }
+
+    return "WIDTH_AND_HEIGHT";
+  }
+
   function shouldPreserveTallSingleLineHug(node, rect, styles) {
     return (isSyntheticDirectTextNode(node) || isInteractiveSingleLineTextElement(node)) &&
       fitsEstimatedSingleLineText(node, rect, styles);
+  }
+
+  function shouldPreserveTransparentPaddedInteractiveTextFrame(node, rect) {
+    var styles;
+    var padding;
+    var explicitWidth;
+    var explicitHeight;
+    var contentRect;
+    if (
+      hasVisualBoxStyle(node.styles) ||
+      !isInteractiveSingleLineTextElement(node) ||
+      String(node.textContent || "").indexOf("\n") >= 0 ||
+      rect.width <= 0 ||
+      rect.height <= 0
+    ) {
+      return false;
+    }
+
+    styles = node.styles || {};
+    padding = explicitCssPadding(styles);
+    if (!hasPositivePadding(padding)) {
+      return false;
+    }
+
+    explicitWidth = numberFromCss(styles.width);
+    explicitHeight = numberFromCss(styles.height);
+    if (
+      (!(explicitWidth > 0) || Math.abs(explicitWidth - rect.width) > 1.5) &&
+      (!(explicitHeight > 0) || Math.abs(explicitHeight - rect.height) > 1.5)
+    ) {
+      return false;
+    }
+
+    contentRect = contentRectFromPadding(rect, padding);
+    return fitsEstimatedSingleLineText(node, contentRect, styles);
+  }
+
+  function shouldPreserveExplicitTextBoxWidth(node, rect, styles) {
+    var explicitWidth;
+    var fontSize;
+    var padding;
+    var estimatedTextBoxWidth;
+    var tolerance;
+    if (
+      isSyntheticDirectTextNode(node) ||
+      isInteractiveSingleLineTextElement(node) ||
+      rect.width <= 0 ||
+      !String(node.textContent || "").replace(/^\s+|\s+$/g, "")
+    ) {
+      return false;
+    }
+
+    explicitWidth = numberFromCss(styles.width);
+    if (!(explicitWidth > 0) || Math.abs(explicitWidth - rect.width) > 1.5) {
+      return false;
+    }
+
+    fontSize = numberFromCss(styles.fontSize) || 14;
+    padding = numberFromCss(styles.paddingLeft) + numberFromCss(styles.paddingRight);
+    estimatedTextBoxWidth = estimateTextPrimarySize(node.textContent, styles) + Math.max(0, padding);
+    tolerance = Math.max(6, fontSize * 0.5);
+    return rect.width > estimatedTextBoxWidth + tolerance;
+  }
+
+  function isCapturedRectClippedExplicitTextBox(node, rect, styles) {
+    var explicitWidth;
+    var fontSize;
+    var estimatedTextWidth;
+    var tolerance;
+    if (
+      isSyntheticDirectTextNode(node) ||
+      rect.width <= 0 ||
+      !String(node.textContent || "").replace(/^\s+|\s+$/g, "")
+    ) {
+      return false;
+    }
+
+    explicitWidth = numberFromCss(styles.width);
+    if (!(explicitWidth > rect.width + 1.5)) {
+      return false;
+    }
+
+    fontSize = numberFromCss(styles.fontSize) || 14;
+    estimatedTextWidth = estimateTextPrimarySize(node.textContent, styles);
+    tolerance = Math.max(2, fontSize * 0.25);
+    return estimatedTextWidth > rect.width + tolerance;
+  }
+
+  function shouldSuppressTinyClippedText(node, rect) {
+    var styles = node.styles || {};
+    var explicitWidth;
+    var fontSize;
+    var tinyWidth;
+    if (
+      isSyntheticDirectTextNode(node) ||
+      rect.width <= 0 ||
+      !String(node.textContent || "").replace(/^\s+|\s+$/g, "")
+    ) {
+      return false;
+    }
+
+    explicitWidth = numberFromCss(styles.width);
+    fontSize = numberFromCss(styles.fontSize) || 14;
+    tinyWidth = Math.max(4, fontSize * 0.3);
+    return explicitWidth > rect.width + 1.5 &&
+      rect.width <= tinyWidth &&
+      estimateTextPrimarySize(node.textContent, styles) > rect.width + Math.max(2, fontSize * 0.25);
+  }
+
+  function isOverflowClippedTextBox(node, rect, styles) {
+    var explicitHeight;
+    var lineHeight;
+    var estimatedLines;
+    var visibleLines;
+    if (
+      rect.width <= 0 ||
+      rect.height <= 0 ||
+      !String(node.textContent || "").replace(/^\s+|\s+$/g, "") ||
+      !clipsTextOverflow(styles)
+    ) {
+      return false;
+    }
+
+    explicitHeight = numberFromCss(styles.height);
+    if (!(explicitHeight > 0) || Math.abs(explicitHeight - rect.height) > 1.5) {
+      return false;
+    }
+
+    lineHeight = numberFromCss(styles.lineHeight) || numberFromCss(styles.fontSize) * 1.2;
+    if (!(lineHeight > 0) || rect.height <= lineHeight + 1) {
+      return false;
+    }
+
+    estimatedLines = Math.max(1, Math.ceil(estimateTextPrimarySize(node.textContent, styles) / Math.max(1, rect.width)));
+    visibleLines = Math.max(1, Math.floor((rect.height + 0.5) / lineHeight));
+    return estimatedLines >= visibleLines;
+  }
+
+  function clipsTextOverflow(styles) {
+    return clipsOverflowKeyword(styles && styles.overflow) ||
+      clipsOverflowKeyword(styles && styles.overflowX) ||
+      clipsOverflowKeyword(styles && styles.overflowY) ||
+      clipsOverflowShorthand(styles && styles.overflow, "x") ||
+      clipsOverflowShorthand(styles && styles.overflow, "y");
   }
 
   function normalizeTallHugTextGeometry(node, rect, absoluteRect, textAutoResize) {
@@ -1837,7 +3041,11 @@
   }
 
   function shouldNormalizeTallSingleLineHugGeometry(node, rect, styles) {
-    return (isSynthesizedDirectTextNode(node) || isInteractiveSingleLineTextElement(node)) &&
+    return (
+      isSynthesizedDirectTextNode(node) ||
+      isInteractiveSingleLineTextElement(node) ||
+      isCenteredSingleLineTextBox(node, styles)
+    ) &&
       fitsEstimatedSingleLineText(node, rect, styles);
   }
 
@@ -1858,6 +3066,16 @@
       role === "button" ||
       role === "link" ||
       role === "menuitem";
+  }
+
+  function isCenteredSingleLineTextBox(node, styles) {
+    var display = normalizeCssKeyword(styles.display);
+    var textAlign = normalizeCssKeyword(styles.textAlign);
+    var whiteSpace = normalizeCssKeyword(styles.whiteSpace);
+    return textAlign === "center" &&
+      (display === "inline-block" || display === "block" || display === "inline-flex") &&
+      numberFromCss(styles.height) > 0 &&
+      whiteSpace !== "normal";
   }
 
   function fitsEstimatedSingleLineText(node, rect, styles) {
@@ -1911,6 +3129,34 @@
       y: padding.top,
       width: round(Math.max(1, rect.width - padding.left - padding.right)),
       height: round(Math.max(1, rect.height - padding.top - padding.bottom))
+    };
+  }
+
+  function paddedTransparentTextGeometry(node, rect, absoluteRect) {
+    var padding = explicitCssPadding(node.styles);
+    var styles;
+    var contentRect;
+    if (!hasPositivePadding(padding)) {
+      return { rect: rect, absoluteRect: absoluteRect };
+    }
+    styles = node.styles || {};
+    if (shouldPreserveExplicitTextBoxWidth(node, rect, styles)) {
+      return { rect: rect, absoluteRect: absoluteRect };
+    }
+    contentRect = contentRectFromPadding(rect, padding);
+    return {
+      rect: {
+        x: round(rect.x + contentRect.x),
+        y: round(rect.y + contentRect.y),
+        width: contentRect.width,
+        height: contentRect.height
+      },
+      absoluteRect: {
+        x: round(absoluteRect.x + contentRect.x),
+        y: round(absoluteRect.y + contentRect.y),
+        width: contentRect.width,
+        height: contentRect.height
+      }
     };
   }
 
@@ -2018,6 +3264,52 @@
     return parsedGap > 0 ? parsedGap : null;
   }
 
+  function inferPrimaryAxisAlignment(styles, children, layoutMode, parentRect) {
+    var cssAlignment = primaryAxisAlignmentFromCss(styles.justifyContent);
+    if (cssAlignment) {
+      return cssAlignment;
+    }
+    if (shouldInferSpaceBetweenFromGeometry(styles, children, layoutMode, parentRect)) {
+      return "SPACE_BETWEEN";
+    }
+    return undefined;
+  }
+
+  function shouldInferSpaceBetweenFromGeometry(styles, children, layoutMode, parentRect) {
+    var sorted;
+    var explicitGap;
+    var marginGap;
+    var measuredGap;
+    var expectedGap;
+    var minimumDelta = 32;
+    var leadingInset;
+    var trailingInset;
+    if (children.length !== 2) {
+      return false;
+    }
+
+    sorted = sortedByPrimaryAxis(children, layoutMode);
+    explicitGap = explicitSpacing(styles, layoutMode);
+    marginGap = trailingAxisMargin(sorted[0], layoutMode) + leadingAxisMargin(sorted[1], layoutMode);
+    if (explicitGap === null && marginGap <= 0) {
+      return false;
+    }
+
+    measuredGap = primaryAxisGap(sorted[0], sorted[1], layoutMode);
+    expectedGap = explicitGap === null ? 0 : explicitGap;
+    if (
+      measuredGap - expectedGap <= minimumDelta ||
+      measuredGap <= Math.max(expectedGap * 3, expectedGap + minimumDelta)
+    ) {
+      return false;
+    }
+
+    leadingInset = primaryAxisStart(sorted[0].absoluteRect, layoutMode) - primaryAxisStart(parentRect, layoutMode);
+    trailingInset = primaryAxisEnd(parentRect, layoutMode) - primaryAxisEnd(sorted[1].absoluteRect, layoutMode);
+    return approximatelyEqualInset(leadingInset, leadingAxisPadding(styles, layoutMode), 2) &&
+      approximatelyEqualInset(trailingInset, trailingAxisPadding(styles, layoutMode), 2);
+  }
+
   function measuredSpacing(children, layoutMode) {
     var gaps = primaryAxisGaps(children, layoutMode);
     if (gaps.length === 0) {
@@ -2053,29 +3345,57 @@
   }
 
   function primaryAxisGaps(children, layoutMode) {
-    var sorted = children.slice().sort(function (a, b) {
-      return layoutMode === "HORIZONTAL"
-        ? a.absoluteRect.x - b.absoluteRect.x
-        : a.absoluteRect.y - b.absoluteRect.y;
-    });
+    var sorted = sortedByPrimaryAxis(children, layoutMode);
     var gaps = [];
     var index;
-    var previous;
-    var current;
     var gap;
 
     for (index = 1; index < sorted.length; index += 1) {
-      previous = sorted[index - 1].absoluteRect;
-      current = sorted[index].absoluteRect;
-      gap = layoutMode === "HORIZONTAL"
-        ? current.x - (previous.x + previous.width)
-        : current.y - (previous.y + previous.height);
+      gap = primaryAxisGap(sorted[index - 1], sorted[index], layoutMode);
       if (gap >= 0) {
         gaps.push(gap);
       }
     }
 
     return gaps;
+  }
+
+  function sortedByPrimaryAxis(children, layoutMode) {
+    return children.slice().sort(function (a, b) {
+      return primaryAxisStart(a.absoluteRect, layoutMode) - primaryAxisStart(b.absoluteRect, layoutMode);
+    });
+  }
+
+  function primaryAxisGap(previous, current, layoutMode) {
+    return primaryAxisStart(current.absoluteRect, layoutMode) - primaryAxisEnd(previous.absoluteRect, layoutMode);
+  }
+
+  function primaryAxisStart(rect, layoutMode) {
+    return layoutMode === "HORIZONTAL" ? rect.x : rect.y;
+  }
+
+  function primaryAxisEnd(rect, layoutMode) {
+    return layoutMode === "HORIZONTAL" ? rect.x + rect.width : rect.y + rect.height;
+  }
+
+  function leadingAxisPadding(styles, layoutMode) {
+    return numberFromCss(layoutMode === "HORIZONTAL" ? styles.paddingLeft : styles.paddingTop);
+  }
+
+  function trailingAxisPadding(styles, layoutMode) {
+    return numberFromCss(layoutMode === "HORIZONTAL" ? styles.paddingRight : styles.paddingBottom);
+  }
+
+  function leadingAxisMargin(model, layoutMode) {
+    return numberFromCss(layoutMode === "HORIZONTAL" ? model.styles && model.styles.marginLeft : model.styles && model.styles.marginTop);
+  }
+
+  function trailingAxisMargin(model, layoutMode) {
+    return numberFromCss(layoutMode === "HORIZONTAL" ? model.styles && model.styles.marginRight : model.styles && model.styles.marginBottom);
+  }
+
+  function approximatelyEqualInset(value, expected, tolerance) {
+    return Math.abs(value - expected) <= tolerance;
   }
 
   function inferPadding(parentRect, children) {
@@ -2135,16 +3455,13 @@
 
   function extractVisualStyle(node) {
     var styles = node.styles || {};
-    var stroke = cssStrokeFromStyles(styles);
+    var borderSides = nativeBorderStrokeSidesFromStyles(styles);
+    var stroke = borderSides.length > 0 ? strokeFromBorderSides(borderSides) : cssStrokeFromStyles(styles);
     return {
       fills: cssFillsFromStyles(styles),
       strokes: stroke ? [stroke] : [],
-      cornerRadius: Math.max(
-        numberFromCss(styles.borderTopLeftRadius),
-        numberFromCss(styles.borderTopRightRadius),
-        numberFromCss(styles.borderBottomRightRadius),
-        numberFromCss(styles.borderBottomLeftRadius)
-      ),
+      borderSides: borderSides,
+      cornerRadius: cornerRadiusFromStyles(styles),
       effects: visibleShadow(styles.boxShadow) ? [{ type: "shadow", value: styles.boxShadow }] : [],
       objectFit: styles.objectFit || "",
       transform: styles.transform || "",
@@ -2155,9 +3472,40 @@
         fontStyle: styles.fontStyle || "",
         fontWeight: styles.fontWeight || "",
         lineHeight: styles.lineHeight || "",
-        color: styles.color || ""
+        color: textColorFromStyles(styles),
+        textAlign: styles.textAlign || "",
+        fills: cssTextFillsFromStyles(styles)
       } : null
     };
+  }
+
+  function applyTextOverlayBackdrop(model, node, context) {
+    if (!shouldApplyTextOverlayBackdrop(model, node, context)) {
+      return;
+    }
+    model.style = Object.assign({}, model.style, {
+      fills: [context.backdropColor]
+    });
+  }
+
+  function shouldApplyTextOverlayBackdrop(model, node, context) {
+    return Boolean(
+      context.clippedAncestor &&
+      visibleColor(context.backdropColor) &&
+      model.style &&
+      model.style.fills &&
+      model.style.fills.length === 0 &&
+      node.textContent &&
+      normalizeCssKeyword(node.styles && node.styles.position) === "absolute" &&
+      hasEllipsisPseudoChild(node)
+    );
+  }
+
+  function hasEllipsisPseudoChild(node) {
+    return (node.children || []).some(function (child) {
+      return child.nodeType === "pseudo" &&
+        String(child.textContent || "").replace(/^\s+|\s+$/g, "") === "." + "." + ".";
+    });
   }
 
   function layoutLayerNameForNode(node, type) {
@@ -2211,9 +3559,9 @@
   function hasVisualBoxStyle(styles) {
     var safeStyles = styles || {};
     return Boolean(
-      visibleColor(safeStyles.backgroundColor) ||
-      visibleCssLinearGradient(safeStyles.backgroundImage) ||
+      cssFillsFromStyles(safeStyles).length > 0 ||
       Boolean(cssStrokeFromStyles(safeStyles)) ||
+      nativeBorderStrokeSidesFromStyles(safeStyles).length > 0 ||
       borderDecorationSides(safeStyles).length > 0 ||
       visibleShadow(safeStyles.boxShadow)
     );
@@ -2273,6 +3621,9 @@
   function cssFillsFromStyles(styles) {
     var safeStyles = styles || {};
     var fills = [];
+    if (isBackgroundClippedToText(safeStyles)) {
+      return fills;
+    }
     if (visibleColor(safeStyles.backgroundColor)) {
       fills.push(safeStyles.backgroundColor);
     }
@@ -2280,6 +3631,37 @@
       fills.push(safeStyles.backgroundImage);
     }
     return fills;
+  }
+
+  function cssTextFillsFromStyles(styles) {
+    var safeStyles = styles || {};
+    return isBackgroundClippedToText(safeStyles) && visibleCssLinearGradient(safeStyles.backgroundImage)
+      ? [safeStyles.backgroundImage]
+      : [];
+  }
+
+  function isBackgroundClippedToText(styles) {
+    var safeStyles = styles || {};
+    return cssClipIncludesText(safeStyles.backgroundClip) ||
+      cssClipIncludesText(safeStyles.webkitBackgroundClip);
+  }
+
+  function cssClipIncludesText(value) {
+    return String(value || "")
+      .toLowerCase()
+      .split(",")
+      .map(function (item) {
+        return item.replace(/^\s+|\s+$/g, "");
+      })
+      .indexOf("text") >= 0;
+  }
+
+  function textColorFromStyles(styles) {
+    var safeStyles = styles || {};
+    if (visibleColor(safeStyles.webkitTextFillColor)) {
+      return safeStyles.webkitTextFillColor;
+    }
+    return safeStyles.color || "";
   }
 
   function visibleCssLinearGradient(value) {
@@ -2301,7 +3683,11 @@
 
   function borderDecorationSides(styles) {
     var sides = visibleBorderSides(styles || {});
-    return uniformBorderStrokeFromSides(sides) || legacyTopBorderStroke(styles || {}, sides) ? [] : sides;
+    return uniformBorderStrokeFromSides(sides) ||
+      legacyTopBorderStroke(styles || {}, sides) ||
+      nativeBorderStrokeSidesFromStyles(styles || {}, sides).length > 0
+      ? []
+      : sides;
   }
 
   function uniformBorderStroke(styles) {
@@ -2333,6 +3719,58 @@
     addVisibleBorderSide(sides, "bottom", styles.borderBottomWidth, styles.borderBottomColor, styles.borderBottomStyle);
     addVisibleBorderSide(sides, "left", styles.borderLeftWidth, styles.borderLeftColor, styles.borderLeftStyle);
     return sides;
+  }
+
+  function nativeBorderStrokeSidesFromStyles(styles, sides) {
+    var safeStyles = styles || {};
+    var safeSides = sides || visibleBorderSides(safeStyles);
+    if (
+      safeSides.length === 0 ||
+      uniformBorderStrokeFromSides(safeSides) ||
+      legacyTopBorderStroke(safeStyles, safeSides) ||
+      cornerRadiusFromStyles(safeStyles) <= 0 ||
+      !sameBorderSidePaint(safeSides)
+    ) {
+      return [];
+    }
+    return safeSides;
+  }
+
+  function sameBorderSidePaint(sides) {
+    var first = sides[0];
+    var index;
+    if (!first) {
+      return false;
+    }
+    for (index = 1; index < sides.length; index += 1) {
+      if (sides[index].color !== first.color) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  function strokeFromBorderSides(sides) {
+    var first = sides[0];
+    var width = 0;
+    var index;
+    for (index = 0; index < sides.length; index += 1) {
+      width = Math.max(width, sides[index].width);
+    }
+    return {
+      color: first.color,
+      width: width
+    };
+  }
+
+  function cornerRadiusFromStyles(styles) {
+    var safeStyles = styles || {};
+    return Math.max(
+      numberFromCss(safeStyles.borderTopLeftRadius),
+      numberFromCss(safeStyles.borderTopRightRadius),
+      numberFromCss(safeStyles.borderBottomRightRadius),
+      numberFromCss(safeStyles.borderBottomLeftRadius)
+    );
   }
 
   function addVisibleBorderSide(sides, side, width, color, style) {
@@ -2425,9 +3863,7 @@
       node.textContent ||
       node.assetRef ||
       node.fallbackRef ||
-      node.tagName === "img" ||
-      parseCssColor(styles.backgroundColor) ||
-      numberFromCss(styles.borderTopWidth) > 0
+      hasVisualBoxStyle(styles)
     );
   }
 
@@ -2463,7 +3899,16 @@
   }
 
   function fillPaintArray(styles) {
-    var fills = cssFillsFromStyles(styles || {});
+    var fills = Array.isArray(styles && styles.fills)
+      ? styles.fills
+      : cssFillsFromStyles(styles || {});
+    return fills.map(function (fill) {
+      return cssFillToPaint(fill);
+    }).filter(Boolean);
+  }
+
+  function textFillPaintArray(styles) {
+    var fills = cssTextFillsFromStyles(styles || {});
     return fills.map(function (fill) {
       return cssFillToPaint(fill);
     }).filter(Boolean);
@@ -2741,6 +4186,7 @@
     var view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     var eocdOffset = findEndOfCentralDirectory(bytes);
     var entryCount;
+    var centralSize;
     var centralOffset;
     var files = {};
     var index;
@@ -2750,46 +4196,120 @@
     }
 
     entryCount = view.getUint16(eocdOffset + 10, true);
+    centralSize = view.getUint32(eocdOffset + 12, true);
     centralOffset = view.getUint32(eocdOffset + 16, true);
+    requireZipRange(centralOffset, centralSize, bytes.length, "ZIP central directory is out of bounds", "archive");
 
     for (index = 0; index < entryCount; index += 1) {
+      var flags;
+      var method;
+      var expectedCrc;
       var compressedSize;
+      var uncompressedSize;
       var nameLength;
       var extraLength;
       var commentLength;
       var localOffset;
       var nameStart;
       var name;
+      var reason;
+      var localFlags;
+      var localMethod;
       var localNameLength;
       var localExtraLength;
       var dataStart;
+      var fileBytes;
 
+      requireZipRange(centralOffset, 46, bytes.length, "ZIP central directory entry is truncated", "archive");
       if (view.getUint32(centralOffset, true) !== 0x02014b50) {
         throw importError("invalid-package", "Invalid ZIP central directory header");
       }
-      if (view.getUint16(centralOffset + 10, true) !== 0) {
+      flags = view.getUint16(centralOffset + 8, true);
+      method = view.getUint16(centralOffset + 10, true);
+      if ((flags & ~SUPPORTED_ZIP_FLAGS) !== 0) {
+        throw importError("invalid-package", "Unsupported ZIP entry flags");
+      }
+      if (method !== 0) {
         throw importError("invalid-package", "Only stored ZIP entries are supported");
       }
 
+      expectedCrc = view.getUint32(centralOffset + 16, true);
       compressedSize = view.getUint32(centralOffset + 20, true);
+      uncompressedSize = view.getUint32(centralOffset + 24, true);
+      if (compressedSize !== uncompressedSize) {
+        throw importError("invalid-package", "Stored ZIP entry size mismatch");
+      }
       nameLength = view.getUint16(centralOffset + 28, true);
       extraLength = view.getUint16(centralOffset + 30, true);
       commentLength = view.getUint16(centralOffset + 32, true);
       localOffset = view.getUint32(centralOffset + 42, true);
       nameStart = centralOffset + 46;
+      requireZipRange(nameStart, nameLength + extraLength + commentLength, bytes.length, "ZIP central directory entry is truncated", "archive");
       name = decodeUtf8(copyBytes(bytes, nameStart, nameStart + nameLength));
+      reason = archiveFileNameError(name);
+      if (reason) {
+        throw importError("invalid-package", reason);
+      }
+      if (Object.prototype.hasOwnProperty.call(files, name)) {
+        throw importError("invalid-package", "Duplicate ZIP entry " + name);
+      }
 
+      requireZipRange(localOffset, 30, bytes.length, "ZIP local file header is out of bounds", name);
       if (view.getUint32(localOffset, true) !== 0x04034b50) {
         throw importError("invalid-package", "Invalid ZIP local file header");
       }
 
+      localFlags = view.getUint16(localOffset + 6, true);
+      localMethod = view.getUint16(localOffset + 8, true);
       localNameLength = view.getUint16(localOffset + 26, true);
       localExtraLength = view.getUint16(localOffset + 28, true);
+      if ((localFlags & ~SUPPORTED_ZIP_FLAGS) !== 0 || localMethod !== method) {
+        throw importError("invalid-package", "ZIP local file header does not match central directory");
+      }
+      requireZipRange(localOffset + 30, localNameLength + localExtraLength, bytes.length, "ZIP local file header is truncated", name);
       dataStart = localOffset + 30 + localNameLength + localExtraLength;
-      files[name] = copyBytes(bytes, dataStart, dataStart + compressedSize);
+      requireZipRange(dataStart, compressedSize, bytes.length, "ZIP entry data is out of bounds", name);
+      fileBytes = copyBytes(bytes, dataStart, dataStart + compressedSize);
+      if (crc32(fileBytes) !== expectedCrc) {
+        throw importError("invalid-package", "ZIP entry checksum mismatch");
+      }
+      files[name] = fileBytes;
       centralOffset = nameStart + nameLength + extraLength + commentLength;
     }
     return files;
+  }
+
+  function archiveFileNameError(name) {
+    var segments;
+    var index;
+    if (typeof name !== "string" || name.length === 0) {
+      return "file name must be a non-empty string";
+    }
+    if (name.length > MAX_ARCHIVE_FILE_NAME_LENGTH) {
+      return "file name is too long";
+    }
+    if (/[\u0000-\u001f\u007f]/.test(name)) {
+      return "file name must not contain control characters";
+    }
+    if (name.indexOf("\\") >= 0 || name.indexOf(":") >= 0 || name.charAt(0) === "/" || /^[a-z]:\//i.test(name)) {
+      return "file name must be a portable relative path";
+    }
+    if (name.charAt(name.length - 1) === "/") {
+      return "file name must not be a directory";
+    }
+    segments = name.split("/");
+    for (index = 0; index < segments.length; index += 1) {
+      if (segments[index] === "" || segments[index] === "." || segments[index] === "..") {
+        return "file name must not contain empty, current, or parent directory segments";
+      }
+    }
+    return "";
+  }
+
+  function requireZipRange(start, length, total, message, path) {
+    if (!isFinite(start) || !isFinite(length) || start < 0 || length < 0 || start > total || start + length > total) {
+      throw importError("invalid-package", message || ("Invalid ZIP entry " + (path || "archive")));
+    }
   }
 
   function findEndOfCentralDirectory(bytes) {
@@ -2800,6 +4320,35 @@
       }
     }
     return -1;
+  }
+
+  var crcTable;
+
+  function crc32(bytes) {
+    var crc = 0xffffffff;
+    var index;
+    if (!crcTable) {
+      crcTable = createCrcTable();
+    }
+    for (index = 0; index < bytes.length; index += 1) {
+      crc = (crc >>> 8) ^ crcTable[(crc ^ bytes[index]) & 0xff];
+    }
+    return (crc ^ 0xffffffff) >>> 0;
+  }
+
+  function createCrcTable() {
+    var table = new Uint32Array(256);
+    var index;
+    var bit;
+    var value;
+    for (index = 0; index < 256; index += 1) {
+      value = index;
+      for (bit = 0; bit < 8; bit += 1) {
+        value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+      }
+      table[index] = value >>> 0;
+    }
+    return table;
   }
 
   function toUint8Array(value) {

@@ -6,6 +6,29 @@ import { packFigcapture } from "../../../packages/capture-schema/dist/index.js";
 import { createValidPackage } from "../../../packages/capture-schema/fixtures/valid-package.mjs";
 import { describePluginRuntime } from "../dist/code-module.js";
 
+function replaceAsciiAll(bytes, from, to) {
+  assert.equal(from.length, to.length);
+  const result = new Uint8Array(bytes);
+  const fromBytes = new TextEncoder().encode(from);
+  const toBytes = new TextEncoder().encode(to);
+
+  for (let index = 0; index <= result.length - fromBytes.length; index += 1) {
+    let matches = true;
+    for (let offset = 0; offset < fromBytes.length; offset += 1) {
+      if (result[index + offset] !== fromBytes[offset]) {
+        matches = false;
+        break;
+      }
+    }
+    if (matches) {
+      result.set(toBytes, index);
+      index += fromBytes.length - 1;
+    }
+  }
+
+  return result;
+}
+
 test("figma plugin shell defines the default output frames", () => {
   assert.deepEqual(describePluginRuntime().outputFrames, [
     "Source Screenshot",
@@ -16,6 +39,8 @@ test("figma plugin shell defines the default output frames", () => {
 test("figma plugin runtime build uses classic scripts for manual loading", async () => {
   const main = await readFile("apps/figma-plugin/dist/code.js", "utf8");
   const ui = await readFile("apps/figma-plugin/dist/ui.html", "utf8");
+  const manifest = JSON.parse(await readFile("apps/figma-plugin/dist/manifest.json", "utf8"));
+  const pluginPackage = JSON.parse(await readFile("apps/figma-plugin/package.json", "utf8"));
 
   assert.equal(main.includes("import "), false);
   assert.equal(main.includes("export "), false);
@@ -27,7 +52,1316 @@ test("figma plugin runtime build uses classic scripts for manual loading", async
   assert.equal(main.includes("Uint8Array.from"), false);
   assert.equal(ui.includes("type=\"module\""), false);
   assert.equal(ui.includes("src=\"ui.js\""), false);
+  assert.equal(ui.includes("__PLUGIN_VERSION__"), false);
+  assert(ui.includes(`v${pluginPackage.version}`));
+  assert.equal(manifest.name, `Production UI Import v${pluginPackage.version}`);
   assert(ui.includes("IMPORT_PACKAGE"));
+});
+
+test("classic Figma runtime rejects unsafe archive entry names", async () => {
+  const main = await readFile("apps/figma-plugin/dist/code.js", "utf8");
+  const posted = [];
+  const figma = {
+    currentPage: {
+      children: [],
+      appendChild(child) {
+        this.children.push(child);
+      }
+    },
+    ui: {
+      onmessage: null,
+      postMessage(message) {
+        posted.push(message);
+      }
+    },
+    showUI() {},
+    createFrame() {
+      throw new Error("Import should stop before rendering");
+    }
+  };
+
+  vm.runInNewContext(main, {
+    figma,
+    Uint8Array,
+    Uint32Array,
+    ArrayBuffer,
+    DataView,
+    Error,
+    JSON,
+    Math,
+    Number,
+    Object,
+    Promise,
+    String,
+    Boolean,
+    Array,
+    isFinite,
+    parseFloat
+  });
+  await figma.ui.onmessage({
+    type: "IMPORT_PACKAGE",
+    filename: "unsafe.figcapture",
+    bytes: replaceAsciiAll(packFigcapture(createValidPackage()), "manifest.json", "../evil.jsonx")
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(posted.length, 1);
+  assert.equal(posted[0].type, "IMPORT_ERROR");
+  assert.equal(posted[0].error.category, "invalid-package");
+  assert.match(posted[0].error.message, /parent directory/);
+  assert.equal(figma.currentPage.children.length, 0);
+});
+
+test("classic Figma runtime omits transparent viewport-clipped table spacers", async () => {
+  const main = await readFile("apps/figma-plugin/dist/code.js", "utf8");
+  const posted = [];
+  const createdNodes = [];
+
+  function createNode(type) {
+    const node = {
+      type,
+      name: "",
+      children: [],
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0,
+      fills: [],
+      strokes: [],
+      pluginData: {},
+      resize(width, height) {
+        this.width = width;
+        this.height = height;
+      },
+      appendChild(child) {
+        this.children.push(child);
+      },
+      setPluginData(key, value) {
+        this.pluginData[key] = value;
+      }
+    };
+    createdNodes.push(node);
+    return node;
+  }
+
+  const figma = {
+    currentPage: {
+      children: [],
+      appendChild(child) {
+        this.children.push(child);
+      }
+    },
+    ui: {
+      onmessage: null,
+      postMessage(message) {
+        posted.push(message);
+      }
+    },
+    showUI() {},
+    createFrame() {
+      return createNode("FRAME");
+    },
+    createRectangle() {
+      return createNode("RECTANGLE");
+    },
+    createText() {
+      return createNode("TEXT");
+    },
+    createImage(bytes) {
+      return {
+        hash: `hash-${bytes.length}`
+      };
+    },
+    async loadFontAsync() {}
+  };
+  const basePackage = createValidPackage();
+  const packageData = createValidPackage({
+    manifest: {
+      ...basePackage.manifest,
+      viewportWidth: 390,
+      viewportHeight: 844
+    },
+    capture: {
+      ...basePackage.capture,
+      root: {
+        id: "node-root",
+        sourceNodeId: "dom-root",
+        nodeType: "element",
+        tagName: "main",
+        rect: { x: 0, y: 0, width: 390, height: 844 },
+        styles: {},
+        attributes: {},
+        children: [
+          {
+            id: "node-table-wrapper",
+            sourceNodeId: "dom-table-wrapper",
+            nodeType: "element",
+            tagName: "div",
+            rect: { x: 16, y: 543.75, width: 358, height: 55 },
+            styles: {
+              display: "block",
+              width: "358px",
+              height: "55px",
+              overflow: "auto hidden",
+              overflowX: "auto",
+              overflowY: "hidden"
+            },
+            attributes: {},
+            children: [{
+              id: "node-table",
+              sourceNodeId: "dom-table",
+              nodeType: "element",
+              tagName: "table",
+              rect: { x: 16, y: 543.75, width: 374, height: 55 },
+              styles: {
+                display: "table",
+                width: "900px",
+                height: "55px"
+              },
+              attributes: {},
+              children: [{
+                id: "node-row",
+                sourceNodeId: "dom-row",
+                nodeType: "element",
+                tagName: "tr",
+                rect: { x: 16, y: 543.75, width: 374, height: 55 },
+                styles: {
+                  display: "flex",
+                  width: "900px",
+                  height: "55px"
+                },
+                attributes: {},
+                children: [
+                  {
+                    id: "node-rank-heading",
+                    sourceNodeId: "dom-rank-heading",
+                    nodeType: "element",
+                    tagName: "th",
+                    textContent: "排名",
+                    rect: { x: 16, y: 543.75, width: 45, height: 55 },
+                    styles: {
+                      display: "flex",
+                      width: "45px",
+                      height: "55px",
+                      backgroundColor: "rgb(240, 240, 240)",
+                      fontSize: "14px",
+                      lineHeight: "21px"
+                    },
+                    attributes: {},
+                    children: []
+                  },
+                  {
+                    id: "node-name-heading",
+                    sourceNodeId: "dom-name-heading",
+                    nodeType: "element",
+                    tagName: "th",
+                    textContent: "基金名稱",
+                    rect: { x: 61, y: 543.75, width: 150, height: 55 },
+                    styles: {
+                      display: "flex",
+                      width: "150px",
+                      height: "55px",
+                      backgroundColor: "rgb(240, 240, 240)",
+                      fontSize: "14px",
+                      lineHeight: "21px"
+                    },
+                    attributes: {},
+                    children: []
+                  },
+                  {
+                    id: "node-hidden-nav-heading",
+                    sourceNodeId: "dom-hidden-nav-heading",
+                    nodeType: "element",
+                    tagName: "th",
+                    rect: { x: 376, y: 543.75, width: 14, height: 55 },
+                    styles: {
+                      display: "flex",
+                      width: "90px",
+                      height: "55px",
+                      backgroundColor: "rgba(0, 0, 0, 0)"
+                    },
+                    attributes: {},
+                    children: []
+                  },
+                  {
+                    id: "node-return-heading",
+                    sourceNodeId: "dom-return-heading",
+                    nodeType: "element",
+                    tagName: "th",
+                    rect: { x: 211, y: 543.75, width: 165, height: 55 },
+                    styles: {
+                      display: "flex",
+                      width: "165px",
+                      height: "55px"
+                    },
+                    attributes: {},
+                    children: [{
+                      id: "node-return-heading-text",
+                      sourceNodeId: "dom-return-heading-text",
+                      nodeType: "text",
+                      tagName: "#text",
+                      textContent: "1年",
+                      rect: { x: 348.33, y: 560.75, width: 19.67, height: 21 },
+                      styles: {
+                        fontSize: "14px",
+                        lineHeight: "21px"
+                      },
+                      attributes: {},
+                      children: []
+                    }]
+                  }
+                ]
+              }]
+            }]
+          }
+        ]
+      }
+    }
+  });
+
+  vm.runInNewContext(main, {
+    figma,
+    Uint8Array,
+    Uint32Array,
+    ArrayBuffer,
+    DataView,
+    Error,
+    JSON,
+    Math,
+    Number,
+    Object,
+    Promise,
+    String,
+    Boolean,
+    Array,
+    isFinite,
+    parseFloat
+  });
+  await figma.ui.onmessage({
+    type: "IMPORT_PACKAGE",
+    filename: "table.figcapture",
+    bytes: packFigcapture(packageData)
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const nestedNodes = flattenNodes(figma.currentPage.children);
+  const hiddenSpacer = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-hidden-nav-heading");
+  const rowFrame = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-row");
+  const returnHeading = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-return-heading");
+
+  assert.equal(posted.length, 1);
+  assert.equal(posted[0].type, "IMPORT_SUCCESS");
+  assert.equal(hiddenSpacer, undefined);
+  assert(rowFrame);
+  assert.deepEqual(rowFrame.children.map((node) => node.pluginData.sourceNodeId), [
+    "dom-rank-heading",
+    "dom-name-heading",
+    "dom-return-heading"
+  ]);
+  assert(returnHeading);
+  assert.equal(returnHeading.x, 195);
+});
+
+test("classic Figma runtime keeps rounded partial borders as side strokes", async () => {
+  const main = await readFile("apps/figma-plugin/dist/code.js", "utf8");
+  const posted = [];
+  const createdNodes = [];
+
+  function createNode(type) {
+    const node = {
+      type,
+      name: "",
+      children: [],
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0,
+      fills: [],
+      strokes: [],
+      pluginData: {},
+      resize(width, height) {
+        this.width = width;
+        this.height = height;
+      },
+      appendChild(child) {
+        this.children.push(child);
+      },
+      setPluginData(key, value) {
+        this.pluginData[key] = value;
+      }
+    };
+    createdNodes.push(node);
+    return node;
+  }
+
+  const figma = {
+    currentPage: {
+      children: [],
+      appendChild(child) {
+        this.children.push(child);
+      }
+    },
+    ui: {
+      onmessage: null,
+      postMessage(message) {
+        posted.push(message);
+      }
+    },
+    showUI() {},
+    createFrame() {
+      return createNode("FRAME");
+    },
+    createRectangle() {
+      return createNode("RECTANGLE");
+    },
+    createText() {
+      return createNode("TEXT");
+    },
+    createImage(bytes) {
+      return {
+        hash: `hash-${bytes.length}`
+      };
+    },
+    async loadFontAsync() {}
+  };
+  const basePackage = createValidPackage();
+  const packageData = createValidPackage({
+    manifest: {
+      ...basePackage.manifest,
+      viewportWidth: 390,
+      viewportHeight: 120
+    },
+    capture: {
+      ...basePackage.capture,
+      root: {
+        id: "node-root",
+        sourceNodeId: "dom-root",
+        nodeType: "element",
+        tagName: "main",
+        rect: { x: 0, y: 0, width: 390, height: 120 },
+        styles: {},
+        attributes: {},
+        children: [{
+          id: "node-more-button",
+          sourceNodeId: "dom-more-button",
+          nodeType: "element",
+          tagName: "button",
+          textContent: "更多",
+          rect: { x: 322.93, y: 60, width: 67.07, height: 48 },
+          styles: {
+            display: "flex",
+            width: "67.0703px",
+            height: "48px",
+            paddingLeft: "8px",
+            paddingRight: "8px",
+            borderTopWidth: "1px",
+            borderTopStyle: "solid",
+            borderTopColor: "rgb(229, 229, 229)",
+            borderLeftWidth: "1px",
+            borderLeftStyle: "solid",
+            borderLeftColor: "rgb(229, 229, 229)",
+            borderTopLeftRadius: "100px",
+            borderTopRightRadius: "4px",
+            borderBottomRightRadius: "4px",
+            borderBottomLeftRadius: "100px",
+            fontSize: "16px",
+            lineHeight: "24px"
+          },
+          attributes: { type: "button" },
+          children: []
+        }]
+      }
+    }
+  });
+
+  vm.runInNewContext(main, {
+    figma,
+    Uint8Array,
+    Uint32Array,
+    ArrayBuffer,
+    DataView,
+    Error,
+    JSON,
+    Math,
+    Number,
+    Object,
+    Promise,
+    String,
+    Boolean,
+    Array,
+    isFinite,
+    parseFloat
+  });
+  await figma.ui.onmessage({
+    type: "IMPORT_PACKAGE",
+    filename: "rounded-border.figcapture",
+    bytes: packFigcapture(packageData)
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const nestedNodes = flattenNodes(figma.currentPage.children);
+  const button = nestedNodes.find((node) => node.type === "FRAME" && node.pluginData.sourceNodeId === "dom-more-button");
+
+  assert.equal(posted.length, 1);
+  assert.equal(posted[0].type, "IMPORT_SUCCESS");
+  assert(button);
+  assert.equal(button.cornerRadius, 100);
+  assert.equal(button.strokeAlign, "INSIDE");
+  assert.equal(button.strokeTopWeight, 1);
+  assert.equal(button.strokeRightWeight, 0);
+  assert.equal(button.strokeBottomWeight, 0);
+  assert.equal(button.strokeLeftWeight, 1);
+  assert.equal(button.children.some((node) => /^Border \//.test(node.name)), false);
+});
+
+test("classic Figma runtime maps browser-ordered CSS box-shadow values to effects", async () => {
+  const main = await readFile("apps/figma-plugin/dist/code.js", "utf8");
+  const posted = [];
+  const createdNodes = [];
+
+  function createNode(type) {
+    const node = {
+      type,
+      name: "",
+      children: [],
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0,
+      fills: [],
+      strokes: [],
+      effects: [],
+      pluginData: {},
+      resize(width, height) {
+        this.width = width;
+        this.height = height;
+      },
+      appendChild(child) {
+        this.children.push(child);
+      },
+      setPluginData(key, value) {
+        this.pluginData[key] = value;
+      }
+    };
+    createdNodes.push(node);
+    return node;
+  }
+
+  const figma = {
+    currentPage: {
+      children: [],
+      appendChild(child) {
+        this.children.push(child);
+      }
+    },
+    ui: {
+      onmessage: null,
+      postMessage(message) {
+        posted.push(message);
+      }
+    },
+    showUI() {},
+    createFrame() {
+      return createNode("FRAME");
+    },
+    createRectangle() {
+      return createNode("RECTANGLE");
+    },
+    createText() {
+      return createNode("TEXT");
+    },
+    createImage(bytes) {
+      return { hash: `hash-${bytes.length}` };
+    },
+    async loadFontAsync() {}
+  };
+  const basePackage = createValidPackage();
+  const packageData = {
+    ...basePackage,
+    capture: {
+      ...basePackage.capture,
+      root: {
+        id: "node-root",
+        sourceNodeId: "dom-root",
+        nodeType: "element",
+        tagName: "main",
+        rect: { x: 0, y: 0, width: 700, height: 560 },
+        styles: {},
+        attributes: {},
+        children: [{
+          id: "node-chat-panel",
+          sourceNodeId: "dom-chat-panel",
+          nodeType: "element",
+          tagName: "div",
+          rect: { x: 40, y: 20, width: 601, height: 520 },
+          styles: {
+            borderTopLeftRadius: "15px",
+            borderTopRightRadius: "15px",
+            borderBottomRightRadius: "15px",
+            borderBottomLeftRadius: "15px",
+            boxShadow: "rgba(0, 0, 0, 0.2) 0px 4px 36px 0px"
+          },
+          attributes: { class: "chat__area" },
+          children: []
+        }]
+      }
+    }
+  };
+
+  vm.runInNewContext(main, {
+    figma,
+    Uint8Array,
+    Uint32Array,
+    ArrayBuffer,
+    DataView,
+    Error,
+    JSON,
+    Math,
+    Number,
+    Object,
+    Promise,
+    String,
+    Boolean,
+    Array,
+    isFinite,
+    parseFloat
+  });
+  await figma.ui.onmessage({
+    type: "IMPORT_PACKAGE",
+    filename: "shadow.figcapture",
+    bytes: packFigcapture(packageData)
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const panel = flattenNodes(figma.currentPage.children)
+    .find((node) => node.pluginData.sourceNodeId === "dom-chat-panel");
+
+  assert.equal(posted[0].type, "IMPORT_SUCCESS");
+  assert(panel);
+  assert.deepEqual(JSON.parse(JSON.stringify(panel.effects)), [{
+    type: "DROP_SHADOW",
+    color: { r: 0, g: 0, b: 0, a: 0.2 },
+    offset: { x: 0, y: 4 },
+    radius: 36,
+    spread: 0,
+    visible: true,
+    blendMode: "NORMAL"
+  }]);
+});
+
+test("classic Figma runtime places transparent padded emoji text in the content box", async () => {
+  const main = await readFile("apps/figma-plugin/dist/code.js", "utf8");
+  const posted = [];
+  const createdNodes = [];
+
+  function createNode(type) {
+    const node = {
+      type,
+      name: "",
+      children: [],
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0,
+      fills: [],
+      strokes: [],
+      effects: [],
+      strokeWeight: 0,
+      cornerRadius: 0,
+      clipsContent: false,
+      layoutMode: "",
+      primaryAxisSizingMode: "",
+      counterAxisSizingMode: "",
+      primaryAxisAlignItems: "",
+      counterAxisAlignItems: "",
+      itemSpacing: 0,
+      paddingLeft: 0,
+      paddingRight: 0,
+      paddingTop: 0,
+      paddingBottom: 0,
+      fontName: null,
+      characters: "",
+      fontSize: 0,
+      textAutoResize: "",
+      layoutSizingHorizontal: "",
+      layoutSizingVertical: "",
+      layoutGrow: 0,
+      lineHeight: null,
+      pluginData: {},
+      resize(width, height) {
+        this.width = width;
+        this.height = height;
+      },
+      appendChild(child) {
+        this.children.push(child);
+      },
+      setPluginData(key, value) {
+        this.pluginData[key] = value;
+      }
+    };
+    createdNodes.push(node);
+    return node;
+  }
+
+  const figma = {
+    currentPage: {
+      children: [],
+      appendChild(child) {
+        this.children.push(child);
+      }
+    },
+    ui: {
+      onmessage: null,
+      postMessage(message) {
+        posted.push(message);
+      }
+    },
+    showUI() {},
+    createFrame() {
+      return createNode("FRAME");
+    },
+    createRectangle() {
+      return createNode("RECTANGLE");
+    },
+    createText() {
+      return createNode("TEXT");
+    },
+    createImage(bytes) {
+      return { hash: `hash-${bytes.length}` };
+    },
+    async loadFontAsync() {}
+  };
+  const basePackage = createValidPackage();
+  const packageData = {
+    ...basePackage,
+    manifest: {
+      ...basePackage.manifest,
+      viewportWidth: 100,
+      viewportHeight: 80
+    },
+    capture: {
+      ...basePackage.capture,
+      root: {
+        id: "node-root",
+        sourceNodeId: "dom-root",
+        nodeType: "element",
+        tagName: "main",
+        rect: { x: 0, y: 0, width: 100, height: 80 },
+        styles: {},
+        attributes: {},
+        children: [{
+          id: "node-chat-bubble",
+          sourceNodeId: "dom-chat-bubble",
+          nodeType: "element",
+          tagName: "div",
+          rect: { x: 10, y: 12, width: 54, height: 39 },
+          styles: {
+            position: "relative",
+            width: "54px",
+            height: "39px",
+            backgroundColor: "rgb(240, 240, 240)",
+            borderTopLeftRadius: "19px",
+            borderTopRightRadius: "19px",
+            borderBottomRightRadius: "19px",
+            borderBottomLeftRadius: "19px"
+          },
+          attributes: { class: "message__text message__text--first" },
+          children: [{
+            id: "node-chat-emoji",
+            sourceNodeId: "dom-chat-emoji",
+            nodeType: "element",
+            tagName: "pre",
+            textContent: "🥰",
+            rect: { x: 10, y: 12, width: 54, height: 39 },
+            styles: {
+              display: "block",
+              width: "54px",
+              height: "39px",
+              backgroundColor: "rgba(0, 0, 0, 0)",
+              color: "rgb(54, 54, 54)",
+              fontSize: "16px",
+              lineHeight: "21px",
+              whiteSpace: "pre-wrap",
+              paddingLeft: "19px",
+              paddingRight: "19px",
+              paddingTop: "9px",
+              paddingBottom: "9px"
+            },
+            attributes: { class: "message__pre text-dark-800" },
+            children: []
+          }]
+        }]
+      }
+    }
+  };
+
+  vm.runInNewContext(main, {
+    figma,
+    Uint8Array,
+    Uint32Array,
+    ArrayBuffer,
+    DataView,
+    Error,
+    JSON,
+    Math,
+    Number,
+    Object,
+    Promise,
+    String,
+    Boolean,
+    Array,
+    isFinite,
+    parseFloat
+  });
+  await figma.ui.onmessage({
+    type: "IMPORT_PACKAGE",
+    filename: "emoji.figcapture",
+    bytes: packFigcapture(packageData)
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const accurateFrame = figma.currentPage.children.find((frame) => frame.name.includes("Editable Accurate"));
+  const emoji = flattenNodes(accurateFrame.children)
+    .find((node) => node.pluginData.sourceNodeId === "dom-chat-emoji");
+
+  assert.equal(posted[0].type, "IMPORT_SUCCESS");
+  assert(emoji);
+  assert.equal(emoji.x, 19);
+  assert.equal(emoji.y, 9);
+  assert.equal(emoji.width, 16);
+  assert.equal(emoji.height, 21);
+  assert.equal(emoji.characters, "🥰");
+  assert.equal(emoji.textAutoResize, "WIDTH_AND_HEIGHT");
+  assert.equal(emoji.layoutSizingHorizontal, "HUG");
+});
+
+test("classic Figma runtime preserves transparent padded interactive tab wrappers", async () => {
+  const main = await readFile("apps/figma-plugin/dist/code.js", "utf8");
+  const posted = [];
+  const createdNodes = [];
+
+  function createNode(type) {
+    const node = {
+      type,
+      name: "",
+      children: [],
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0,
+      fills: [],
+      strokes: [],
+      effects: [],
+      strokeWeight: 0,
+      cornerRadius: 0,
+      clipsContent: false,
+      layoutMode: "",
+      primaryAxisSizingMode: "",
+      counterAxisSizingMode: "",
+      primaryAxisAlignItems: "",
+      counterAxisAlignItems: "",
+      itemSpacing: 0,
+      paddingLeft: 0,
+      paddingRight: 0,
+      paddingTop: 0,
+      paddingBottom: 0,
+      fontName: null,
+      characters: "",
+      fontSize: 0,
+      textAutoResize: "",
+      layoutSizingHorizontal: "",
+      layoutSizingVertical: "",
+      layoutGrow: 0,
+      lineHeight: null,
+      pluginData: {},
+      resize(width, height) {
+        this.width = width;
+        this.height = height;
+      },
+      appendChild(child) {
+        this.children.push(child);
+      },
+      setPluginData(key, value) {
+        this.pluginData[key] = value;
+      }
+    };
+    createdNodes.push(node);
+    return node;
+  }
+
+  const figma = {
+    currentPage: {
+      children: [],
+      appendChild(child) {
+        this.children.push(child);
+      }
+    },
+    ui: {
+      onmessage: null,
+      postMessage(message) {
+        posted.push(message);
+      }
+    },
+    showUI() {},
+    createFrame() {
+      return createNode("FRAME");
+    },
+    createRectangle() {
+      return createNode("RECTANGLE");
+    },
+    createText() {
+      return createNode("TEXT");
+    },
+    createImage(bytes) {
+      return { hash: `hash-${bytes.length}` };
+    },
+    async loadFontAsync() {}
+  };
+  const basePackage = createValidPackage();
+  const packageData = {
+    ...basePackage,
+    manifest: {
+      ...basePackage.manifest,
+      viewportWidth: 1342,
+      viewportHeight: 520
+    },
+    capture: {
+      ...basePackage.capture,
+      root: {
+        id: "node-etf-subtabs",
+        sourceNodeId: "dom-etf-subtabs",
+        nodeType: "element",
+        tagName: "nav",
+        rect: { x: 271, y: 420, width: 992, height: 37 },
+        styles: {
+          display: "flex",
+          flexDirection: "row",
+          gap: "4px",
+          columnGap: "4px",
+          width: "992px",
+          height: "37px",
+          paddingLeft: "8px",
+          paddingRight: "8px",
+          paddingTop: "0px",
+          paddingBottom: "0px",
+          overflow: "auto",
+          overflowX: "auto",
+          overflowY: "hidden"
+        },
+        attributes: { class: "etfRankPage__subTabs" },
+        children: [
+          {
+            id: "node-etf-subtab-hot",
+            sourceNodeId: "dom-etf-subtab-hot",
+            nodeType: "element",
+            tagName: "a",
+            textContent: "熱門ETF",
+            rect: { x: 279, y: 420, width: 69.875, height: 37 },
+            styles: {
+              display: "flex",
+              alignItems: "center",
+              width: "69.875px",
+              height: "37px",
+              backgroundColor: "rgba(0, 0, 0, 0)",
+              color: "rgb(54, 54, 54)",
+              fontSize: "14px",
+              fontWeight: "500",
+              lineHeight: "21px",
+              whiteSpace: "nowrap",
+              paddingLeft: "8px",
+              paddingRight: "8px",
+              paddingTop: "8px",
+              paddingBottom: "8px"
+            },
+            attributes: { class: "etfRankPage__subTab etfRankPage__subTab--active" },
+            children: []
+          },
+          {
+            id: "node-etf-subtab-dividend",
+            sourceNodeId: "dom-etf-subtab-dividend",
+            nodeType: "element",
+            tagName: "a",
+            textContent: "配息",
+            rect: { x: 352.875, y: 420, width: 44.063, height: 37 },
+            styles: {
+              display: "flex",
+              alignItems: "center",
+              width: "44.063px",
+              height: "37px",
+              backgroundColor: "rgba(0, 0, 0, 0)",
+              color: "rgb(54, 54, 54)",
+              fontSize: "14px",
+              fontWeight: "500",
+              lineHeight: "21px",
+              whiteSpace: "nowrap",
+              paddingLeft: "8px",
+              paddingRight: "8px",
+              paddingTop: "8px",
+              paddingBottom: "8px"
+            },
+            attributes: { class: "etfRankPage__subTab" },
+            children: []
+          }
+        ]
+      }
+    }
+  };
+
+  vm.runInNewContext(main, {
+    figma,
+    Uint8Array,
+    Uint32Array,
+    ArrayBuffer,
+    DataView,
+    Error,
+    JSON,
+    Math,
+    Number,
+    Object,
+    Promise,
+    String,
+    Boolean,
+    Array,
+    isFinite,
+    parseFloat
+  });
+  await figma.ui.onmessage({
+    type: "IMPORT_PACKAGE",
+    filename: "etf-tabs.figcapture",
+    bytes: packFigcapture(packageData)
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const accurateFrame = figma.currentPage.children.find((frame) => frame.name.includes("Editable Accurate"));
+  const nestedNodes = flattenNodes(accurateFrame.children);
+  const nav = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-etf-subtabs");
+  const hotTab = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-etf-subtab-hot");
+  const hotLabel = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-etf-subtab-hot::text");
+
+  assert.equal(posted[0].type, "IMPORT_SUCCESS");
+  assert(nav);
+  assert(hotTab);
+  assert(hotLabel);
+  assert.equal(nav.layoutMode, "HORIZONTAL");
+  assert.equal(nav.itemSpacing, 4);
+  assert.equal(nav.paddingLeft, 8);
+  assert.equal(hotTab.type, "FRAME");
+  assert.equal(hotTab.x, 8);
+  assert.equal(hotTab.y, 0);
+  assert.equal(hotTab.width, 69.875);
+  assert.equal(hotTab.height, 37);
+  assert.equal(hotTab.layoutMode, "HORIZONTAL");
+  assert.equal(hotTab.primaryAxisAlignItems, "CENTER");
+  assert.equal(hotTab.counterAxisAlignItems, "CENTER");
+  assert.equal(hotTab.paddingLeft, 8);
+  assert.equal(hotTab.paddingRight, 8);
+  assert.equal(hotTab.paddingTop, 8);
+  assert.equal(hotTab.paddingBottom, 8);
+  assert.equal(hotLabel.type, "TEXT");
+  assert.equal(hotLabel.x, 8);
+  assert.equal(hotLabel.y, 8);
+  assert.equal(hotLabel.width, 53.88);
+  assert.equal(hotLabel.height, 21);
+  assert.equal(hotLabel.characters, "熱門ETF");
+  assert.equal(hotLabel.textAutoResize, "WIDTH_AND_HEIGHT");
+  assert.equal(hotLabel.layoutSizingHorizontal, "HUG");
+});
+
+test("classic Figma runtime gives absolute read-more overlays a backdrop fill", async () => {
+  const main = await readFile("apps/figma-plugin/dist/code.js", "utf8");
+  const posted = [];
+  const createdNodes = [];
+
+  function createNode(type) {
+    const node = {
+      type,
+      name: "",
+      children: [],
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0,
+      fills: [],
+      strokes: [],
+      pluginData: {},
+      resize(width, height) {
+        this.width = width;
+        this.height = height;
+      },
+      appendChild(child) {
+        this.children.push(child);
+      },
+      setPluginData(key, value) {
+        this.pluginData[key] = value;
+      }
+    };
+    createdNodes.push(node);
+    return node;
+  }
+
+  const figma = {
+    currentPage: {
+      children: [],
+      appendChild(child) {
+        this.children.push(child);
+      }
+    },
+    ui: {
+      onmessage: null,
+      postMessage(message) {
+        posted.push(message);
+      }
+    },
+    showUI() {},
+    createFrame() {
+      return createNode("FRAME");
+    },
+    createRectangle() {
+      return createNode("RECTANGLE");
+    },
+    createText() {
+      return createNode("TEXT");
+    },
+    createImage(bytes) {
+      return {
+        hash: `hash-${bytes.length}`
+      };
+    },
+    async loadFontAsync() {}
+  };
+  const basePackage = createValidPackage();
+  const packageData = createValidPackage({
+    capture: {
+      ...basePackage.capture,
+      root: {
+        id: "node-card",
+        sourceNodeId: "dom-card",
+        nodeType: "element",
+        tagName: "section",
+        rect: { x: 0, y: 0, width: 728, height: 180 },
+        styles: { backgroundColor: "rgb(255, 255, 255)" },
+        attributes: {},
+        children: [{
+          id: "node-text-rule",
+          sourceNodeId: "dom-text-rule",
+          nodeType: "element",
+          tagName: "div",
+          rect: { x: 16, y: 16, width: 696, height: 135 },
+          styles: {
+            position: "relative",
+            overflow: "hidden",
+            overflowX: "hidden",
+            overflowY: "hidden"
+          },
+          attributes: {},
+          children: [{
+            id: "node-read-more",
+            sourceNodeId: "dom-read-more",
+            nodeType: "element",
+            tagName: "button",
+            textContent: "閱讀更多",
+            rect: { x: 624, y: 126, width: 88, height: 25 },
+            styles: {
+              position: "absolute",
+              left: "608px",
+              top: "110px",
+              color: "rgb(194, 41, 46)",
+              backgroundColor: "rgba(0, 0, 0, 0)",
+              fontSize: "18px",
+              whiteSpace: "nowrap"
+            },
+            attributes: {},
+            children: [{
+              id: "node-read-more-ellipsis",
+              sourceNodeId: "dom-read-more-ellipsis",
+              nodeType: "pseudo",
+              tagName: "::before",
+              textContent: "...",
+              rect: { x: 624, y: 128, width: 30, height: 22 },
+              styles: {
+                content: "\"...\"",
+                display: "inline",
+                color: "rgb(54, 54, 54)",
+                fontSize: "18px"
+              },
+              attributes: { "data-pseudo": "::before" },
+              children: []
+            }]
+          }]
+        }]
+      }
+    }
+  });
+
+  vm.runInNewContext(main, {
+    figma,
+    Uint8Array,
+    Uint32Array,
+    ArrayBuffer,
+    DataView,
+    Error,
+    JSON,
+    Math,
+    Number,
+    Object,
+    Promise,
+    String,
+    Boolean,
+    Array,
+    isFinite,
+    parseFloat
+  });
+  await figma.ui.onmessage({
+    type: "IMPORT_PACKAGE",
+    filename: "read-more.figcapture",
+    bytes: packFigcapture(packageData)
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const readMore = flattenNodes(figma.currentPage.children)
+    .find((node) => node.type === "FRAME" && node.pluginData.sourceNodeId === "dom-read-more");
+
+  assert.equal(posted.length, 1);
+  assert.equal(posted[0].type, "IMPORT_SUCCESS");
+  assert(readMore);
+  assert.equal(readMore.fills.length, 1);
+  assert.equal(readMore.fills[0].type, "SOLID");
+  assert.equal(readMore.fills[0].color.r, 1);
+  assert.equal(readMore.fills[0].color.g, 1);
+  assert.equal(readMore.fills[0].color.b, 1);
+});
+
+test("classic Figma runtime renders clipped background gradients as text fills", async () => {
+  const main = await readFile("apps/figma-plugin/dist/code.js", "utf8");
+  const posted = [];
+  const createdNodes = [];
+
+  function createNode(type) {
+    const node = {
+      type,
+      name: "",
+      children: [],
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0,
+      fills: [],
+      strokes: [],
+      pluginData: {},
+      resize(width, height) {
+        this.width = width;
+        this.height = height;
+      },
+      appendChild(child) {
+        this.children.push(child);
+      },
+      setPluginData(key, value) {
+        this.pluginData[key] = value;
+      }
+    };
+    createdNodes.push(node);
+    return node;
+  }
+
+  const figma = {
+    currentPage: {
+      children: [],
+      appendChild(child) {
+        this.children.push(child);
+      }
+    },
+    ui: {
+      onmessage: null,
+      postMessage(message) {
+        posted.push(message);
+      }
+    },
+    showUI() {},
+    createFrame() {
+      return createNode("FRAME");
+    },
+    createRectangle() {
+      return createNode("RECTANGLE");
+    },
+    createText() {
+      return createNode("TEXT");
+    },
+    createImage(bytes) {
+      return {
+        hash: `hash-${bytes.length}`
+      };
+    },
+    async loadFontAsync() {}
+  };
+  const basePackage = createValidPackage();
+  const gradient = "linear-gradient(to right, rgb(222, 190, 135), rgb(192, 139, 78))";
+  const packageData = createValidPackage({
+    capture: {
+      ...basePackage.capture,
+      root: {
+        ...basePackage.capture.root,
+        children: [
+          {
+            id: "node-rank",
+            sourceNodeId: "dom-rank",
+            nodeType: "text",
+            tagName: "#text",
+            textContent: "1",
+            rect: { x: 48, y: 18, width: 40, height: 33 },
+            styles: {
+              backgroundColor: "rgba(0, 0, 0, 0)",
+              backgroundImage: gradient,
+              backgroundClip: "text",
+              webkitBackgroundClip: "text",
+              webkitTextFillColor: "rgba(0, 0, 0, 0)",
+              color: "rgb(149, 149, 149)",
+              fontFamily: "Inter",
+              fontSize: "28px",
+              fontWeight: "700",
+              lineHeight: "33px"
+            },
+            attributes: {},
+            children: []
+          }
+        ]
+      }
+    }
+  });
+
+  vm.runInNewContext(main, {
+    figma,
+    Uint8Array,
+    Uint32Array,
+    ArrayBuffer,
+    DataView,
+    Error,
+    JSON,
+    Math,
+    Number,
+    Object,
+    Promise,
+    String,
+    Boolean,
+    Array,
+    isFinite,
+    parseFloat
+  });
+  await figma.ui.onmessage({
+    type: "IMPORT_PACKAGE",
+    filename: "rank.figcapture",
+    bytes: packFigcapture(packageData)
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(posted.length, 1);
+  assert.equal(posted[0].type, "IMPORT_SUCCESS");
+  assert.equal(createdNodes.some((node) => node.name === "Text Background / 1"), false);
+
+  const accurateFrame = figma.currentPage.children.find((frame) => frame.name.includes("Editable Accurate"));
+  const rankText = flattenNodes(accurateFrame.children).find((node) => node.type === "TEXT" && node.characters === "1");
+  assert(rankText);
+  assert.equal(rankText.fills.length, 1);
+  assert.equal(rankText.fills[0].type, "GRADIENT_LINEAR");
 });
 
 test("classic Figma runtime keeps editable layers when an image asset is unsupported", async () => {
@@ -47,6 +1381,7 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
       "locked",
       "fills",
       "strokes",
+      "effects",
       "strokeWeight",
       "cornerRadius",
       "clipsContent",
@@ -64,8 +1399,10 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
       "characters",
       "fontSize",
       "textAutoResize",
+      "textAlignHorizontal",
       "layoutSizingHorizontal",
       "layoutSizingVertical",
+      "layoutPositioning",
       "layoutGrow",
       "lineHeight",
       "rotation",
@@ -102,6 +1439,7 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
       textAutoResize: "",
       layoutSizingHorizontal: "",
       layoutSizingVertical: "",
+      layoutPositioning: "",
       layoutGrow: 0,
       lineHeight: null,
       rotation: 0,
@@ -171,7 +1509,8 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
       const key = `${fontName.family} ${fontName.style}`;
       if (key === "Missing Classic Bold Italic" ||
         key === "Missing Classic Regular" ||
-        key === "Classic Sans Bold Italic") {
+        key === "Classic Sans Bold Italic" ||
+        key === "Noto Sans TC Medium") {
         throw new Error(`Missing font ${key}`);
       }
     }
@@ -253,6 +1592,19 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
             children: []
           },
           {
+            id: "node-webp-banner",
+            sourceNodeId: "dom-webp-banner",
+            nodeType: "element",
+            tagName: "img",
+            rect: { x: 0, y: 159, width: 390, height: 94 },
+            styles: {},
+            attributes: {
+              alt: "Banner"
+            },
+            assetRef: "assets/banner.webp",
+            children: []
+          },
+          {
             id: "node-classic-font",
             sourceNodeId: "dom-classic-font",
             nodeType: "text",
@@ -265,6 +1617,22 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
               fontWeight: "700",
               fontSize: "16px",
               color: "rgb(17, 24, 39)"
+            },
+            attributes: {},
+            children: []
+          },
+          {
+            id: "node-classic-medium",
+            sourceNodeId: "dom-classic-medium",
+            nodeType: "text",
+            tagName: "#text",
+            textContent: "中文 Medium",
+            rect: { x: 144, y: 268, width: 112, height: 24 },
+            styles: {
+              fontFamily: "Inter, \"Noto Sans TC\", \"Pingfang TC\", sans-serif",
+              fontWeight: "500",
+              fontSize: "16px",
+              color: "rgb(54, 54, 54)"
             },
             attributes: {},
             children: []
@@ -956,12 +2324,14 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
         kind: "external-image-reference",
         src: "https://example.com/chart.png"
       })),
+      "assets/banner.webp": new Uint8Array([0x52, 0x49, 0x46, 0x46, 0x08, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50]),
+      "assets/fallback-1.png": new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
       "assets/vector-1.svg": new TextEncoder().encode("<svg viewBox=\"0 0 12 12\"><path d=\"M4 2l4 4-4 4\"/></svg>"),
       "assets/arrow.svg": new TextEncoder().encode("<svg width=\"10\" height=\"17\" viewBox=\"0 0 10 17\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\"><path d=\"M0 0L10 8.5L0 17Z\" fill=\"#676767\"/></svg>")
     }
   });
 
-  vm.runInNewContext(main, { figma, Uint8Array, ArrayBuffer, DataView, Error, JSON, Math, Number, Object, Promise, String, Boolean, Array, isFinite, parseFloat });
+  vm.runInNewContext(main, { figma, Uint8Array, Uint32Array, ArrayBuffer, DataView, Error, JSON, Math, Number, Object, Promise, String, Boolean, Array, isFinite, parseFloat });
   await figma.ui.onmessage({
     type: "IMPORT_PACKAGE",
     filename: "dashboard.figcapture",
@@ -970,7 +2340,7 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   assert.equal(posted.length, 1);
-  assert.equal(posted[0].type, "IMPORT_SUCCESS");
+  assert.equal(posted[0].type, "IMPORT_SUCCESS", JSON.stringify(posted[0]));
   assert.equal(posted[0].report.createdFrameCount, 2);
   assert(posted[0].report.autoLayoutConfidenceSummary.appliedCount >= 1);
 
@@ -979,6 +2349,7 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
   const autoLayoutFrame = nestedNodes.find((node) => node.type === "FRAME" && node.layoutMode === "HORIZONTAL");
   const navText = nestedNodes.find((node) => node.type === "TEXT" && node.characters === "Home");
   const classicFontText = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-classic-font");
+  const classicMediumText = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-classic-medium");
   const answerText = nestedNodes.find((node) => node.type === "TEXT" && node.characters === "9則回答");
   const answerBacking = nestedNodes.find((node) => node.type === "FRAME" && node.name === "Text Background / 9則回答");
   const actionRowFrame = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-action-row");
@@ -1005,6 +2376,7 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
   const readMoreLabelText = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-readmore-button::text");
   const carouselFade = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-carousel-fade");
   const placeholder = nestedNodes.find((node) => node.pluginData.assetRef === "assets/image-1.png");
+  const webpBannerFallback = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-webp-banner");
   const vectorNode = nestedNodes.find((node) => node.type === "VECTOR" && node.pluginData.assetRef === "assets/vector-1.svg");
   const arrowWrapper = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-arrow-img");
   const arrowVector = arrowWrapper ? arrowWrapper.children.find((node) => node.type === "VECTOR") : null;
@@ -1022,9 +2394,19 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
   assert(classicFontText);
   assert.equal(classicFontText.fontName.family, "Classic Sans");
   assert.equal(classicFontText.fontName.style, "Regular");
-  assert.equal(posted[0].report.fontSubstitutions.length, 1);
-  assert.equal(posted[0].report.fontSubstitutions[0].used.family, "Classic Sans");
-  assert.equal(posted[0].report.fontSubstitutions[0].used.style, "Regular");
+  const classicFontSubstitution = posted[0].report.fontSubstitutions
+    .find((item) => item.sourceNodeId === "dom-classic-font");
+  assert(classicFontSubstitution);
+  assert.equal(classicFontSubstitution.used.family, "Classic Sans");
+  assert.equal(classicFontSubstitution.used.style, "Regular");
+  const classicMediumSubstitution = posted[0].report.fontSubstitutions
+    .find((item) => item.sourceNodeId === "dom-classic-medium");
+  assert(classicMediumSubstitution);
+  assert.equal(classicMediumSubstitution.used.family, "Pingfang TC");
+  assert.equal(classicMediumSubstitution.used.style, "Medium");
+  assert(classicMediumText);
+  assert.equal(classicMediumText.fontName.family, "Pingfang TC");
+  assert.equal(classicMediumText.fontName.style, "Medium");
   assert(answerText);
   assert.equal(answerText.textAutoResize, "WIDTH_AND_HEIGHT");
   assert.equal(answerText.layoutSizingHorizontal, "HUG");
@@ -1126,6 +2508,11 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
   assert(placeholder);
   assert.equal(placeholder.fills[0].type, "SOLID");
   assert.equal(placeholder.pluginData.fallbackReason, "external or unsupported image asset");
+  assert(webpBannerFallback);
+  assert.equal(webpBannerFallback.type, "FRAME");
+  assert.match(webpBannerFallback.pluginData.fallbackReason, /screenshot crop fallback/);
+  assert.equal(webpBannerFallback.children[0].x, 0);
+  assert.equal(webpBannerFallback.children[0].y, -159);
   assert(vectorNode);
   assert.match(vectorNode.svg, /<path/);
   assert(arrowWrapper);

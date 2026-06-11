@@ -3,7 +3,20 @@ export const DEFAULT_FALLBACK_FONT = { family: "Inter", style: "Regular" };
 export function createFigmaApiAdapter(figmaApi = globalThis.figma, options = {}) {
   const assets = options.assets ?? {};
   const fallbackFont = options.fallbackFont ?? DEFAULT_FALLBACK_FONT;
+  const screenshotBytes = options.screenshot ? toUint8Array(options.screenshot) : null;
+  const viewport = options.viewport ?? {};
   const fontSubstitutions = [];
+  let screenshotImageHash = null;
+
+  function getScreenshotImageHash() {
+    if (!screenshotBytes || screenshotBytes.length === 0) {
+      return null;
+    }
+    if (!screenshotImageHash) {
+      screenshotImageHash = figmaApi.createImage(screenshotBytes).hash;
+    }
+    return screenshotImageHash;
+  }
 
   return {
     fontSubstitutions,
@@ -39,6 +52,7 @@ export function createFigmaApiAdapter(figmaApi = globalThis.figma, options = {})
       node.name = model.name;
       node.locked = Boolean(model.locked);
       writeNodeMetadata(node, "assetRef", model.assetRef);
+      let canUseScreenshotCropFallback = false;
       if (isSupportedRasterImage(imageBytes)) {
         try {
           const imageHash = figmaApi.createImage(imageBytes).hash;
@@ -51,11 +65,23 @@ export function createFigmaApiAdapter(figmaApi = globalThis.figma, options = {})
           writeNodeMetadata(node, "imageHash", imageHash);
           return node;
         } catch (error) {
+          canUseScreenshotCropFallback = true;
           fallbackReason = model.fallbackReason ?? "image decode failed";
           writeNodeMetadata(node, "imageImportError", error instanceof Error ? error.message : String(error));
         }
       } else {
         fallbackReason = model.fallbackReason ?? (imageBytes.length > 0 ? "external or unsupported image asset" : "missing image asset");
+      }
+      if (canUseScreenshotCropFallback) {
+        const screenshotFallback = createScreenshotCropFallbackLayer(figmaApi, model, {
+          fallbackReason,
+          screenshotBytes,
+          viewport,
+          getScreenshotImageHash
+        });
+        if (screenshotFallback) {
+          return screenshotFallback;
+        }
       }
       node.name = `${model.name} / Placeholder`;
       applyImagePlaceholderStyle(node);
@@ -68,7 +94,7 @@ export function createFigmaApiAdapter(figmaApi = globalThis.figma, options = {})
       applyNodeBasics(node, model);
       node.name = model.name;
 
-      const requestedFonts = fontNamesFromStyle(model.style?.text, fallbackFont);
+      const requestedFonts = fontNamesFromStyle(model.style?.text, fallbackFont, model.text);
       const loadedFont = await loadFontWithFallback(figmaApi, requestedFonts, fallbackFont);
       if (loadedFont.substituted) {
         fontSubstitutions.push({
@@ -98,9 +124,15 @@ export function createFigmaApiAdapter(figmaApi = globalThis.figma, options = {})
         }
       }
       const colorPaint = cssColorToPaint(model.style?.text?.color);
-      if (colorPaint) {
+      const textFills = (model.style?.text?.fills ?? [])
+        .map(cssFillToPaint)
+        .filter(Boolean);
+      if (textFills.length > 0) {
+        node.fills = textFills;
+      } else if (colorPaint) {
         node.fills = [colorPaint];
       }
+      applyTextAlignment(node, model.style?.text?.textAlign);
       applyTextResizeAndLayoutSizing(node, model);
       return node;
     },
@@ -142,8 +174,9 @@ export function createFigmaApiAdapter(figmaApi = globalThis.figma, options = {})
       return frame;
     },
 
-    appendChild(parent, child) {
+    appendChild(parent, child, model) {
       parent.appendChild(child);
+      applyPostAppendChildLayout(child, model);
     }
   };
 }
@@ -186,6 +219,7 @@ export function createMockFigmaApi(options = {}) {
       return node;
     }
   };
+
 }
 
 export async function loadFontWithFallback(figmaApi, requestedFonts, fallbackFont = DEFAULT_FALLBACK_FONT) {
@@ -223,16 +257,18 @@ export function fontNameFromStyle(textStyle = {}) {
   return fontNamesFromStyle(textStyle)[0];
 }
 
-export function fontNamesFromStyle(textStyle = {}, fallbackFont = DEFAULT_FALLBACK_FONT) {
-  const requestedStyle = parseFontStyle(textStyle.fontWeight, textStyle.fontStyle);
-  const families = parseFontFamilyStack(textStyle.fontFamily)
-    .filter((family) => !isGenericFontFamily(family));
+export function fontNamesFromStyle(textStyle = {}, fallbackFont = DEFAULT_FALLBACK_FONT, textContent = "") {
+  const requestedStyles = fontStyleCandidatesFromCss(textStyle.fontWeight, textStyle.fontStyle);
+  const families = preferFontFamiliesForText(
+    parseFontFamilyStack(textStyle.fontFamily)
+      .filter((family) => !isGenericFontFamily(family)),
+    textContent
+  );
   const candidates = [];
 
-  for (const family of families) {
-    candidates.push({ family, style: requestedStyle });
-    if (requestedStyle !== "Regular") {
-      candidates.push({ family, style: "Regular" });
+  for (const style of requestedStyles) {
+    for (const family of families) {
+      candidates.push({ family, style });
     }
   }
 
@@ -319,6 +355,7 @@ function createMockNode(type, createdNodes) {
     rotation: 0,
     layoutSizingHorizontal: "",
     layoutSizingVertical: "",
+    layoutPositioning: "",
     layoutGrow: 0,
     children: [],
     resize(width, height) {
@@ -422,6 +459,68 @@ function createImagePlaceholderNode(figmaApi, model) {
   return node;
 }
 
+function createScreenshotCropFallbackLayer(figmaApi, model, options = {}) {
+  const absoluteRect = model.absoluteRect;
+  const rect = model.rect ?? {
+    x: model.x ?? 0,
+    y: model.y ?? 0,
+    width: model.width ?? 0,
+    height: model.height ?? 0
+  };
+  const viewportWidth = Number(options.viewport?.width ?? 0);
+  const viewportHeight = Number(options.viewport?.height ?? 0);
+  if (
+    !absoluteRect ||
+    rect.width <= 0 ||
+    rect.height <= 0 ||
+    viewportWidth <= 0 ||
+    viewportHeight <= 0
+  ) {
+    return null;
+  }
+
+  let imageHash = null;
+  try {
+    imageHash = options.getScreenshotImageHash?.() ?? null;
+  } catch {
+    return null;
+  }
+  if (!imageHash) {
+    return null;
+  }
+
+  const frame = figmaApi.createFrame();
+  applyNodeBasics(frame, model);
+  frame.name = `${model.name} / Screenshot Crop`;
+  frame.locked = Boolean(model.locked);
+  frame.clipsContent = true;
+  frame.fills = [];
+  writeNodeMetadata(frame, "assetRef", model.assetRef);
+  writeNodeMetadata(frame, "fallbackReason", `${options.fallbackReason || "image fallback"}; screenshot crop fallback`);
+
+  const screenshotLayer = figmaApi.createRectangle();
+  screenshotLayer.name = "Screenshot crop source";
+  const sourceX = Number(absoluteRect.x ?? 0);
+  const sourceY = Number(absoluteRect.y ?? 0);
+  screenshotLayer.x = sourceX === 0 ? 0 : -sourceX;
+  screenshotLayer.y = sourceY === 0 ? 0 : -sourceY;
+  if (typeof screenshotLayer.resize === "function") {
+    screenshotLayer.resize(viewportWidth, viewportHeight);
+  } else {
+    screenshotLayer.width = viewportWidth;
+    screenshotLayer.height = viewportHeight;
+  }
+  screenshotLayer.fills = [{
+    type: "IMAGE",
+    scaleMode: "FILL",
+    imageHash
+  }];
+  writeNodeMetadata(screenshotLayer, "assetRef", model.assetRef);
+  writeNodeMetadata(screenshotLayer, "fallbackReason", "screenshot crop source");
+  frame.appendChild(screenshotLayer);
+  return frame;
+}
+
 function createSvgImageLayer(figmaApi, model, imageBytes) {
   const svgText = decodeUtf8(imageBytes);
   const svgNode = figmaApi.createNodeFromSvg(svgText);
@@ -492,6 +591,15 @@ function applyNodeBasics(node, model) {
   }
   writeNodeMetadata(node, "sourceNodeId", model.sourceNodeId);
   writeNodeMetadata(node, "cssZIndex", model.cssZIndex);
+  if (model.layoutPositioning) {
+    safeSetFigmaProperty(node, "layoutPositioning", model.layoutPositioning);
+  }
+}
+
+function applyPostAppendChildLayout(child, model = {}) {
+  if (model.layoutPositioning) {
+    safeSetFigmaProperty(child, "layoutPositioning", model.layoutPositioning);
+  }
 }
 
 function applyTextResizeAndLayoutSizing(node, model) {
@@ -511,6 +619,27 @@ function applyTextResizeAndLayoutSizing(node, model) {
   if (layoutSizingHorizontal === "HUG") {
     safeSetFigmaProperty(node, "layoutGrow", 0);
   }
+}
+
+function applyTextAlignment(node, textAlign) {
+  const horizontal = textAlignHorizontal(textAlign);
+  if (horizontal) {
+    safeSetFigmaProperty(node, "textAlignHorizontal", horizontal);
+  }
+}
+
+function textAlignHorizontal(value) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (normalized === "center") {
+    return "CENTER";
+  }
+  if (normalized === "right" || normalized === "end") {
+    return "RIGHT";
+  }
+  if (normalized === "left" || normalized === "start") {
+    return "LEFT";
+  }
+  return "";
 }
 
 function safeSetFigmaProperty(node, property, value) {
@@ -545,7 +674,9 @@ function applyVisualStyle(node, style = {}) {
     .filter(Boolean);
   node.fills = fills;
 
-  if (style.strokes?.length > 0) {
+  if (style.borderSides?.length > 0) {
+    applyBorderSideStrokes(node, style.borderSides);
+  } else if (style.strokes?.length > 0) {
     const stroke = style.strokes[0];
     const strokePaint = cssColorToPaint(stroke.color);
     if (strokePaint) {
@@ -559,16 +690,85 @@ function applyVisualStyle(node, style = {}) {
   }
 
   if (style.effects?.length > 0) {
-    node.effects = style.effects.map(() => ({
-      type: "DROP_SHADOW",
-      color: { r: 0, g: 0, b: 0, a: 0.16 },
-      offset: { x: 0, y: 4 },
-      radius: 12,
-      spread: 0,
-      visible: true,
-      blendMode: "NORMAL"
-    }));
+    node.effects = style.effects
+      .map((effect) => cssShadowToEffect(effect.value))
+      .filter(Boolean);
   }
+}
+
+function cssShadowToEffect(value) {
+  const shadow = firstOuterCssShadow(value);
+  if (!shadow) {
+    return null;
+  }
+
+  const colorValue = extractCssShadowColor(shadow);
+  const color = parseCssColor(colorValue) ?? { r: 0, g: 0, b: 0, a: 0.16 };
+  const lengthSource = colorValue ? shadow.replace(colorValue, " ") : shadow;
+  const lengths = Array.from(lengthSource.matchAll(/-?\d*\.?\d+(?:px)?/gi))
+    .map((match) => parseCssNumber(match[0]))
+    .filter((number) => Number.isFinite(number));
+  if (lengths.length < 2) {
+    return null;
+  }
+
+  return {
+    type: "DROP_SHADOW",
+    color: {
+      r: color.r / 255,
+      g: color.g / 255,
+      b: color.b / 255,
+      a: color.a
+    },
+    offset: {
+      x: lengths[0],
+      y: lengths[1]
+    },
+    radius: lengths[2] ?? 0,
+    spread: lengths[3] ?? 0,
+    visible: true,
+    blendMode: "NORMAL"
+  };
+}
+
+function firstOuterCssShadow(value) {
+  if (typeof value !== "string" || value.length === 0 || value === "none") {
+    return "";
+  }
+  return splitCssArguments(value)
+    .map((shadow) => shadow.trim())
+    .find((shadow) => shadow.length > 0 && !/\binset\b/i.test(shadow)) ?? "";
+}
+
+function extractCssShadowColor(value) {
+  const match = String(value ?? "").match(/rgba?\([^)]+\)|#[0-9a-f]{3,8}|transparent/i);
+  return match ? match[0] : "";
+}
+
+function applyBorderSideStrokes(node, borderSides) {
+  const [first] = borderSides;
+  const strokePaint = cssColorToPaint(first?.color);
+  if (!strokePaint) {
+    return;
+  }
+
+  const weights = {
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0
+  };
+  for (const side of borderSides) {
+    weights[side.side] = side.width;
+  }
+
+  node.strokes = [strokePaint];
+  node.strokeWeight = Math.max(...Object.values(weights));
+  safeSetFigmaProperty(node, "strokeAlign", "INSIDE");
+  safeSetFigmaProperty(node, "strokeTopWeight", weights.top);
+  safeSetFigmaProperty(node, "strokeRightWeight", weights.right);
+  safeSetFigmaProperty(node, "strokeBottomWeight", weights.bottom);
+  safeSetFigmaProperty(node, "strokeLeftWeight", weights.left);
 }
 
 function applyImagePlaceholderStyle(node) {
@@ -926,17 +1126,94 @@ function isGenericFontFamily(family) {
   ]).has(String(family).trim().toLowerCase());
 }
 
-function parseFontStyle(fontWeight = "", fontStyle = "") {
-  const weight = Number.parseInt(String(fontWeight), 10);
-  const bold = Number.isFinite(weight) && weight >= 600;
+function preferFontFamiliesForText(families, textContent) {
+  if (!containsCjkText(textContent)) {
+    return families;
+  }
+  const preferred = [];
+  const remaining = [];
+  for (const family of families) {
+    if (isCjkFontFamily(family)) {
+      preferred.push(family);
+    } else {
+      remaining.push(family);
+    }
+  }
+  return preferred.length > 0 ? [...preferred, ...remaining] : families;
+}
+
+function containsCjkText(value) {
+  return /[\u3040-\u30ff\u3100-\u312f\u31a0-\u31bf\u3400-\u9fff\uf900-\ufaff\uac00-\ud7af]/u.test(String(value ?? ""));
+}
+
+function isCjkFontFamily(family) {
+  return /noto\s+sans\s+(tc|sc|jp|kr)|source\s+han|pingfang|pingfang\s+tc|microsoft\s+jhenghei|jhenghei|hiragino|heiti|yahei|mingliu|pmingliu|songti|kaiti|cjk/i
+    .test(String(family ?? ""));
+}
+
+function fontStyleCandidatesFromCss(fontWeight = "", fontStyle = "") {
+  const weight = normalizedFontWeight(fontWeight);
   const italic = /italic|oblique/i.test(String(fontStyle));
-  if (bold && italic) {
-    return "Bold Italic";
+  if (italic && weight >= 700) {
+    return ["Bold Italic", "Regular"];
   }
-  if (bold) {
-    return "Bold";
+  if (italic && weight >= 600) {
+    return dedupeStrings(["Semi Bold Italic", "Semibold Italic", "Demi Bold Italic", "Bold Italic", "Regular"]);
   }
-  return italic ? "Italic" : "Regular";
+  if (italic && weight >= 500) {
+    return ["Medium Italic", "Regular"];
+  }
+  if (italic && weight <= 200) {
+    return ["Extra Light Italic", "Light Italic", "Italic", "Regular"];
+  }
+  if (italic && weight <= 300) {
+    return ["Light Italic", "Italic", "Regular"];
+  }
+  if (italic) {
+    return ["Italic", "Regular"];
+  }
+  return fontWeightStyleCandidates(weight);
+}
+
+function fontWeightStyleCandidates(weight) {
+  if (weight >= 900) {
+    return ["Black", "Heavy", "Extra Bold", "ExtraBold", "Bold", "Regular"];
+  }
+  if (weight >= 800) {
+    return ["Extra Bold", "ExtraBold", "Bold", "Regular"];
+  }
+  if (weight >= 700) {
+    return ["Bold", "Regular"];
+  }
+  if (weight >= 600) {
+    return ["Semi Bold", "SemiBold", "Semibold", "Demi Bold", "DemiBold", "Bold", "Regular"];
+  }
+  if (weight >= 500) {
+    return ["Medium", "Regular"];
+  }
+  if (weight <= 200) {
+    return ["Thin", "Extra Light", "ExtraLight", "Light", "Regular"];
+  }
+  if (weight <= 300) {
+    return ["Light", "Regular"];
+  }
+  return ["Regular"];
+}
+
+function normalizedFontWeight(fontWeight) {
+  const value = String(fontWeight ?? "").trim().toLowerCase();
+  if (value === "bold") {
+    return 700;
+  }
+  if (value === "normal") {
+    return 400;
+  }
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : 400;
+}
+
+function dedupeStrings(values) {
+  return [...new Set(values)];
 }
 
 function parseCssColor(value) {

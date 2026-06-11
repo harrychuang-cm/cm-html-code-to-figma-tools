@@ -71,3 +71,81 @@ test("unpackFigcapture rejects unsupported schemaVersion with a readable categor
     }
   );
 });
+
+test("packFigcaptureFiles rejects unsafe archive file names", () => {
+  const files = createFigcaptureFileMap(createValidPackage());
+  files["assets/../secret.png"] = new Uint8Array([1]);
+
+  assert.throws(
+    () => packFigcaptureFiles(files),
+    (error) => {
+      assert(error instanceof FigcaptureValidationError);
+      assert.equal(error.errors[0].code, ERROR_CODES.INVALID_FIELD);
+      assert.match(error.errors[0].message, /parent directory/);
+      return true;
+    }
+  );
+});
+
+test("readFigcaptureFiles rejects unsafe entry names from external archives", () => {
+  const archive = replaceAsciiAll(
+    packFigcapture(createValidPackage()),
+    "manifest.json",
+    "../evil.jsonx"
+  );
+
+  assert.throws(
+    () => readFigcaptureFiles(archive),
+    (error) => {
+      assert(error instanceof FigcaptureValidationError);
+      assert.equal(error.errors[0].code, ERROR_CODES.INVALID_FIELD);
+      assert.equal(error.errors[0].path, "../evil.jsonx");
+      assert.match(error.errors[0].message, /parent directory/);
+      return true;
+    }
+  );
+});
+
+test("readFigcaptureFiles rejects duplicate entry names from external archives", () => {
+  const files = createFigcaptureFileMap(createValidPackage());
+  files["screenshot.pnx"] = new Uint8Array([1, 2, 3]);
+  const archive = replaceAsciiAll(
+    packFigcaptureFiles(files),
+    "screenshot.pnx",
+    "screenshot.png"
+  );
+
+  assert.throws(
+    () => readFigcaptureFiles(archive),
+    (error) => {
+      assert(error instanceof FigcaptureValidationError);
+      assert.equal(error.errors[0].code, ERROR_CODES.INVALID_FIELD);
+      assert.equal(error.errors[0].path, "screenshot.png");
+      assert.match(error.errors[0].message, /Duplicate ZIP entry/);
+      return true;
+    }
+  );
+});
+
+function replaceAsciiAll(bytes, from, to) {
+  assert.equal(from.length, to.length);
+  const result = new Uint8Array(bytes);
+  const fromBytes = new TextEncoder().encode(from);
+  const toBytes = new TextEncoder().encode(to);
+
+  for (let index = 0; index <= result.length - fromBytes.length; index += 1) {
+    let matches = true;
+    for (let offset = 0; offset < fromBytes.length; offset += 1) {
+      if (result[index + offset] !== fromBytes[offset]) {
+        matches = false;
+        break;
+      }
+    }
+    if (matches) {
+      result.set(toBytes, index);
+      index += fromBytes.length - 1;
+    }
+  }
+
+  return result;
+}

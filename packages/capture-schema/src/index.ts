@@ -16,6 +16,9 @@ export const ERROR_CODES = {
   UNSUPPORTED_SCHEMA_VERSION: "unsupported-schema-version"
 };
 
+const MAX_ARCHIVE_FILE_NAME_LENGTH = 240;
+const SUPPORTED_ZIP_FLAGS = 0x0800;
+
 export class FigcaptureValidationError extends Error {
   constructor(message, errors) {
     super(message);
@@ -169,7 +172,10 @@ export function validateCapturePackage(packageData) {
     errors.push(error(ERROR_CODES.INVALID_FIELD, "assets must be an object", "assets"));
   } else {
     for (const [assetName, assetValue] of Object.entries(packageData.assets)) {
-      if (!assetName.startsWith("assets/")) {
+      const fileNameError = archiveFileNameError(assetName);
+      if (fileNameError) {
+        errors.push(error(ERROR_CODES.INVALID_FIELD, fileNameError, `assets.${assetName}`));
+      } else if (!assetName.startsWith("assets/")) {
         errors.push(error(ERROR_CODES.INVALID_FIELD, "asset names must be rooted under assets/", `assets.${assetName}`));
       }
       if (!isBinaryLike(assetValue)) {
@@ -177,6 +183,8 @@ export function validateCapturePackage(packageData) {
       }
     }
   }
+
+  validateAssetReferences(packageData.capture?.root, packageData.assets, "capture.root", errors);
 
   return result(errors);
 }
@@ -223,6 +231,7 @@ export function packFigcaptureFiles(files) {
         error(ERROR_CODES.INVALID_FIELD, "file name must be a non-empty string", "files")
       ]);
     }
+    assertSafeArchiveFileName(name);
     return {
       name,
       bytes: toUint8Array(value)
@@ -370,6 +379,35 @@ function validateAutoLayoutCandidate(value, path, errors) {
   if ("skippedReason" in value && typeof value.skippedReason !== "string") {
     errors.push(error(ERROR_CODES.INVALID_FIELD, "skippedReason must be a string", `${path}.skippedReason`));
   }
+}
+
+function validateAssetReferences(node, assets, path, errors) {
+  if (!isRecord(node)) {
+    return;
+  }
+
+  for (const key of ["assetRef", "fallbackRef"]) {
+    const value = node[key];
+    if (typeof value !== "string") {
+      continue;
+    }
+    const fileNameError = archiveFileNameError(value);
+    if (fileNameError) {
+      errors.push(error(ERROR_CODES.INVALID_FIELD, fileNameError, `${path}.${key}`));
+      continue;
+    }
+    if (!value.startsWith("assets/")) {
+      errors.push(error(ERROR_CODES.INVALID_FIELD, `${key} must reference a packaged asset`, `${path}.${key}`));
+      continue;
+    }
+    if (isRecord(assets) && !(value in assets)) {
+      errors.push(error(ERROR_CODES.MISSING_FILE, `${value} is referenced but not packaged`, `${path}.${key}`));
+    }
+  }
+
+  (node.children ?? []).forEach((child, index) => {
+    validateAssetReferences(child, assets, `${path}.children[${index}]`, errors);
+  });
 }
 
 function validateArray(value, path, errors, validateItem) {
@@ -543,51 +581,127 @@ function readZip(bytes) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const eocdOffset = findEndOfCentralDirectory(bytes);
   if (eocdOffset < 0) {
-    throw new FigcaptureValidationError("Invalid .figcapture archive", [
-      error(ERROR_CODES.INVALID_FIELD, "ZIP end of central directory not found", "archive")
-    ]);
+    throw invalidArchive("ZIP end of central directory not found");
   }
 
   const entryCount = view.getUint16(eocdOffset + 10, true);
+  const centralSize = view.getUint32(eocdOffset + 12, true);
   let centralOffset = view.getUint32(eocdOffset + 16, true);
   const files = {};
 
+  requireZipRange(centralOffset, centralSize, bytes.length, "ZIP central directory is out of bounds");
+
   for (let index = 0; index < entryCount; index += 1) {
+    requireZipRange(centralOffset, 46, bytes.length, "ZIP central directory entry is truncated");
     if (view.getUint32(centralOffset, true) !== 0x02014b50) {
-      throw new FigcaptureValidationError("Invalid .figcapture archive", [
-        error(ERROR_CODES.INVALID_FIELD, "Invalid ZIP central directory header", "archive")
-      ]);
+      throw invalidArchive("Invalid ZIP central directory header");
     }
 
+    const flags = view.getUint16(centralOffset + 8, true);
     const method = view.getUint16(centralOffset + 10, true);
+    if ((flags & ~SUPPORTED_ZIP_FLAGS) !== 0) {
+      throw invalidArchive("Unsupported ZIP entry flags");
+    }
     if (method !== 0) {
-      throw new FigcaptureValidationError("Unsupported .figcapture archive", [
-        error(ERROR_CODES.INVALID_FIELD, "Only stored ZIP entries are supported", "archive")
-      ]);
+      throw invalidArchive("Only stored ZIP entries are supported");
     }
 
+    const expectedCrc = view.getUint32(centralOffset + 16, true);
     const compressedSize = view.getUint32(centralOffset + 20, true);
+    const uncompressedSize = view.getUint32(centralOffset + 24, true);
+    if (compressedSize !== uncompressedSize) {
+      throw invalidArchive("Stored ZIP entry size mismatch");
+    }
     const nameLength = view.getUint16(centralOffset + 28, true);
     const extraLength = view.getUint16(centralOffset + 30, true);
     const commentLength = view.getUint16(centralOffset + 32, true);
     const localOffset = view.getUint32(centralOffset + 42, true);
     const nameStart = centralOffset + 46;
+    requireZipRange(nameStart, nameLength + extraLength + commentLength, bytes.length, "ZIP central directory entry is truncated");
     const name = new TextDecoder().decode(bytes.slice(nameStart, nameStart + nameLength));
-
-    if (view.getUint32(localOffset, true) !== 0x04034b50) {
-      throw new FigcaptureValidationError("Invalid .figcapture archive", [
-        error(ERROR_CODES.INVALID_FIELD, "Invalid ZIP local file header", name)
-      ]);
+    const fileNameError = archiveFileNameError(name);
+    if (fileNameError) {
+      throw invalidArchive(fileNameError, name || "archive");
+    }
+    if (Object.prototype.hasOwnProperty.call(files, name)) {
+      throw invalidArchive(`Duplicate ZIP entry ${name}`, name);
     }
 
+    requireZipRange(localOffset, 30, bytes.length, "ZIP local file header is out of bounds", name);
+    if (view.getUint32(localOffset, true) !== 0x04034b50) {
+      throw invalidArchive("Invalid ZIP local file header", name);
+    }
+
+    const localFlags = view.getUint16(localOffset + 6, true);
+    const localMethod = view.getUint16(localOffset + 8, true);
     const localNameLength = view.getUint16(localOffset + 26, true);
     const localExtraLength = view.getUint16(localOffset + 28, true);
+    if ((localFlags & ~SUPPORTED_ZIP_FLAGS) !== 0 || localMethod !== method) {
+      throw invalidArchive("ZIP local file header does not match central directory", name);
+    }
+    requireZipRange(localOffset + 30, localNameLength + localExtraLength, bytes.length, "ZIP local file header is truncated", name);
     const dataStart = localOffset + 30 + localNameLength + localExtraLength;
-    files[name] = bytes.slice(dataStart, dataStart + compressedSize);
+    requireZipRange(dataStart, compressedSize, bytes.length, "ZIP entry data is out of bounds", name);
+    const fileBytes = bytes.slice(dataStart, dataStart + compressedSize);
+    if (crc32(fileBytes) !== expectedCrc) {
+      throw invalidArchive("ZIP entry checksum mismatch", name);
+    }
+    files[name] = fileBytes;
     centralOffset = nameStart + nameLength + extraLength + commentLength;
   }
 
   return files;
+}
+
+function assertSafeArchiveFileName(name) {
+  const message = archiveFileNameError(name);
+  if (message) {
+    throw new FigcaptureValidationError("Invalid archive file name", [
+      error(ERROR_CODES.INVALID_FIELD, message, "files")
+    ]);
+  }
+}
+
+function archiveFileNameError(name) {
+  if (typeof name !== "string" || name.length === 0) {
+    return "file name must be a non-empty string";
+  }
+  if (name.length > MAX_ARCHIVE_FILE_NAME_LENGTH) {
+    return "file name is too long";
+  }
+  if (/[\u0000-\u001f\u007f]/.test(name)) {
+    return "file name must not contain control characters";
+  }
+  if (name.includes("\\") || name.includes(":") || name.startsWith("/") || /^[a-z]:\//i.test(name)) {
+    return "file name must be a portable relative path";
+  }
+  if (name.endsWith("/")) {
+    return "file name must not be a directory";
+  }
+  const segments = name.split("/");
+  if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
+    return "file name must not contain empty, current, or parent directory segments";
+  }
+  return "";
+}
+
+function requireZipRange(start, length, total, message, path = "archive") {
+  if (
+    !Number.isSafeInteger(start) ||
+    !Number.isSafeInteger(length) ||
+    start < 0 ||
+    length < 0 ||
+    start > total ||
+    start + length > total
+  ) {
+    throw invalidArchive(message, path);
+  }
+}
+
+function invalidArchive(message, path = "archive") {
+  return new FigcaptureValidationError("Invalid .figcapture archive", [
+    error(ERROR_CODES.INVALID_FIELD, message, path)
+  ]);
 }
 
 function findEndOfCentralDirectory(bytes) {

@@ -39,6 +39,10 @@
 - Direct text inside `td`, `th`, or computed `display: table-cell` SHALL keep the captured cell as a fixed-size frame while mapping editable text alignment from CSS table semantics, avoiding full-height top-aligned Figma text layers.
 - Mixed-content direct text SHALL respect captured parent padding when deriving its available text segment, so tabs and links keep browser-visible gaps around pseudo separators or icons.
 - Pseudo decoration rectangles SHALL apply supported captured CSS transform translation when imported, so separators using `top: 50%` plus `translateY(-50%)` stay vertically centered.
+- CSS `box-shadow` SHALL be converted into Figma effects in both module and classic runtimes, including browser-ordered values such as `rgba(...) 0px 4px 36px 0px`.
+- Padded single-line visible text backing SHALL evaluate text sizing against the padded content box without treating the outer CSS width as clipped inner text, so chat/message pill text remains HUG instead of wrapping or overlapping adjacent labels.
+- Transparent text elements with explicit CSS padding SHALL place the editable Figma text at the padded content box, even when their visual bubble/background belongs to a parent element. This keeps emoji-only chat messages centered inside their grey bubble instead of anchoring the emoji at the outer border box.
+- Zero-height or otherwise non-visual static wrappers that only host fixed/absolute overlays SHALL contribute descendant fixed/absolute numeric z-index to sibling stacking order. This preserves browser paint order for page-level controls such as a go-to-top button sitting below a higher-z-index fixed chat panel, without promoting ordinary relative descendants in visible content containers.
 
 **Non-Goals:**
 
@@ -203,6 +207,8 @@ Chrome capture SHALL include computed `overflowX`, `overflowY`, `maxWidth`, `max
 
 When that visible text node also has explicit CSS padding, the backing frame SHALL use fixed-size Auto Layout with the captured padding. The nested editable text can then use auto-width/HUG sizing for single-line badge or pill labels, instead of being forced to fill the full backing box. Single-line HUG text may use centered axes to preserve compact pill balance; multiline or fixed-width text should stay top-left within the padded content box. This is a generic CSS box mapping: the visual frame owns background, radius, border, shadow, and padding; the nested text owns editable characters and font metrics.
 
+The explicit CSS width on a padded visible backing describes the outer border box, not the nested editable text's content box. Importer text sizing therefore MUST NOT treat the difference between outer width and content width as evidence of clipped text unless the captured CSS also shows real inline clipping such as ellipsis/hidden overflow. This keeps single-line chat bubbles and message pills editable as HUG text while preserving the fixed backing frame and padding.
+
 ### Avoid Invisible Text Backing Frames
 
 Text backing frame 只應該用於視覺上真的存在的 box，例如可見 background、可見 border，或可見 shadow。`border-radius` 本身不是可見樣式；如果 button 只有透明背景、無可見 border、但有 `border-radius: 4px`，它在 Figma 中不應生成 `Text Background` frame，也不應把文字強制固定寬度。
@@ -307,6 +313,10 @@ Classic runtime 不使用 modern syntax，不直接寫入 Figma node 自訂欄�
 - Those same tall single-line HUG text labels SHALL normalize their Figma text geometry to the CSS line-height and center that smaller text rect within the captured browser line box, so tab/menu labels do not become top-aligned after Figma recalculates Hug text height.
 - Single-line text nodes that are clipped by CSS overflow/ellipsis and whose full text would exceed the captured width SHALL keep fixed width/truncate behavior instead of HUG sizing.
 - Text backing frames with explicit CSS padding SHALL apply that padding through Figma Auto Layout and keep single-line nested text in HUG sizing.
+- Text nodes without visible box styles but with explicit CSS padding SHALL use their padded content rect for editable text geometry and HUG sizing when the content fits on one line.
+- Transparent text nodes for interactive elements such as links, buttons, tabs, and menu items SHALL preserve the captured outer box as a fixed-size Auto Layout wrapper when explicit CSS padding and explicit box size make the wrapper layout-significant; the editable text child SHALL sit in the padded content box and use HUG sizing when it fits on one line.
+- CSS box shadow values SHALL produce Figma `DROP_SHADOW` effects in module and classic runtime outputs, preserving parsed color, offset, blur radius, and spread where available.
+- Non-Auto Layout sibling sorting SHALL use a non-visual wrapper's descendant fixed/absolute numeric z-index when the wrapper itself has no numeric z-index, preserving higher-z-index fixed panels above lower/default-z-index fixed controls.
 - Canvas fallback assets SHALL use captured bitmap bytes when available and SHALL fall back to a screenshot crop of the same viewport rect when direct canvas serialization is unavailable but screenshot crop APIs are available.
 - Image assets SHALL skip transparent placeholder `currentSrc` / `src` values when a real lazy image candidate is available in captured image attributes.
 
@@ -362,6 +372,9 @@ Classic runtime 不使用 modern syntax，不直接寫入 Figma node 自訂欄�
 - Tests cover mixed-content nav/tab direct text respecting parent padding and pseudo separator transform translation so tab separators remain vertically centered and tab labels keep browser-visible gaps.
 - Tests cover tall single-line tab/menu labels reducing to CSS line-height and vertically centering after HUG normalization.
 - Tests cover direct table-cell text importing as a fixed-size cell frame with vertically centered editable text and right/center/left alignment derived from `textAlign` or legacy utility classes.
+- Tests cover transparent padded emoji/message text using the padded content box instead of the outer border box.
+- Tests cover transparent padded interactive tab/link labels preserving an outer Auto Layout wrapper frame so parent Auto Layout rows keep browser padding, height, and spacing instead of turning the tabs into direct text children.
+- Tests cover zero-height wrappers with fixed descendants sorting by descendant fixed numeric z-index so lower/default-z-index fixed controls remain under higher-z-index fixed panels.
 - Tests cover visible viewport rect clamping for a long body/root and screenshot-cropped fallback bytes replacing the transparent placeholder when direct canvas serialization is unavailable.
 - Tests cover lazy images whose `currentSrc/src` is a transparent placeholder while `data-src` contains a real SVG icon.
 - `corepack pnpm test:e2e` passes and verifies default frames still import.
@@ -370,7 +383,7 @@ Classic runtime 不使用 modern syntax，不直接寫入 Figma node 自訂欄�
 
 **Scope boundaries:**
 
-- In scope: DOM tree preserving renderer, conservative flex Auto Layout, mixed inline content preservation, mixed direct-text padding preservation, pseudo transform translation for decoration geometry, mixed/direct interactive text HUG sizing for single-line labels, visible CSS pseudo-element decoration and textual pseudo-element capture/import, pseudo `content: url(...)` asset capture, clipped single-line text fixed sizing, clipped multiline/max-height frame clipping, reverse flex visual child order, non-uniform implicit spacing skip guard, CSS padding capture and Auto Layout padding mapping, single-child text alignment including equal-height flex line boxes, text visual backing, CSS gradient visual fills, rotated SVG bbox placement, invisible text backing avoidance, Figma HUG sizing for auto-width single-line text, CSS `white-space` text normalization, visible viewport rect clamping, canvas bitmap fallback with screenshot crop fallback, lazy image source selection, report counts, tests, docs.
+- In scope: DOM tree preserving renderer, conservative flex Auto Layout, mixed inline content preservation, mixed direct-text padding preservation, transparent padded text content rect placement, transparent padded interactive tab/link wrapper preservation, pseudo transform translation for decoration geometry, mixed/direct interactive text HUG sizing for single-line labels, visible CSS pseudo-element decoration and textual pseudo-element capture/import, pseudo `content: url(...)` asset capture, clipped single-line text fixed sizing, clipped multiline/max-height frame clipping, reverse flex visual child order, non-uniform implicit spacing skip guard, fixed/absolute overlay descendant z-index sorting for non-visual wrappers, CSS padding capture and Auto Layout padding mapping, single-child text alignment including equal-height flex line boxes, text visual backing, CSS gradient visual fills, rotated SVG bbox placement, invisible text backing avoidance, Figma HUG sizing for auto-width single-line text, CSS `white-space` text normalization, visible viewport rect clamping, canvas bitmap fallback with screenshot crop fallback, lazy image source selection, report counts, tests, docs.
 - Out of scope: full-page screenshot stitching, canvas/SVG vectorization, variable generation, components, variants, responsive multi-viewport behavior.
 
 ## Risks / Trade-offs

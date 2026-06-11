@@ -97,8 +97,8 @@ export function renderEditableAccurate(adapter, frame, packageData) {
   const nodeModels = createEditableLayoutNodeModels(packageData);
   const createdNodes = nodeModels.map((model) => createLayerTreeForModel(adapter, model));
 
-  for (const node of createdNodes) {
-    adapter.appendChild(frame, node);
+  for (let index = 0; index < createdNodes.length; index += 1) {
+    adapter.appendChild(frame, createdNodes[index], nodeModels[index]);
   }
 
   return {
@@ -116,8 +116,8 @@ export async function renderEditableAccurateAsync(adapter, frame, packageData) {
     createdNodes.push(await createLayerTreeForModelAsync(adapter, model));
   }
 
-  for (const node of createdNodes) {
-    adapter.appendChild(frame, node);
+  for (let index = 0; index < createdNodes.length; index += 1) {
+    adapter.appendChild(frame, createdNodes[index], nodeModels[index]);
   }
 
   return {
@@ -177,7 +177,7 @@ function createLayerForModel(adapter, model) {
 function createLayerTreeForModel(adapter, model) {
   const node = createLayerForModel(adapter, model);
   for (const childModel of model.children ?? []) {
-    adapter.appendChild(node, createLayerTreeForModel(adapter, childModel));
+    adapter.appendChild(node, createLayerTreeForModel(adapter, childModel), childModel);
   }
   return node;
 }
@@ -185,7 +185,7 @@ function createLayerTreeForModel(adapter, model) {
 async function createLayerTreeForModelAsync(adapter, model) {
   const node = await maybeAsync(createLayerForModel(adapter, model));
   for (const childModel of model.children ?? []) {
-    adapter.appendChild(node, await createLayerTreeForModelAsync(adapter, childModel));
+    adapter.appendChild(node, await createLayerTreeForModelAsync(adapter, childModel), childModel);
   }
   return node;
 }
@@ -242,6 +242,7 @@ export function createMemoryFigmaAdapter() {
         rect: model.rect,
         characters: model.text,
         textAutoResize: model.textAutoResize,
+        layoutPositioning: model.layoutPositioning,
         style: model.style
       };
     },
@@ -252,6 +253,7 @@ export function createMemoryFigmaAdapter() {
         sourceNodeId: model.sourceNodeId,
         cssZIndex: model.cssZIndex,
         rect: model.rect,
+        layoutPositioning: model.layoutPositioning,
         style: model.style
       };
     },
@@ -262,6 +264,7 @@ export function createMemoryFigmaAdapter() {
         sourceNodeId: model.sourceNodeId,
         cssZIndex: model.cssZIndex,
         rect: model.rect,
+        layoutPositioning: model.layoutPositioning,
         style: model.style,
         layoutMode: model.autoLayout?.applied ? model.autoLayout.layoutMode : "NONE",
         itemSpacing: model.autoLayout?.applied ? model.autoLayout.itemSpacing : 0,
@@ -289,7 +292,10 @@ export function createMemoryFigmaAdapter() {
         children: []
       };
     },
-    appendChild(parent, child) {
+    appendChild(parent, child, model = {}) {
+      if (model.layoutPositioning) {
+        child.layoutPositioning = model.layoutPositioning;
+      }
       parent.children.push(child);
     }
   };

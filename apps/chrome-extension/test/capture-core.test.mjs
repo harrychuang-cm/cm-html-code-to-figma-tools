@@ -220,6 +220,101 @@ test("document capture reads computed overflow axes and max-size styles", () => 
   assert.equal(limitedText.styles.textOverflow, "clip");
 });
 
+test("document capture preserves input placeholder metadata without storing input values", () => {
+  function createElement(tagName, options = {}) {
+    const attributes = options.attributes ?? [];
+    return {
+      tagName,
+      attributes,
+      value: options.value ?? "",
+      childNodes: options.childNodes ?? [],
+      children: options.children ?? [],
+      getAttribute(name) {
+        return attributes.find((attribute) => attribute.name === name)?.value ?? null;
+      },
+      getBoundingClientRect() {
+        return options.rect;
+      }
+    };
+  }
+
+  const searchInput = createElement("input", {
+    rect: { x: 808, y: 42, width: 450, height: 32 },
+    value: "",
+    attributes: [
+      { name: "id", value: "SearchbarSearchInput" },
+      { name: "class", value: "searchbar__input" },
+      { name: "placeholder", value: "搜尋股票/ETF代碼、名稱或人名" },
+      { name: "value", value: "should-not-be-captured" }
+    ]
+  });
+  const filledInput = createElement("input", {
+    rect: { x: 808, y: 82, width: 450, height: 32 },
+    value: "2330",
+    attributes: [
+      { name: "placeholder", value: "搜尋股票/ETF代碼、名稱或人名" }
+    ]
+  });
+  const body = createElement("body", {
+    rect: { x: 0, y: 0, width: 1440, height: 120 },
+    children: [searchInput, filledInput]
+  });
+
+  const capture = captureVisibleViewportFromDocument({
+    body,
+    documentElement: body,
+    title: "Search",
+    location: { href: "https://app.example.com/search" }
+  }, {
+    innerWidth: 1440,
+    innerHeight: 120,
+    devicePixelRatio: 2,
+    scrollX: 0,
+    scrollY: 0,
+    location: { href: "https://app.example.com/search" },
+    getComputedStyle(_element, pseudoName) {
+      if (pseudoName === "::placeholder") {
+        return {
+          display: "inline",
+          visibility: "visible",
+          opacity: "1",
+          color: "rgb(143, 143, 143)",
+          content: "normal"
+        };
+      }
+      return {
+        display: "block",
+        position: "static",
+        width: "450px",
+        height: "32px",
+        paddingLeft: "36px",
+        paddingRight: "8px",
+        fontSize: "14px",
+        lineHeight: "21px",
+        overflow: "clip",
+        overflowX: "clip",
+        overflowY: "clip",
+        textOverflow: "clip",
+        visibility: "visible",
+        opacity: "1",
+        backgroundColor: "rgb(247, 247, 247)",
+        color: "rgb(0, 0, 0)"
+      };
+    }
+  });
+
+  const empty = capture.root.children[0];
+  const filled = capture.root.children[1];
+
+  assert.equal(empty.attributes.placeholder, "搜尋股票/ETF代碼、名稱或人名");
+  assert.equal(empty.attributes.value, undefined);
+  assert.equal(empty.attributes["data-has-value"], undefined);
+  assert.equal(empty.styles.placeholderColor, "rgb(143, 143, 143)");
+  assert.equal(filled.attributes.placeholder, "搜尋股票/ETF代碼、名稱或人名");
+  assert.equal(filled.attributes.value, undefined);
+  assert.equal(filled.attributes["data-has-value"], "true");
+});
+
 test("content capture preserves viewport metadata for future import stages", () => {
   const capture = captureElementTree(
     {
@@ -374,7 +469,9 @@ test("document capture records computed padding styles", () => {
           paddingTop: "16px",
           paddingRight: "16px",
           paddingBottom: "16px",
-          paddingLeft: "16px"
+          paddingLeft: "16px",
+          marginLeft: "auto",
+          marginRight: "0px"
         };
       }
       return { display: "block" };
@@ -387,6 +484,8 @@ test("document capture records computed padding styles", () => {
   assert.equal(capture.root.children[0].styles.paddingRight, "16px");
   assert.equal(capture.root.children[0].styles.paddingBottom, "16px");
   assert.equal(capture.root.children[0].styles.paddingLeft, "16px");
+  assert.equal(capture.root.children[0].styles.marginLeft, "auto");
+  assert.equal(capture.root.children[0].styles.marginRight, "0px");
 });
 
 test("document capture records computed vertical-align for table-cell text import", () => {
@@ -544,6 +643,75 @@ test("document capture records computed font stack and style", () => {
   assert.equal(capturedLabel.styles.fontFamily, "\"Missing Webfont\", \"Available Sans\", sans-serif");
   assert.equal(capturedLabel.styles.fontStyle, "italic");
   assert.equal(capturedLabel.styles.fontWeight, "700");
+});
+
+test("document capture records clipped background gradient text styles", () => {
+  const rank = {
+    tagName: "span",
+    attributes: [],
+    childNodes: [{ nodeType: 3, textContent: "1" }],
+    children: [],
+    getBoundingClientRect() {
+      return { x: 48, y: 18, width: 40, height: 33 };
+    }
+  };
+  const body = {
+    tagName: "body",
+    attributes: [],
+    childNodes: [],
+    children: [rank],
+    getBoundingClientRect() {
+      return { x: 0, y: 0, width: 320, height: 80 };
+    }
+  };
+  const gradient = "linear-gradient(to right, rgb(222, 190, 135), rgb(192, 139, 78))";
+  const capture = captureVisibleViewportFromDocument({
+    body,
+    documentElement: body,
+    title: "Rank",
+    location: { href: "https://app.example.com/rank" }
+  }, {
+    innerWidth: 320,
+    innerHeight: 80,
+    devicePixelRatio: 2,
+    scrollX: 0,
+    scrollY: 0,
+    location: { href: "https://app.example.com/rank" },
+    getComputedStyle(element) {
+      if (element === rank) {
+        return {
+          display: "inline",
+          position: "static",
+          whiteSpace: "normal",
+          fontFamily: "Inter",
+          fontSize: "28px",
+          fontWeight: "700",
+          lineHeight: "33px",
+          color: "rgb(149, 149, 149)",
+          backgroundColor: "rgba(0, 0, 0, 0)",
+          backgroundImage: gradient,
+          backgroundClip: "text",
+          webkitBackgroundClip: "text",
+          webkitTextFillColor: "rgba(0, 0, 0, 0)"
+        };
+      }
+      return {
+        display: "block",
+        position: "static",
+        whiteSpace: "normal",
+        backgroundColor: "rgba(0, 0, 0, 0)"
+      };
+    }
+  }, {
+    captureTimestamp: "2026-06-11T02:45:59.000Z"
+  });
+
+  const capturedRank = capture.root.children[0];
+  assert.equal(capturedRank.textContent, "1");
+  assert.equal(capturedRank.styles.backgroundImage, gradient);
+  assert.equal(capturedRank.styles.backgroundClip, "text");
+  assert.equal(capturedRank.styles.webkitBackgroundClip, "text");
+  assert.equal(capturedRank.styles.webkitTextFillColor, "rgba(0, 0, 0, 0)");
 });
 
 test("document capture records transform styles for rotated visual assets", () => {

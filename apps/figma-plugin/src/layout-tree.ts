@@ -4,7 +4,9 @@ export function createEditableLayoutNodeModels(packageData) {
   );
   const rootModel = createModel(packageData.capture.root, {
     parentRect: { x: 0, y: 0, width: 0, height: 0 },
-    fallbackReasons
+    fallbackReasons,
+    backdropColor: null,
+    clippedAncestor: false
   });
 
   return rootModel ? [rootModel] : [];
@@ -46,25 +48,45 @@ function createModel(node, context) {
     return null;
   }
 
-  const absoluteRect = geometryAdjustedAbsoluteRect(node, normalizeRect(node.rect));
-  const rect = relativeRect(absoluteRect, context.parentRect);
-  const children = (node.children ?? [])
+  const inheritedBackdropColor = visibleColor(node.styles?.backgroundColor)
+    ? node.styles.backgroundColor
+    : context.backdropColor;
+  const hasClippedAncestor = Boolean(context.clippedAncestor || shouldClipContent(node));
+  let absoluteRect = geometryAdjustedAbsoluteRect(node, normalizeRect(node.rect));
+  let rect = relativeRect(absoluteRect, context.parentRect);
+  let children = (node.children ?? [])
     .map((child) => createModel(child, {
       parentRect: absoluteRect,
-      fallbackReasons: context.fallbackReasons
+      fallbackReasons: context.fallbackReasons,
+      backdropColor: inheritedBackdropColor,
+      clippedAncestor: hasClippedAncestor
     }))
     .filter(Boolean);
+  const visibleChildrenRect = visibleChildrenBoundsForTransparentTransformedWrapper(node, absoluteRect, children);
+  if (visibleChildrenRect) {
+    absoluteRect = visibleChildrenRect;
+    rect = relativeRect(absoluteRect, context.parentRect);
+    children = children.map((child) => ({
+      ...child,
+      rect: relativeRect(child.absoluteRect, absoluteRect)
+    }));
+  }
+  children = repairStaticPseudoFlexGeometry(node, absoluteRect, children);
+  if (node.textContent && shouldSuppressTinyClippedText(node, rect)) {
+    return null;
+  }
   const borderDecorations = createBorderDecorationModels(node, rect, absoluteRect);
 
   if (node.textContent && children.length > 0) {
-    const textModel = createDirectTextModel(node, absoluteRect, children);
+    const mixedContent = prepareMixedDirectTextContent(node, absoluteRect, children);
+    const textModel = createDirectTextModel(mixedContent.node, absoluteRect, mixedContent.children);
     const mixedChildren = [
-      ...insertMixedContentTextChild(children, textModel, node),
+      ...insertMixedContentTextChild(mixedContent.children, textModel, node),
       ...borderDecorations
     ];
     const autoLayout = inferAutoLayout(node, mixedChildren);
     return baseModel(node, "FRAME", rect, absoluteRect, {
-      style: extractVisualStyle(node),
+      style: visualStyleForNode(node, context),
       autoLayout,
       clipsContent: shouldClipContent(node),
       children: orderedChildrenForAutoLayout(mixedChildren, autoLayout)
@@ -75,16 +97,30 @@ function createModel(node, context) {
     if (isDirectTableCellTextNode(node)) {
       return createTableCellTextModel(node, rect, absoluteRect, borderDecorations);
     }
-    const textModel = createTextModel(node, rect, absoluteRect, inferTextAutoResize(node, rect));
+    if (shouldPreserveTransparentPaddedInteractiveTextFrame(node, rect)) {
+      return createTransparentPaddedTextFrameModel(node, rect, absoluteRect, borderDecorations);
+    }
+    const textGeometry = hasVisualBoxStyle(node.styles)
+      ? { rect, absoluteRect }
+      : paddedTransparentTextGeometry(node, rect, absoluteRect);
+    const textModel = createTextModel(
+      node,
+      textGeometry.rect,
+      textGeometry.absoluteRect,
+      inferTextAutoResize(node, textGeometry.rect)
+    );
     if (hasVisualBoxStyle(node.styles)) {
       const backingPadding = explicitCssPadding(node.styles);
       const shouldUsePaddedBacking = hasPositivePadding(backingPadding);
+      const backingContentRect = shouldUsePaddedBacking
+        ? contentRectFromPadding(rect, backingPadding)
+        : null;
       const backingTextAutoResize = shouldUsePaddedBacking
-        ? inferTextContentAutoResize(node, rect)
+        ? inferPaddedBackingTextAutoResize(node, backingContentRect)
         : "HEIGHT";
       const backingTextSizing = textLayoutSizingForAutoResize(backingTextAutoResize);
       const childRect = shouldUsePaddedBacking
-        ? contentRectFromPadding(rect, backingPadding)
+        ? backingContentRect
         : { x: 0, y: 0, width: rect.width, height: rect.height };
       return baseModel(node, "FRAME", rect, absoluteRect, {
         name: `Text Background / ${node.textContent.slice(0, 32)}`,
@@ -101,6 +137,10 @@ function createModel(node, context) {
       });
     }
     return textModel;
+  }
+
+  if (hasVisiblePlaceholder(node)) {
+    return createPlaceholderInputModel(node, rect, absoluteRect, borderDecorations);
   }
 
   if (node.fallbackRef) {
@@ -123,7 +163,10 @@ function createModel(node, context) {
   }
 
   if (children.length > 0) {
-    const frameChildren = [...children, ...borderDecorations];
+    const frameChildren = [
+      ...reparentAbsoluteOverlaysIntoStackingHosts(children),
+      ...borderDecorations
+    ];
     const autoLayout = inferAutoLayout(node, frameChildren);
     return baseModel(node, "FRAME", rect, absoluteRect, {
       style: extractVisualStyle(node),
@@ -256,6 +299,111 @@ function parseTransformNumbers(value) {
     .filter((number) => Number.isFinite(number));
 }
 
+function visibleChildrenBoundsForTransparentTransformedWrapper(node, absoluteRect, children) {
+  if (
+    children.length === 0 ||
+    hasVisualBoxStyle(node.styles) ||
+    shouldClipContent(node) ||
+    !hasTransformTranslation(node.styles?.transform)
+  ) {
+    return null;
+  }
+
+  const childrenRect = unionAbsoluteRect(children);
+  if (!childrenRect || rectContains(absoluteRect, childrenRect, 1)) {
+    return null;
+  }
+  return childrenRect;
+}
+
+function repairStaticPseudoFlexGeometry(node, absoluteRect, children) {
+  const styles = node.styles ?? {};
+  const display = normalizeCssKeyword(styles.display);
+  if ((display !== "flex" && display !== "inline-flex") || children.length < 2) {
+    return children;
+  }
+  const flexDirection = normalizeCssKeyword(styles.flexDirection);
+  const layoutMode = flexDirection.startsWith("column") ? "VERTICAL" : "HORIZONTAL";
+  const pseudoChildren = children.filter((child) => isStaticPseudoFlowModel(child) &&
+    pseudoOverlapsFlowSibling(child, children, layoutMode));
+  if (pseudoChildren.length === 0) {
+    return children;
+  }
+
+  const padding = explicitCssPadding(styles) ?? zeroPadding();
+  const startBase = layoutMode === "HORIZONTAL"
+    ? absoluteRect.x + padding.left
+    : absoluteRect.y + padding.top;
+  const endBase = layoutMode === "HORIZONTAL"
+    ? absoluteRect.x + absoluteRect.width - padding.right
+    : absoluteRect.y + absoluteRect.height - padding.bottom;
+  let beforeOffset = 0;
+  let afterOffset = 0;
+  return children.map((child) => {
+    if (!pseudoChildren.includes(child)) {
+      return child;
+    }
+    const size = layoutMode === "HORIZONTAL" ? child.absoluteRect.width : child.absoluteRect.height;
+    const start = isBeforePseudoModel(child)
+      ? startBase + beforeOffset
+      : endBase - afterOffset - size;
+    if (isBeforePseudoModel(child)) {
+      beforeOffset += size;
+    } else {
+      afterOffset += size;
+    }
+    const absoluteChildRect = layoutMode === "HORIZONTAL"
+      ? { ...child.absoluteRect, x: round(start) }
+      : { ...child.absoluteRect, y: round(start) };
+    return {
+      ...child,
+      absoluteRect: absoluteChildRect,
+      rect: relativeRect(absoluteChildRect, absoluteRect)
+    };
+  });
+}
+
+function isStaticPseudoFlowModel(model) {
+  return (isBeforePseudoModel(model) || isAfterPseudoModel(model)) &&
+    normalizeCssKeyword(model.styles?.position) !== "absolute" &&
+    hasUsableBounds(model.absoluteRect);
+}
+
+function pseudoOverlapsFlowSibling(pseudo, children, layoutMode) {
+  return children.some((child) => child !== pseudo &&
+    !isBeforePseudoModel(child) &&
+    !isAfterPseudoModel(child) &&
+    axisRangesOverlap(pseudo.absoluteRect, child.absoluteRect, layoutMode));
+}
+
+function axisRangesOverlap(a, b, layoutMode) {
+  return primaryAxisStart(a, layoutMode) < primaryAxisEnd(b, layoutMode) &&
+    primaryAxisEnd(a, layoutMode) > primaryAxisStart(b, layoutMode);
+}
+
+function hasTransformTranslation(transform) {
+  const translation = transformTranslation(transform);
+  return Math.abs(translation.x) >= 0.001 || Math.abs(translation.y) >= 0.001;
+}
+
+function unionAbsoluteRect(children) {
+  const visibleChildren = children.filter((child) => hasUsableBounds(child.absoluteRect));
+  if (visibleChildren.length === 0) {
+    return null;
+  }
+
+  const left = Math.min(...visibleChildren.map((child) => child.absoluteRect.x));
+  const top = Math.min(...visibleChildren.map((child) => child.absoluteRect.y));
+  const right = Math.max(...visibleChildren.map((child) => child.absoluteRect.x + child.absoluteRect.width));
+  const bottom = Math.max(...visibleChildren.map((child) => child.absoluteRect.y + child.absoluteRect.height));
+  return {
+    x: round(left),
+    y: round(top),
+    width: round(Math.max(1, right - left)),
+    height: round(Math.max(1, bottom - top))
+  };
+}
+
 function borderDecorationRect(side, rect) {
   if (side.side === "top") {
     return { x: 0, y: 0, width: rect.width, height: side.width };
@@ -277,6 +425,7 @@ function baseModel(node, type, rect, absoluteRect, overrides = {}) {
     sourceNodeId: node.sourceNodeId,
     ...(node.nodeType === "pseudo" ? { pseudoType: node.tagName } : {}),
     ...(numericZIndex(node.styles?.zIndex) !== null ? { cssZIndex: String(node.styles.zIndex).trim() } : {}),
+    ...(normalizeCssKeyword(node.styles?.position) === "absolute" ? { layoutPositioning: "ABSOLUTE" } : {}),
     rect,
     absoluteRect,
     styles: node.styles ?? {},
@@ -312,6 +461,99 @@ function createTableCellTextModel(node, rect, absoluteRect, borderDecorations) {
       : null,
     children: [textModel, ...borderDecorations]
   });
+}
+
+function createTransparentPaddedTextFrameModel(node, rect, absoluteRect, borderDecorations) {
+  const padding = explicitCssPadding(node.styles) ?? zeroPadding();
+  const contentRect = contentRectFromPadding(rect, padding);
+  const contentAbsoluteRect = {
+    x: round(absoluteRect.x + contentRect.x),
+    y: round(absoluteRect.y + contentRect.y),
+    width: contentRect.width,
+    height: contentRect.height
+  };
+  const textNode = {
+    ...node,
+    sourceNodeId: `${node.sourceNodeId}::text`
+  };
+  const textAutoResize = inferPaddedBackingTextAutoResize(textNode, contentRect);
+  const textModel = createTextModel(
+    textNode,
+    contentRect,
+    contentAbsoluteRect,
+    textAutoResize
+  );
+
+  return baseModel(node, "FRAME", rect, absoluteRect, {
+    name: `Text Wrapper / ${String(node.textContent ?? "").slice(0, 32)}`,
+    style: extractVisualStyle(node),
+    autoLayout: borderDecorations.length === 0
+      ? textBackingAutoLayout(padding, textAutoResize)
+      : null,
+    clipsContent: shouldClipContent(node),
+    children: [textModel, ...borderDecorations]
+  });
+}
+
+function createPlaceholderInputModel(node, rect, absoluteRect, borderDecorations) {
+  const placeholderTextModel = createPlaceholderTextModel(node, rect, absoluteRect);
+  return baseModel(node, "FRAME", rect, absoluteRect, {
+    name: `Input / ${String(node.attributes?.placeholder ?? "").slice(0, 32)}`,
+    style: extractVisualStyle(node),
+    autoLayout: null,
+    clipsContent: shouldClipContent(node),
+    children: [placeholderTextModel, ...borderDecorations]
+  });
+}
+
+function createPlaceholderTextModel(node, rect, absoluteRect) {
+  const placeholderTextRect = inputPlaceholderTextRect(rect, node.styles ?? {});
+  const placeholderAbsoluteRect = {
+    x: round(absoluteRect.x + placeholderTextRect.x),
+    y: round(absoluteRect.y + placeholderTextRect.y),
+    width: placeholderTextRect.width,
+    height: placeholderTextRect.height
+  };
+  const placeholderStyles = placeholderTextStyles(node.styles ?? {});
+  const placeholderNode = {
+    ...node,
+    sourceNodeId: `${node.sourceNodeId}::placeholder`,
+    tagName: "#text",
+    textContent: String(node.attributes?.placeholder ?? ""),
+    rect: placeholderAbsoluteRect,
+    styles: placeholderStyles,
+    children: []
+  };
+  return createTextModel(placeholderNode, placeholderTextRect, placeholderAbsoluteRect, "TRUNCATE");
+}
+
+function inputPlaceholderTextRect(rect, styles = {}) {
+  const padding = explicitCssPadding(styles) ?? zeroPadding();
+  const lineHeight = parseCssNumber(styles.lineHeight) || parseCssNumber(styles.fontSize) * 1.2 || rect.height;
+  const textHeight = round(Math.min(rect.height, Math.max(1, lineHeight)));
+  const contentHeight = Math.max(1, rect.height - padding.top - padding.bottom);
+  return {
+    x: padding.left,
+    y: round(padding.top + Math.max(0, (contentHeight - textHeight) / 2)),
+    width: round(Math.max(1, rect.width - padding.left - padding.right)),
+    height: textHeight
+  };
+}
+
+function placeholderTextStyles(styles = {}) {
+  const next = {
+    ...styles,
+    color: styles.placeholderColor || styles.color,
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    overflowX: "hidden",
+    textOverflow: styles.textOverflow === "ellipsis" ? "ellipsis" : "clip"
+  };
+  delete next.webkitTextFillColor;
+  delete next.backgroundClip;
+  delete next.webkitBackgroundClip;
+  delete next.backgroundImage;
+  return next;
 }
 
 function tableCellTextAutoResize(node, rect) {
@@ -413,6 +655,14 @@ function isDirectTableCellTextNode(node) {
   return tagName === "td" || tagName === "th" || display === "table-cell";
 }
 
+function hasVisiblePlaceholder(node) {
+  const tagName = String(node.tagName ?? "").toLowerCase();
+  const placeholder = String(node.attributes?.placeholder ?? "");
+  return (tagName === "input" || tagName === "textarea") &&
+    placeholder.trim().length > 0 &&
+    String(node.attributes?.["data-has-value"] ?? "").toLowerCase() !== "true";
+}
+
 function classTokens(className) {
   return new Set(String(className ?? "").split(/\s+/).filter(Boolean));
 }
@@ -431,6 +681,104 @@ function createDirectTextModel(node, parentAbsoluteRect, children) {
     styles
   };
   return createTextModel(textNode, rect, absoluteRect, inferTextContentAutoResize(textNode, rect));
+}
+
+function prepareMixedDirectTextContent(node, parentAbsoluteRect, children) {
+  const merge = mergeableInlineSeparator(node, parentAbsoluteRect, children);
+  if (!merge) {
+    return { node, children };
+  }
+
+  const mergedText = insertInlineSeparatorText(
+    node.textContent,
+    merge.separator.text,
+    merge.primaryOffset,
+    node.styles
+  );
+  return {
+    node: {
+      ...node,
+      textContent: mergedText
+    },
+    children: children.filter((child) => child !== merge.separator)
+  };
+}
+
+function mergeableInlineSeparator(node, parentAbsoluteRect, children) {
+  const separators = children.filter(isInlineTextSeparatorModel);
+  if (separators.length !== 1 || children.some((child) => child.pseudoType)) {
+    return null;
+  }
+
+  const styles = node.styles ?? {};
+  const flexDirection = styles.flexDirection ?? "row";
+  if (flexDirection.startsWith("column")) {
+    return null;
+  }
+
+  const padding = explicitCssPadding(styles) ?? zeroPadding();
+  const parentStart = parentAbsoluteRect.x + padding.left;
+  const parentEnd = parentAbsoluteRect.x + Math.max(0, parentAbsoluteRect.width - padding.right);
+  const parentSize = parentEnd - parentStart;
+  const separator = separators[0];
+  const primaryOffset = separator.absoluteRect.x - parentStart;
+  if (primaryOffset <= 1 || primaryOffset >= parentSize - 1) {
+    return null;
+  }
+
+  const largestSegment = largestDirectTextSegmentSize(children, parentStart, parentEnd);
+  const estimatedTextSize = estimateTextPrimarySize(node.textContent, styles);
+  if (estimatedTextSize <= largestSegment + 1 || estimatedTextSize > parentSize + separator.absoluteRect.width + 8) {
+    return null;
+  }
+
+  return { separator, primaryOffset };
+}
+
+function isInlineTextSeparatorModel(child) {
+  if (child.type !== "TEXT" || child.pseudoType) {
+    return false;
+  }
+  const text = String(child.text ?? "").trim();
+  return text.length > 0 && text.length <= 2 && /^[|¦:：/\\·•\-–—]+$/.test(text);
+}
+
+function largestDirectTextSegmentSize(children, parentStart, parentEnd) {
+  const sorted = children
+    .filter((child) => directTextChildOverlapsContent(child, "HORIZONTAL", parentStart, parentEnd))
+    .sort((a, b) => a.absoluteRect.x - b.absoluteRect.x);
+  const segments = [];
+  let cursor = parentStart;
+  for (const child of sorted) {
+    const childStart = clamp(child.absoluteRect.x, parentStart, parentEnd);
+    const childEnd = clamp(child.absoluteRect.x + child.absoluteRect.width, parentStart, parentEnd);
+    addDirectTextSegment(segments, cursor, childStart, cursor > parentStart, true);
+    cursor = Math.max(cursor, childEnd);
+  }
+  addDirectTextSegment(segments, cursor, parentEnd, cursor > parentStart, false);
+  return segments.reduce((max, segment) => Math.max(max, segment.size), 0);
+}
+
+function insertInlineSeparatorText(text, separator, primaryOffset, styles = {}) {
+  const source = String(text ?? "");
+  const index = closestTextSplitIndex(source, primaryOffset, styles);
+  const prefix = source.slice(0, index).trimEnd();
+  const suffix = source.slice(index).trimStart();
+  return [prefix, String(separator ?? "").trim(), suffix].filter(Boolean).join(" ");
+}
+
+function closestTextSplitIndex(text, targetWidth, styles = {}) {
+  let bestIndex = 0;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (let index = 0; index <= text.length; index += 1) {
+    const width = estimateTextPrimarySize(text.slice(0, index), styles);
+    const distance = Math.abs(width - targetWidth);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = index;
+    }
+  }
+  return bestIndex;
 }
 
 function insertMixedContentTextChild(children, textModel, node) {
@@ -474,6 +822,22 @@ function inferDirectTextRect(node, parentRect, children) {
   const crossSize = layoutMode === "HORIZONTAL"
     ? Math.max(1, parentRect.height - padding.top - padding.bottom)
     : Math.max(1, parentRect.width - padding.left - padding.right);
+  if (shouldUseFullMultilineDirectTextRect(node, parentRect, children, layoutMode, padding)) {
+    if (layoutMode === "HORIZONTAL") {
+      return {
+        x: round(parentStart),
+        y: round(crossStart),
+        width: round(Math.max(1, parentEnd - parentStart)),
+        height: round(crossSize)
+      };
+    }
+    return {
+      x: round(crossStart),
+      y: round(parentStart),
+      width: round(crossSize),
+      height: round(Math.max(1, parentEnd - parentStart))
+    };
+  }
   const sorted = children
     .filter((child) => directTextChildOverlapsContent(child, layoutMode, parentStart, parentEnd))
     .sort((a, b) => layoutMode === "HORIZONTAL"
@@ -515,6 +879,27 @@ function inferDirectTextRect(node, parentRect, children) {
     width: round(crossSize),
     height: round(Math.max(1, estimatedTextSize))
   };
+}
+
+function shouldUseFullMultilineDirectTextRect(node, parentRect, children, layoutMode, padding) {
+  if (layoutMode !== "HORIZONTAL" || children.some((child) => child.pseudoType)) {
+    return false;
+  }
+
+  const styles = node.styles ?? {};
+  const whiteSpace = normalizeCssKeyword(styles.whiteSpace);
+  if (whiteSpace === "nowrap" || whiteSpace === "pre") {
+    return false;
+  }
+
+  const lineHeight = parseCssNumber(styles.lineHeight) || parseCssNumber(styles.fontSize) * 1.2;
+  const contentHeight = Math.max(1, parentRect.height - padding.top - padding.bottom);
+  if (!(lineHeight > 0) || contentHeight < lineHeight * 1.5) {
+    return false;
+  }
+
+  const firstLineBottom = parentRect.y + padding.top + lineHeight - 0.5;
+  return children.some((child) => child.absoluteRect.y >= firstLineBottom);
 }
 
 function directTextChildOverlapsContent(child, layoutMode, parentStart, parentEnd) {
@@ -604,12 +989,14 @@ function inferAutoLayout(node, children) {
     return skippedLayout("overlapping-layout");
   }
 
-  const primaryAxisAlignItems = primaryAxisAlignmentFromCss(styles.justifyContent);
+  const primaryAxisAlignItems = inferPrimaryAxisAlignment(styles, children, layoutMode, parentRect);
   const counterAxisAlignItems = counterAxisAlignmentFromCss(styles.alignItems);
   if (hasNonUniformImplicitSpacing(styles, children, layoutMode, primaryAxisAlignItems)) {
     return skippedLayout("non-uniform-spacing");
   }
-  const spacing = explicitSpacing(styles, layoutMode) ?? measuredSpacing(children, layoutMode);
+  const spacing = primaryAxisAlignItems === "SPACE_BETWEEN"
+    ? 0
+    : explicitSpacing(styles, layoutMode) ?? measuredSpacing(children, layoutMode);
   const paddingResult = resolvePadding(styles, parentRect, children);
   const padding = alignmentAwarePadding(
     paddingResult.padding,
@@ -635,23 +1022,130 @@ function inferAutoLayout(node, children) {
 }
 
 function orderedChildrenForAutoLayout(children, autoLayout) {
+  const pseudoOrderedChildren = orderPseudoChildrenForFlow(children, autoLayout?.layoutMode ?? "HORIZONTAL");
   if (autoLayout?.applied && autoLayout.reversedChildren) {
-    return [...children].reverse();
+    return [...pseudoOrderedChildren].reverse();
   }
   if (!autoLayout?.applied) {
-    return stackOrderedChildren(children);
+    return stackOrderedChildren(pseudoOrderedChildren);
   }
-  return children;
+  return pseudoOrderedChildren;
+}
+
+function orderPseudoChildrenForFlow(children, layoutMode) {
+  if (!children.some((child) => isBeforePseudoModel(child) || isAfterPseudoModel(child))) {
+    return children;
+  }
+  const sorted = (items) => [...items].sort((a, b) => layoutMode === "HORIZONTAL"
+    ? a.absoluteRect.x - b.absoluteRect.x
+    : a.absoluteRect.y - b.absoluteRect.y);
+  const beforeChildren = sorted(children.filter(isBeforePseudoModel));
+  const afterChildren = sorted(children.filter(isAfterPseudoModel));
+  const flowChildren = children.filter((child) => !isBeforePseudoModel(child) && !isAfterPseudoModel(child));
+  return [
+    ...beforeChildren,
+    ...flowChildren,
+    ...afterChildren
+  ];
 }
 
 function stackOrderedChildren(children) {
-  if (!children.some((child) => numericZIndex(child.styles?.zIndex) !== null)) {
+  if (!children.some((child) => siblingStackOrderZIndex(child) !== null)) {
     return children;
   }
   return children
-    .map((child, index) => ({ child, index, zIndex: numericZIndex(child.styles?.zIndex) ?? 0 }))
+    .map((child, index) => ({ child, index, zIndex: siblingStackOrderZIndex(child) ?? 0 }))
     .sort((a, b) => a.zIndex - b.zIndex || a.index - b.index)
     .map((item) => item.child);
+}
+
+function reparentAbsoluteOverlaysIntoStackingHosts(children) {
+  if (children.length < 2) {
+    return children;
+  }
+
+  const next = [...children];
+  for (const overlay of children) {
+    if (!isAbsoluteOverlayCandidate(overlay)) {
+      continue;
+    }
+
+    const overlayIndex = next.indexOf(overlay);
+    if (overlayIndex < 0) {
+      continue;
+    }
+
+    const hostIndex = next.findIndex((candidate) => candidate !== overlay && canHostAbsoluteOverlay(candidate, overlay));
+    if (hostIndex < 0) {
+      continue;
+    }
+
+    const host = next[hostIndex];
+    const graftedOverlay = {
+      ...overlay,
+      rect: relativeRect(overlay.absoluteRect, host.absoluteRect),
+      layoutPositioning: "ABSOLUTE"
+    };
+    next[hostIndex] = {
+      ...host,
+      children: [graftedOverlay, ...(host.children ?? [])]
+    };
+    next.splice(overlayIndex, 1);
+  }
+
+  return next;
+}
+
+function isAbsoluteOverlayCandidate(model) {
+  return normalizeCssKeyword(model.styles?.position) === "absolute" &&
+    hasUsableBounds(model.absoluteRect);
+}
+
+function canHostAbsoluteOverlay(host, overlay) {
+  if (host.type !== "FRAME" || !host.autoLayout?.applied || !hasModelVisualStyle(host.style)) {
+    return false;
+  }
+  if (!rectContains(host.absoluteRect, overlay.absoluteRect, 1)) {
+    return false;
+  }
+  const hostZIndex = stackOrderZIndex(host);
+  const overlayZIndex = stackOrderZIndex(overlay) ?? 0;
+  return hostZIndex !== null && hostZIndex > overlayZIndex;
+}
+
+function rectContains(outer, inner, tolerance = 0) {
+  return inner.x >= outer.x - tolerance &&
+    inner.y >= outer.y - tolerance &&
+    inner.x + inner.width <= outer.x + outer.width + tolerance &&
+    inner.y + inner.height <= outer.y + outer.height + tolerance;
+}
+
+function stackOrderZIndex(model) {
+  const ownZIndex = numericZIndex(model.styles?.zIndex);
+  if (ownZIndex !== null) {
+    return ownZIndex;
+  }
+  let descendantZIndex = null;
+  for (const child of model.children ?? []) {
+    const childZIndex = stackOrderZIndex(child);
+    if (childZIndex !== null) {
+      descendantZIndex = descendantZIndex === null
+        ? childZIndex
+        : Math.max(descendantZIndex, childZIndex);
+    }
+  }
+  return descendantZIndex;
+}
+
+function siblingStackOrderZIndex(model) {
+  const ownZIndex = numericZIndex(model.styles?.zIndex);
+  if (ownZIndex !== null) {
+    return ownZIndex;
+  }
+  if (!isNonVisualOverlayWrapper(model)) {
+    return null;
+  }
+  return positionedOverlayDescendantZIndex(model);
 }
 
 function numericZIndex(value) {
@@ -660,6 +1154,48 @@ function numericZIndex(value) {
     return null;
   }
   return Number(normalized);
+}
+
+function isNonVisualOverlayWrapper(model) {
+  if (model.type !== "FRAME" || hasModelVisualStyle(model.style)) {
+    return false;
+  }
+  const position = normalizeCssKeyword(model.styles?.position);
+  const isStaticLike = !position || position === "static" || position === "relative";
+  if (!isStaticLike) {
+    return false;
+  }
+  const collapsed = model.rect.width <= 1 ||
+    model.rect.height <= 1 ||
+    model.absoluteRect.width <= 1 ||
+    model.absoluteRect.height <= 1;
+  if (collapsed) {
+    return true;
+  }
+  const children = model.children ?? [];
+  return children.length > 0 && children.every((child) => {
+    const childPosition = normalizeCssKeyword(child.styles?.position);
+    return childPosition === "fixed" ||
+      childPosition === "absolute" ||
+      isNonVisualOverlayWrapper(child);
+  });
+}
+
+function positionedOverlayDescendantZIndex(model) {
+  let result = null;
+  for (const child of model.children ?? []) {
+    const position = normalizeCssKeyword(child.styles?.position);
+    const childZIndex = (position === "fixed" || position === "absolute")
+      ? numericZIndex(child.styles?.zIndex)
+      : null;
+    const descendantZIndex = positionedOverlayDescendantZIndex(child);
+    for (const value of [childZIndex, descendantZIndex]) {
+      if (value !== null) {
+        result = result === null ? value : Math.max(result, value);
+      }
+    }
+  }
+  return result;
 }
 
 function isReverseFlexDirection(value) {
@@ -858,6 +1394,15 @@ function inferTextContentAutoResize(node, rect) {
   if (isClippedSingleLineText(node, rect, styles)) {
     return "TRUNCATE";
   }
+  if (isCapturedRectClippedExplicitTextBox(node, rect, styles)) {
+    return "TRUNCATE";
+  }
+  if (isOverflowClippedTextBox(node, rect, styles)) {
+    return "TRUNCATE";
+  }
+  if (shouldPreserveExplicitTextBoxWidth(node, rect, styles)) {
+    return "HEIGHT";
+  }
 
   const lineHeight = parseCssNumber(styles.lineHeight) || parseCssNumber(styles.fontSize) * 1.2;
   if (lineHeight > 0 && rect.height > lineHeight * 1.75) {
@@ -870,9 +1415,153 @@ function inferTextContentAutoResize(node, rect) {
   return "WIDTH_AND_HEIGHT";
 }
 
+function inferPaddedBackingTextAutoResize(node, rect) {
+  if (String(node.textContent ?? "").includes("\n")) {
+    return "HEIGHT";
+  }
+
+  const styles = node.styles ?? {};
+  if (isClippedSingleLineText(node, rect, styles)) {
+    return "TRUNCATE";
+  }
+  if (isOverflowClippedTextBox(node, rect, styles)) {
+    return "TRUNCATE";
+  }
+
+  const lineHeight = parseCssNumber(styles.lineHeight) || parseCssNumber(styles.fontSize) * 1.2;
+  if (lineHeight > 0 && rect.height > lineHeight * 1.75) {
+    return "HEIGHT";
+  }
+
+  return "WIDTH_AND_HEIGHT";
+}
+
 function shouldPreserveTallSingleLineHug(node, rect, styles) {
   return (isSyntheticDirectTextNode(node) || isInteractiveSingleLineTextElement(node)) &&
     fitsEstimatedSingleLineText(node, rect, styles);
+}
+
+function shouldPreserveTransparentPaddedInteractiveTextFrame(node, rect) {
+  if (
+    hasVisualBoxStyle(node.styles) ||
+    !isInteractiveSingleLineTextElement(node) ||
+    String(node.textContent ?? "").includes("\n") ||
+    rect.width <= 0 ||
+    rect.height <= 0
+  ) {
+    return false;
+  }
+
+  const styles = node.styles ?? {};
+  const padding = explicitCssPadding(styles);
+  if (!hasPositivePadding(padding)) {
+    return false;
+  }
+
+  const explicitWidth = parseCssNumber(styles.width);
+  const explicitHeight = parseCssNumber(styles.height);
+  if (
+    (!(explicitWidth > 0) || Math.abs(explicitWidth - rect.width) > 1.5) &&
+    (!(explicitHeight > 0) || Math.abs(explicitHeight - rect.height) > 1.5)
+  ) {
+    return false;
+  }
+
+  const contentRect = contentRectFromPadding(rect, padding);
+  return fitsEstimatedSingleLineText(node, contentRect, styles);
+}
+
+function shouldPreserveExplicitTextBoxWidth(node, rect, styles) {
+  if (
+    isSyntheticDirectTextNode(node) ||
+    isInteractiveSingleLineTextElement(node) ||
+    rect.width <= 0 ||
+    !String(node.textContent ?? "").trim()
+  ) {
+    return false;
+  }
+
+  const explicitWidth = parseCssNumber(styles.width);
+  if (!(explicitWidth > 0) || Math.abs(explicitWidth - rect.width) > 1.5) {
+    return false;
+  }
+
+  const fontSize = parseCssNumber(styles.fontSize) || 14;
+  const padding = parseCssNumber(styles.paddingLeft) + parseCssNumber(styles.paddingRight);
+  const estimatedTextBoxWidth = estimateTextPrimarySize(node.textContent, styles) + Math.max(0, padding);
+  const tolerance = Math.max(6, fontSize * 0.5);
+  return rect.width > estimatedTextBoxWidth + tolerance;
+}
+
+function isCapturedRectClippedExplicitTextBox(node, rect, styles) {
+  if (
+    isSyntheticDirectTextNode(node) ||
+    rect.width <= 0 ||
+    !String(node.textContent ?? "").trim()
+  ) {
+    return false;
+  }
+
+  const explicitWidth = parseCssNumber(styles.width);
+  if (!(explicitWidth > rect.width + 1.5)) {
+    return false;
+  }
+
+  const fontSize = parseCssNumber(styles.fontSize) || 14;
+  const estimatedTextWidth = estimateTextPrimarySize(node.textContent, styles);
+  const tolerance = Math.max(2, fontSize * 0.25);
+  return estimatedTextWidth > rect.width + tolerance;
+}
+
+function shouldSuppressTinyClippedText(node, rect) {
+  const styles = node.styles ?? {};
+  if (
+    isSyntheticDirectTextNode(node) ||
+    rect.width <= 0 ||
+    !String(node.textContent ?? "").trim()
+  ) {
+    return false;
+  }
+
+  const explicitWidth = parseCssNumber(styles.width);
+  const fontSize = parseCssNumber(styles.fontSize) || 14;
+  const tinyWidth = Math.max(4, fontSize * 0.3);
+  return explicitWidth > rect.width + 1.5 &&
+    rect.width <= tinyWidth &&
+    estimateTextPrimarySize(node.textContent, styles) > rect.width + Math.max(2, fontSize * 0.25);
+}
+
+function isOverflowClippedTextBox(node, rect, styles) {
+  if (
+    rect.width <= 0 ||
+    rect.height <= 0 ||
+    !String(node.textContent ?? "").trim() ||
+    !clipsTextOverflow(styles)
+  ) {
+    return false;
+  }
+
+  const explicitHeight = parseCssNumber(styles.height);
+  if (!(explicitHeight > 0) || Math.abs(explicitHeight - rect.height) > 1.5) {
+    return false;
+  }
+
+  const lineHeight = parseCssNumber(styles.lineHeight) || parseCssNumber(styles.fontSize) * 1.2;
+  if (!(lineHeight > 0) || rect.height <= lineHeight + 1) {
+    return false;
+  }
+
+  const estimatedLines = Math.max(1, Math.ceil(estimateTextPrimarySize(node.textContent, styles) / Math.max(1, rect.width)));
+  const visibleLines = Math.max(1, Math.floor((rect.height + 0.5) / lineHeight));
+  return estimatedLines >= visibleLines;
+}
+
+function clipsTextOverflow(styles = {}) {
+  return clipsOverflowKeyword(styles.overflow) ||
+    clipsOverflowKeyword(styles.overflowX) ||
+    clipsOverflowKeyword(styles.overflowY) ||
+    clipsOverflowShorthand(styles.overflow, "x") ||
+    clipsOverflowShorthand(styles.overflow, "y");
 }
 
 function normalizeTallHugTextGeometry(node, rect, absoluteRect, textAutoResize) {
@@ -907,7 +1596,11 @@ function normalizeTallHugTextGeometry(node, rect, absoluteRect, textAutoResize) 
 }
 
 function shouldNormalizeTallSingleLineHugGeometry(node, rect, styles) {
-  return (isSynthesizedDirectTextNode(node) || isInteractiveSingleLineTextElement(node)) &&
+  return (
+    isSynthesizedDirectTextNode(node) ||
+    isInteractiveSingleLineTextElement(node) ||
+    isCenteredSingleLineTextBox(node, styles)
+  ) &&
     fitsEstimatedSingleLineText(node, rect, styles);
 }
 
@@ -928,6 +1621,16 @@ function isInteractiveSingleLineTextElement(node) {
     role === "button" ||
     role === "link" ||
     role === "menuitem";
+}
+
+function isCenteredSingleLineTextBox(node, styles) {
+  const display = normalizeCssKeyword(styles.display);
+  const textAlign = normalizeCssKeyword(styles.textAlign);
+  const whiteSpace = normalizeCssKeyword(styles.whiteSpace);
+  return textAlign === "center" &&
+    (display === "inline-block" || display === "block" || display === "inline-flex") &&
+    parseCssNumber(styles.height) > 0 &&
+    whiteSpace !== "normal";
 }
 
 function fitsEstimatedSingleLineText(node, rect, styles) {
@@ -979,6 +1682,31 @@ function contentRectFromPadding(rect, padding) {
     y: padding.top,
     width: round(Math.max(1, rect.width - padding.left - padding.right)),
     height: round(Math.max(1, rect.height - padding.top - padding.bottom))
+  };
+}
+
+function paddedTransparentTextGeometry(node, rect, absoluteRect) {
+  const padding = explicitCssPadding(node.styles);
+  if (!hasPositivePadding(padding)) {
+    return { rect, absoluteRect };
+  }
+  const styles = node.styles ?? {};
+  if (shouldPreserveExplicitTextBoxWidth(node, rect, styles)) {
+    return { rect, absoluteRect };
+  }
+  const contentRect = contentRectFromPadding(rect, padding);
+  return {
+    rect: {
+      ...contentRect,
+      x: round(rect.x + contentRect.x),
+      y: round(rect.y + contentRect.y)
+    },
+    absoluteRect: {
+      x: round(absoluteRect.x + contentRect.x),
+      y: round(absoluteRect.y + contentRect.y),
+      width: contentRect.width,
+      height: contentRect.height
+    }
   };
 }
 
@@ -1051,6 +1779,45 @@ function explicitSpacing(styles, layoutMode) {
   return parsedGap > 0 ? parsedGap : null;
 }
 
+function inferPrimaryAxisAlignment(styles, children, layoutMode, parentRect) {
+  const cssAlignment = primaryAxisAlignmentFromCss(styles.justifyContent);
+  if (cssAlignment) {
+    return cssAlignment;
+  }
+  if (shouldInferSpaceBetweenFromGeometry(styles, children, layoutMode, parentRect)) {
+    return "SPACE_BETWEEN";
+  }
+  return undefined;
+}
+
+function shouldInferSpaceBetweenFromGeometry(styles, children, layoutMode, parentRect) {
+  if (children.length !== 2) {
+    return false;
+  }
+
+  const sorted = sortedByPrimaryAxis(children, layoutMode);
+  const explicitGap = explicitSpacing(styles, layoutMode);
+  const marginGap = trailingAxisMargin(sorted[0], layoutMode) + leadingAxisMargin(sorted[1], layoutMode);
+  if (explicitGap === null && marginGap <= 0) {
+    return false;
+  }
+
+  const measuredGap = primaryAxisGap(sorted[0], sorted[1], layoutMode);
+  const expectedGap = explicitGap ?? 0;
+  const minimumDelta = 32;
+  if (
+    measuredGap - expectedGap <= minimumDelta ||
+    measuredGap <= Math.max(expectedGap * 3, expectedGap + minimumDelta)
+  ) {
+    return false;
+  }
+
+  const leadingInset = primaryAxisStart(sorted[0].absoluteRect, layoutMode) - primaryAxisStart(parentRect, layoutMode);
+  const trailingInset = primaryAxisEnd(parentRect, layoutMode) - primaryAxisEnd(sorted[1].absoluteRect, layoutMode);
+  return approximatelyEqualInset(leadingInset, leadingAxisPadding(styles, layoutMode), 2) &&
+    approximatelyEqualInset(trailingInset, trailingAxisPadding(styles, layoutMode), 2);
+}
+
 function measuredSpacing(children, layoutMode) {
   const gaps = primaryAxisGaps(children, layoutMode);
   if (gaps.length === 0) {
@@ -1077,22 +1844,52 @@ function hasNonUniformImplicitSpacing(styles, children, layoutMode, primaryAxisA
 }
 
 function primaryAxisGaps(children, layoutMode) {
-  const sorted = [...children].sort((a, b) => layoutMode === "HORIZONTAL"
-    ? a.absoluteRect.x - b.absoluteRect.x
-    : a.absoluteRect.y - b.absoluteRect.y);
+  const sorted = sortedByPrimaryAxis(children, layoutMode);
   const gaps = [];
 
   for (let index = 1; index < sorted.length; index += 1) {
-    const previous = sorted[index - 1].absoluteRect;
-    const current = sorted[index].absoluteRect;
-    const gap = layoutMode === "HORIZONTAL"
-      ? current.x - (previous.x + previous.width)
-      : current.y - (previous.y + previous.height);
+    const gap = primaryAxisGap(sorted[index - 1], sorted[index], layoutMode);
     if (gap >= 0) {
       gaps.push(gap);
     }
   }
   return gaps;
+}
+
+function sortedByPrimaryAxis(children, layoutMode) {
+  return [...children].sort((a, b) => primaryAxisStart(a.absoluteRect, layoutMode) - primaryAxisStart(b.absoluteRect, layoutMode));
+}
+
+function primaryAxisGap(previous, current, layoutMode) {
+  return primaryAxisStart(current.absoluteRect, layoutMode) - primaryAxisEnd(previous.absoluteRect, layoutMode);
+}
+
+function primaryAxisStart(rect, layoutMode) {
+  return layoutMode === "HORIZONTAL" ? rect.x : rect.y;
+}
+
+function primaryAxisEnd(rect, layoutMode) {
+  return layoutMode === "HORIZONTAL" ? rect.x + rect.width : rect.y + rect.height;
+}
+
+function leadingAxisPadding(styles, layoutMode) {
+  return parseCssNumber(layoutMode === "HORIZONTAL" ? styles.paddingLeft : styles.paddingTop);
+}
+
+function trailingAxisPadding(styles, layoutMode) {
+  return parseCssNumber(layoutMode === "HORIZONTAL" ? styles.paddingRight : styles.paddingBottom);
+}
+
+function leadingAxisMargin(model, layoutMode) {
+  return parseCssNumber(layoutMode === "HORIZONTAL" ? model.styles?.marginLeft : model.styles?.marginTop);
+}
+
+function trailingAxisMargin(model, layoutMode) {
+  return parseCssNumber(layoutMode === "HORIZONTAL" ? model.styles?.marginRight : model.styles?.marginBottom);
+}
+
+function approximatelyEqualInset(value, expected, tolerance) {
+  return Math.abs(value - expected) <= tolerance;
 }
 
 function inferPadding(parentRect, children) {
@@ -1139,15 +1936,14 @@ function explicitCssPadding(styles = {}) {
 
 function extractVisualStyle(node) {
   const styles = node.styles ?? {};
+  const borderSides = nativeBorderStrokeSidesFromStyles(styles);
   return {
     fills: cssFillsFromStyles(styles),
-    strokes: cssStrokesFromStyles(styles),
-    cornerRadius: Math.max(
-      parseCssNumber(styles.borderTopLeftRadius),
-      parseCssNumber(styles.borderTopRightRadius),
-      parseCssNumber(styles.borderBottomRightRadius),
-      parseCssNumber(styles.borderBottomLeftRadius)
-    ),
+    strokes: borderSides.length > 0
+      ? [strokeFromBorderSides(borderSides)]
+      : cssStrokesFromStyles(styles),
+    borderSides,
+    cornerRadius: cornerRadiusFromStyles(styles),
     effects: visibleShadow(styles.boxShadow) ? [{ type: "shadow", value: styles.boxShadow }] : [],
     objectFit: styles.objectFit ?? "",
     transform: styles.transform ?? "",
@@ -1158,9 +1954,40 @@ function extractVisualStyle(node) {
       fontStyle: styles.fontStyle ?? "",
       fontWeight: styles.fontWeight ?? "",
       lineHeight: styles.lineHeight ?? "",
-      color: styles.color ?? ""
+      color: textColorFromStyles(styles),
+      textAlign: styles.textAlign ?? "",
+      fills: cssTextFillsFromStyles(styles)
     } : null
   };
+}
+
+function visualStyleForNode(node, context) {
+  const style = extractVisualStyle(node);
+  if (!shouldApplyTextOverlayBackdrop(node, context, style)) {
+    return style;
+  }
+  return {
+    ...style,
+    fills: [context.backdropColor]
+  };
+}
+
+function shouldApplyTextOverlayBackdrop(node, context, style) {
+  return Boolean(
+    context.clippedAncestor &&
+    visibleColor(context.backdropColor) &&
+    style.fills.length === 0 &&
+    node.textContent &&
+    normalizeCssKeyword(node.styles?.position) === "absolute" &&
+    hasEllipsisPseudoChild(node)
+  );
+}
+
+function hasEllipsisPseudoChild(node) {
+  return (node.children ?? []).some((child) =>
+    child.nodeType === "pseudo" &&
+    String(child.textContent ?? "").trim() === "..."
+  );
 }
 
 function layerNameForNode(node, type) {
@@ -1192,9 +2019,9 @@ function isRenderableNode(node) {
 
 function hasVisualBoxStyle(styles = {}) {
   return Boolean(
-    visibleColor(styles.backgroundColor) ||
-    visibleCssLinearGradient(styles.backgroundImage) ||
+    cssFillsFromStyles(styles).length > 0 ||
     cssStrokesFromStyles(styles).length > 0 ||
+    nativeBorderStrokeSidesFromStyles(styles).length > 0 ||
     borderDecorationSides(styles).length > 0 ||
     visibleShadow(styles.boxShadow)
   );
@@ -1251,6 +2078,10 @@ function visibleColor(value) {
 }
 
 function cssFillsFromStyles(styles = {}) {
+  if (isBackgroundClippedToText(styles)) {
+    return [];
+  }
+
   const fills = [];
   if (visibleColor(styles.backgroundColor)) {
     fills.push(styles.backgroundColor);
@@ -1259,6 +2090,32 @@ function cssFillsFromStyles(styles = {}) {
     fills.push(styles.backgroundImage);
   }
   return fills;
+}
+
+function cssTextFillsFromStyles(styles = {}) {
+  return isBackgroundClippedToText(styles) && visibleCssLinearGradient(styles.backgroundImage)
+    ? [styles.backgroundImage]
+    : [];
+}
+
+function isBackgroundClippedToText(styles = {}) {
+  return cssClipIncludesText(styles.backgroundClip) ||
+    cssClipIncludesText(styles.webkitBackgroundClip);
+}
+
+function cssClipIncludesText(value) {
+  return String(value ?? "")
+    .toLowerCase()
+    .split(",")
+    .map((item) => item.trim())
+    .includes("text");
+}
+
+function textColorFromStyles(styles = {}) {
+  if (visibleColor(styles.webkitTextFillColor)) {
+    return styles.webkitTextFillColor;
+  }
+  return styles.color ?? "";
 }
 
 function visibleCssLinearGradient(value) {
@@ -1278,7 +2135,11 @@ function cssStrokesFromStyles(styles = {}) {
 
 function borderDecorationSides(styles = {}) {
   const sides = visibleBorderSides(styles);
-  return uniformBorderStrokeFromSides(sides) || legacyTopBorderStroke(styles, sides) ? [] : sides;
+  return uniformBorderStrokeFromSides(sides) ||
+    legacyTopBorderStroke(styles, sides) ||
+    nativeBorderStrokeSidesFromStyles(styles, sides).length > 0
+    ? []
+    : sides;
 }
 
 function uniformBorderStroke(styles = {}) {
@@ -1302,6 +2163,40 @@ function visibleBorderSides(styles = {}) {
     { side: "bottom", ...cssStrokeSide(styles.borderBottomWidth, styles.borderBottomColor, styles.borderBottomStyle) },
     { side: "left", ...cssStrokeSide(styles.borderLeftWidth, styles.borderLeftColor, styles.borderLeftStyle) }
   ].filter((side) => side.width > 0);
+}
+
+function nativeBorderStrokeSidesFromStyles(styles = {}, sides = visibleBorderSides(styles)) {
+  if (sides.length === 0 ||
+    uniformBorderStrokeFromSides(sides) ||
+    legacyTopBorderStroke(styles, sides) ||
+    cornerRadiusFromStyles(styles) <= 0 ||
+    !sameBorderSidePaint(sides)
+  ) {
+    return [];
+  }
+  return sides;
+}
+
+function sameBorderSidePaint(sides) {
+  const [first] = sides;
+  return Boolean(first) && sides.every((side) => side.color === first.color);
+}
+
+function strokeFromBorderSides(sides) {
+  const [first] = sides;
+  return {
+    color: first.color,
+    width: Math.max(...sides.map((side) => side.width))
+  };
+}
+
+function cornerRadiusFromStyles(styles = {}) {
+  return Math.max(
+    parseCssNumber(styles.borderTopLeftRadius),
+    parseCssNumber(styles.borderTopRightRadius),
+    parseCssNumber(styles.borderBottomRightRadius),
+    parseCssNumber(styles.borderBottomLeftRadius)
+  );
 }
 
 function legacyTopBorderStroke(styles = {}, sides = visibleBorderSides(styles)) {

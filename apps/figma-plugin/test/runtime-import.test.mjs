@@ -167,6 +167,190 @@ test("Figma API adapter creates real frame, image, text, rectangle, fallback, an
   assert.deepEqual(result.report.fontSubstitutions[0].used, { family: "Inter", style: "Regular" });
 });
 
+test("Figma API adapter maps browser-ordered CSS box-shadow values to effects", async () => {
+  const figmaApi = createMockFigmaApi();
+  const basePackage = createRuntimePackage();
+  const packageData = createRuntimePackage({
+    capture: {
+      ...basePackage.capture,
+      root: {
+        id: "node-root",
+        sourceNodeId: "dom-root",
+        nodeType: "element",
+        tagName: "main",
+        rect: { x: 0, y: 0, width: 700, height: 560 },
+        styles: {},
+        attributes: {},
+        children: [{
+          id: "node-chat-panel",
+          sourceNodeId: "dom-chat-panel",
+          nodeType: "element",
+          tagName: "div",
+          rect: { x: 40, y: 20, width: 601, height: 520 },
+          styles: {
+            borderTopLeftRadius: "15px",
+            borderTopRightRadius: "15px",
+            borderBottomRightRadius: "15px",
+            borderBottomLeftRadius: "15px",
+            boxShadow: "rgba(0, 0, 0, 0.2) 0px 4px 36px 0px"
+          },
+          attributes: { class: "chat__area" },
+          children: []
+        }]
+      }
+    }
+  });
+
+  const result = await importPackageBytes(packFigcapture(packageData), { figmaApi });
+  const panel = flattenNodes(result.renderResult.frames[1].children)
+    .find((node) => node.pluginData?.sourceNodeId === "dom-chat-panel");
+
+  assert.equal(result.status, "success");
+  assert(panel);
+  assert.deepEqual(panel.effects, [{
+    type: "DROP_SHADOW",
+    color: { r: 0, g: 0, b: 0, a: 0.2 },
+    offset: { x: 0, y: 4 },
+    radius: 36,
+    spread: 0,
+    visible: true,
+    blendMode: "NORMAL"
+  }]);
+});
+
+test("Figma API adapter falls back to a screenshot crop when a raster asset cannot decode", async () => {
+  const webpBytes = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0x08, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50]);
+  const screenshotBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+  const figmaApi = {
+    ...createMockFigmaApi(),
+    createImage(bytes) {
+      if (bytes[0] === 0x52 && bytes[8] === 0x57) {
+        throw new Error("Unsupported WebP");
+      }
+      return {
+        hash: `hash-${bytes.length}`
+      };
+    }
+  };
+  const basePackage = createRuntimePackage();
+  const packageData = createRuntimePackage({
+    manifest: {
+      ...basePackage.manifest,
+      viewportWidth: 390,
+      viewportHeight: 844
+    },
+    capture: {
+      ...basePackage.capture,
+      viewport: { width: 390, height: 844, devicePixelRatio: 3, scrollX: 0, scrollY: 0 },
+      root: {
+        id: "node-root",
+        sourceNodeId: "dom-root",
+        nodeType: "element",
+        tagName: "main",
+        rect: { x: 0, y: 0, width: 390, height: 844 },
+        styles: {},
+        attributes: {},
+        children: [
+          {
+            id: "node-banner",
+            sourceNodeId: "dom-banner",
+            nodeType: "element",
+            tagName: "img",
+            rect: { x: 0, y: 159, width: 390, height: 93.75 },
+            styles: {},
+            attributes: { alt: "banner" },
+            assetRef: "assets/banner.webp",
+            children: []
+          }
+        ]
+      }
+    },
+    screenshot: screenshotBytes,
+    assets: {
+      "assets/banner.webp": webpBytes
+    }
+  });
+
+  const result = await importPackageBytes(packFigcapture(packageData), { figmaApi });
+  const editableNodes = flattenNodes(result.renderResult.frames[1].children);
+  const banner = editableNodes.find((node) => node.pluginData?.sourceNodeId === "dom-banner");
+
+  assert.equal(result.status, "success");
+  assert(banner);
+  assert.equal(banner.type, "FRAME");
+  assert.equal(banner.name, "Image / banner / Screenshot Crop");
+  assert.equal(banner.clipsContent, true);
+  assert.equal(banner.pluginData.assetRef, "assets/banner.webp");
+  assert.match(banner.pluginData.fallbackReason, /screenshot crop fallback/);
+  assert.equal(banner.children[0].x, 0);
+  assert.equal(banner.children[0].y, -159);
+  assert.equal(banner.children[0].width, 390);
+  assert.equal(banner.children[0].height, 844);
+  assert.equal(banner.children[0].fills[0].imageHash, "hash-4");
+});
+
+test("Figma API adapter applies side-specific strokes for rounded partial borders", async () => {
+  const figmaApi = createMockFigmaApi();
+  const basePackage = createRuntimePackage();
+  const packageData = createRuntimePackage({
+    capture: {
+      ...basePackage.capture,
+      root: {
+        id: "node-root",
+        sourceNodeId: "dom-root",
+        nodeType: "element",
+        tagName: "main",
+        rect: { x: 0, y: 0, width: 390, height: 120 },
+        styles: {},
+        attributes: {},
+        children: [{
+          id: "node-more-button",
+          sourceNodeId: "dom-more-button",
+          nodeType: "element",
+          tagName: "button",
+          textContent: "更多",
+          rect: { x: 322.93, y: 60, width: 67.07, height: 48 },
+          styles: {
+            display: "flex",
+            width: "67.0703px",
+            height: "48px",
+            paddingLeft: "8px",
+            paddingRight: "8px",
+            borderTopWidth: "1px",
+            borderTopStyle: "solid",
+            borderTopColor: "rgb(229, 229, 229)",
+            borderLeftWidth: "1px",
+            borderLeftStyle: "solid",
+            borderLeftColor: "rgb(229, 229, 229)",
+            borderTopLeftRadius: "100px",
+            borderTopRightRadius: "4px",
+            borderBottomRightRadius: "4px",
+            borderBottomLeftRadius: "100px",
+            fontSize: "16px",
+            lineHeight: "24px"
+          },
+          attributes: { type: "button" },
+          children: []
+        }]
+      }
+    }
+  });
+
+  const result = await importPackageBytes(packFigcapture(packageData), { figmaApi });
+  const nodes = flattenNodes(result.renderResult.frames[1].children);
+  const button = nodes.find((node) => node.type === "FRAME" && node.pluginData?.sourceNodeId === "dom-more-button");
+
+  assert.equal(result.status, "success");
+  assert(button);
+  assert.equal(button.cornerRadius, 100);
+  assert.equal(button.strokeAlign, "INSIDE");
+  assert.equal(button.strokeTopWeight, 1);
+  assert.equal(button.strokeRightWeight, 0);
+  assert.equal(button.strokeBottomWeight, 0);
+  assert.equal(button.strokeLeftWeight, 1);
+  assert.equal(button.children.some((node) => /^Border \//.test(node.name)), false);
+});
+
 test("Figma API adapter tries CSS font-family stack before default fallback", async () => {
   const figmaApi = createMockFigmaApi({
     unavailableFonts: [
@@ -219,8 +403,8 @@ test("Figma API adapter tries CSS font-family stack before default fallback", as
     fontWeight: "700"
   }), [
     { family: "Missing Webfont", style: "Bold Italic" },
-    { family: "Missing Webfont", style: "Regular" },
     { family: "Available Sans", style: "Bold Italic" },
+    { family: "Missing Webfont", style: "Regular" },
     { family: "Available Sans", style: "Regular" }
   ]);
   assert.deepEqual(title.fontName, { family: "Available Sans", style: "Regular" });
@@ -230,10 +414,81 @@ test("Figma API adapter tries CSS font-family stack before default fallback", as
   assert.equal(result.report.fontSubstitutionSummary, "Missing Webfont Bold Italic -> Available Sans Regular");
   assert.deepEqual(figmaApi.loadedFonts.map((font) => `${font.family} ${font.style}`), [
     "Missing Webfont Bold Italic",
-    "Missing Webfont Regular",
     "Available Sans Bold Italic",
+    "Missing Webfont Regular",
     "Available Sans Regular"
   ]);
+});
+
+test("Figma API adapter maps CSS medium font weight to a medium font style", async () => {
+  const figmaApi = createMockFigmaApi({
+    unavailableFonts: [
+      { family: "Noto Sans TC", style: "Medium" }
+    ]
+  });
+  const basePackage = createRuntimePackage();
+  const packageData = createRuntimePackage({
+    capture: {
+      ...basePackage.capture,
+      root: {
+        id: "node-root",
+        sourceNodeId: "dom-root",
+        nodeType: "element",
+        tagName: "main",
+        rect: { x: 0, y: 0, width: 240, height: 80 },
+        styles: {},
+        attributes: {},
+        children: [
+          {
+            id: "node-medium",
+            sourceNodeId: "dom-medium",
+            nodeType: "text",
+            tagName: "#text",
+            textContent: "安聯台灣科技基金",
+            rect: { x: 16, y: 16, width: 126, height: 48 },
+            styles: {
+              fontFamily: "Inter, \"Noto Sans TC\", \"Pingfang TC\", sans-serif",
+              fontSize: "16px",
+              fontWeight: "500",
+              lineHeight: "24px",
+              color: "rgb(54, 54, 54)"
+            },
+            attributes: {},
+            children: []
+          }
+        ]
+      }
+    }
+  });
+
+  const result = await importPackageBytes(packFigcapture(packageData), { figmaApi });
+  const mediumText = flattenNodes(result.renderResult.frames[1].children)
+    .find((node) => node.sourceNodeId === "dom-medium");
+
+  assert.deepEqual(fontNamesFromStyle({
+    fontFamily: "Inter, \"Noto Sans TC\", \"Pingfang TC\", sans-serif",
+    fontWeight: "500"
+  }, undefined, "安聯台灣科技基金"), [
+    { family: "Noto Sans TC", style: "Medium" },
+    { family: "Pingfang TC", style: "Medium" },
+    { family: "Inter", style: "Medium" },
+    { family: "Noto Sans TC", style: "Regular" },
+    { family: "Pingfang TC", style: "Regular" },
+    { family: "Inter", style: "Regular" }
+  ]);
+  assert.deepEqual(fontNamesFromStyle({
+    fontFamily: "Inter",
+    fontWeight: "600"
+  }), [
+    { family: "Inter", style: "Semi Bold" },
+    { family: "Inter", style: "SemiBold" },
+    { family: "Inter", style: "Semibold" },
+    { family: "Inter", style: "Demi Bold" },
+    { family: "Inter", style: "DemiBold" },
+    { family: "Inter", style: "Bold" },
+    { family: "Inter", style: "Regular" }
+  ]);
+  assert.deepEqual(mediumText.fontName, { family: "Pingfang TC", style: "Medium" });
 });
 
 test("Figma API adapter chooses auto-width and fixed-width text modes", async () => {
@@ -454,6 +709,87 @@ test("Figma API adapter applies CSS flex alignment to Auto Layout nodes", async 
   assert.equal(label.layoutSizingVertical, "HUG");
 });
 
+test("Figma API adapter reapplies absolute positioning after appending to auto layout parent", () => {
+  const createdNodes = [];
+  function createNode(type) {
+    const node = {
+      type,
+      name: "",
+      children: [],
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0,
+      fills: [],
+      strokes: [],
+      pluginData: {},
+      _layoutPositioning: "",
+      resize(width, height) {
+        this.width = width;
+        this.height = height;
+      },
+      appendChild(child) {
+        child.parent = this;
+        this.children.push(child);
+      },
+      setPluginData(key, value) {
+        this.pluginData[key] = value;
+      }
+    };
+    Object.defineProperty(node, "layoutPositioning", {
+      get() {
+        return this._layoutPositioning;
+      },
+      set(value) {
+        if (!this.parent) {
+          throw new Error("layoutPositioning requires an auto-layout parent");
+        }
+        this._layoutPositioning = value;
+      }
+    });
+    createdNodes.push(node);
+    return node;
+  }
+
+  const figmaApi = {
+    createdNodes,
+    createFrame() {
+      return createNode("FRAME");
+    },
+    createRectangle() {
+      return createNode("RECTANGLE");
+    }
+  };
+  const adapter = createFigmaApiAdapter(figmaApi);
+  const parent = adapter.createFrameLayer({
+    name: "Radio Group",
+    rect: { x: 0, y: 0, width: 104, height: 24 },
+    style: { fills: ["rgb(228, 228, 228)"], strokes: [], effects: [], text: null },
+    autoLayout: {
+      applied: true,
+      layoutMode: "HORIZONTAL",
+      itemSpacing: 4,
+      paddingLeft: 2,
+      paddingRight: 2,
+      paddingTop: 2,
+      paddingBottom: 2
+    },
+    children: []
+  });
+  const childModel = {
+    name: "Active Indicator",
+    rect: { x: 2, y: 2, width: 48, height: 20 },
+    style: { fills: ["rgb(255, 255, 255)"], strokes: [], effects: [], text: null },
+    layoutPositioning: "ABSOLUTE",
+    children: []
+  };
+  const child = adapter.createRectLayer(childModel);
+
+  assert.equal(child.layoutPositioning, "");
+  adapter.appendChild(parent, child, childModel);
+  assert.equal(child.layoutPositioning, "ABSOLUTE");
+});
+
 test("Figma API adapter preserves SVG image aspect ratio and CSS rotation", () => {
   const svgBytes = new TextEncoder().encode(
     "<svg width=\"10\" height=\"17\" viewBox=\"0 0 10 17\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\"><path d=\"M0 0L10 8.5L0 17Z\" fill=\"#676767\"/></svg>"
@@ -509,6 +845,39 @@ test("Figma API adapter converts CSS linear gradients to Figma paints", () => {
   assert.deepEqual(node.fills[0].gradientStops.map((stop) => stop.position), [0, 1]);
   assert.deepEqual(node.fills[0].gradientStops[0].color, { r: 1, g: 1, b: 1, a: 0 });
   assert.deepEqual(node.fills[0].gradientStops[1].color, { r: 1, g: 1, b: 1, a: 1 });
+});
+
+test("Figma API adapter applies clipped background gradients to text fills", async () => {
+  const figmaApi = createMockFigmaApi();
+  const adapter = createFigmaApiAdapter(figmaApi);
+  const gradient = "linear-gradient(to right, rgb(222, 190, 135), rgb(192, 139, 78))";
+
+  const node = await adapter.createTextLayer({
+    name: "Text / 1",
+    sourceNodeId: "dom-rank",
+    rect: { x: 0, y: 0, width: 40, height: 33 },
+    text: "1",
+    textAutoResize: "WIDTH_AND_HEIGHT",
+    style: {
+      text: {
+        fontFamily: "Inter",
+        fontSize: 28,
+        fontWeight: "700",
+        lineHeight: "33px",
+        color: "rgb(149, 149, 149)",
+        textAlign: "right",
+        fills: [gradient]
+      }
+    }
+  });
+
+  assert.equal(node.characters, "1");
+  assert.equal(node.textAlignHorizontal, "RIGHT");
+  assert.equal(node.fills.length, 1);
+  assert.equal(node.fills[0].type, "GRADIENT_LINEAR");
+  assert.deepEqual(node.fills[0].gradientStops.map((stop) => stop.position), [0, 1]);
+  assert.deepEqual(node.fills[0].gradientStops[0].color, { r: 222 / 255, g: 190 / 255, b: 135 / 255, a: 1 });
+  assert.deepEqual(node.fills[0].gradientStops[1].color, { r: 192 / 255, g: 139 / 255, b: 78 / 255, a: 1 });
 });
 
 test("plugin runtime bridge imports a valid package and posts success report", async () => {

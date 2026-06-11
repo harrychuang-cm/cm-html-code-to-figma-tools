@@ -8,7 +8,10 @@ export const DEFAULT_STYLE_PROPERTIES = [
   "height",
   "backgroundColor",
   "backgroundImage",
+  "backgroundClip",
+  "webkitBackgroundClip",
   "color",
+  "webkitTextFillColor",
   "fontFamily",
   "fontSize",
   "fontStyle",
@@ -22,6 +25,10 @@ export const DEFAULT_STYLE_PROPERTIES = [
   "paddingRight",
   "paddingBottom",
   "paddingLeft",
+  "marginTop",
+  "marginRight",
+  "marginBottom",
+  "marginLeft",
   "borderTopWidth",
   "borderRightWidth",
   "borderBottomWidth",
@@ -222,6 +229,7 @@ function snapshotDomElement(element, documentRef, windowRef, containingBlockRect
   }
 
   const styles = pickStyles(computed);
+  addPlaceholderMetadata(element, tagName, attributes, styles, windowRef);
   const nextContainingBlockRect = establishesContainingBlock(styles)
     ? rect
     : containingBlockRect;
@@ -278,6 +286,33 @@ function safePseudoComputedStyle(element, pseudoName, windowRef) {
   } catch {
     return null;
   }
+}
+
+function addPlaceholderMetadata(element, tagName, attributes, styles, windowRef) {
+  if (!isTextInputElement(tagName)) {
+    return;
+  }
+
+  const placeholder = typeof element.getAttribute === "function"
+    ? element.getAttribute("placeholder")
+    : element.placeholder;
+  if (typeof placeholder === "string" && placeholder.length > 0) {
+    attributes.placeholder = placeholder;
+  }
+  if (typeof element.value === "string" && element.value.length > 0) {
+    attributes["data-has-value"] = "true";
+  }
+
+  const placeholderStyle = safePseudoComputedStyle(element, "::placeholder", windowRef);
+  const placeholderColor = placeholderStyle?.color;
+  if (typeof placeholderColor === "string" && placeholderColor.length > 0) {
+    styles.placeholderColor = placeholderColor;
+  }
+}
+
+function isTextInputElement(tagName) {
+  const normalized = String(tagName ?? "").toLowerCase();
+  return normalized === "input" || normalized === "textarea";
 }
 
 function isVisiblePseudoElement(styles) {

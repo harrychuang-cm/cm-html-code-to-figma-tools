@@ -120,7 +120,7 @@ The Chrome Extension SHALL capture computed CSS `vertical-align` and `text-align
 - **THEN** `dom-etf-price` imports as a frame with rect width 138.5 and height 70.5, layoutMode HORIZONTAL, primaryAxisAlignItems MAX, counterAxisAlignItems CENTER, paddingRight 12, and a child TEXT layer whose text is `"100.25"` and textAutoResize is `WIDTH_AND_HEIGHT`
 
 ### Requirement: CSS z-index preserves Figma stacking order
-The Chrome Extension SHALL capture computed CSS `z-index` values for visible nodes. The Figma Plugin SHALL preserve numeric captured z-index values by writing `cssZIndex` plugin metadata on imported nodes. For parent frames that are not converted to Auto Layout, the importer MUST append child nodes in ascending numeric z-index order, treating missing or `auto` z-index as 0 and preserving DOM order for equal z-index values, so higher z-index children render above lower z-index children in Figma. For parent frames converted to Auto Layout, the importer MUST NOT reorder children by z-index because Auto Layout child order represents flex or inline flow; it MUST still preserve `cssZIndex` metadata for debug.
+The Chrome Extension SHALL capture computed CSS `z-index` values for visible nodes. The Figma Plugin SHALL preserve numeric captured z-index values by writing `cssZIndex` plugin metadata on imported nodes. For parent frames that are not converted to Auto Layout, the importer MUST append child nodes in ascending numeric z-index order, treating missing or `auto` z-index as 0 and preserving DOM order for equal z-index values, so higher z-index children render above lower z-index children in Figma. When a child wrapper has no own numeric z-index but is non-visual and contains fixed/absolute overlay descendants with numeric z-index, the importer MUST use those descendant overlay z-index values for sibling stacking. For parent frames converted to Auto Layout, the importer MUST NOT reorder children by z-index because Auto Layout child order represents flex or inline flow; it MUST still preserve `cssZIndex` metadata for debug.
 
 #### Scenario: Non-auto-layout overlapping children stack by z-index
 
@@ -140,6 +140,19 @@ The Chrome Extension SHALL capture computed CSS `z-index` values for visible nod
 - **WHEN** a captured flex row passes Auto Layout eligibility and its children carry numeric z-index values
 - **THEN** the imported Figma Auto Layout frame keeps child order from flex flow or reverse-flex visual order instead of sorting by z-index
 - **AND** each imported child with numeric z-index still exposes `cssZIndex` plugin metadata
+
+#### Scenario: Fixed overlay descendants preserve wrapper stacking
+
+- **WHEN** two non-Auto Layout sibling wrappers have no numeric z-index, and one wrapper only hosts a fixed-position descendant with numeric z-index
+- **THEN** sibling layer order uses that descendant fixed z-index for wrapper stacking
+- **AND** fixed descendants with missing or `auto` z-index remain at the default stack level
+
+##### Example: chat panel stays above page go-to-top button
+
+- **GIVEN** a captured `forum__chat` wrapper contains fixed `chat__wrapper` with `zIndex: "7"`
+- **AND** a sibling `forum__toTop` wrapper contains fixed `btn.toTop` with `zIndex: "auto"`
+- **WHEN** the package is imported
+- **THEN** `forum__toTop` is appended before `forum__chat` in the non-Auto Layout parent so the higher-z-index chat panel renders above the go-to-top button
 
 ### Requirement: Risky layout containers stay absolute
 The Figma Plugin SHALL keep risky or low-confidence containers as ordinary nested frames without Auto Layout. The importer MUST record skipped auto layout reasons in the import report for overlapping children, fixed or sticky containers, complex grid containers, missing bounds, one-child containers that lack explicit alignment evidence, absolute-positioned decoration children, and flex containers with strongly non-uniform implicit child gaps that cannot be represented by captured CSS alignment.
@@ -423,6 +436,18 @@ The Figma Plugin SHALL choose a text resize mode that matches captured text geom
 - **WHEN** the package is imported
 - **THEN** `dom-mark` creates a visual backing frame at x=380, y=904.6, width=20, height=20.5 with Auto Layout padding left/right/top/bottom of 4/4/2/2 and a nested editable text layer using `WIDTH_AND_HEIGHT` auto-resize and horizontal HUG sizing
 
+#### Scenario: Padded chat bubble text does not wrap from inner fixed width
+
+- **WHEN** a captured single-line visible text backing has explicit CSS width and padding, and that explicit width describes the outer border box
+- **THEN** the nested editable text uses auto-width HUG sizing unless captured CSS shows real inline clipping
+- **AND** the fixed-size backing frame preserves captured width, height, padding, border, and corner radius
+
+##### Example: unsent chat message pill
+
+- **GIVEN** a captured message node `dom-chat-unsend` with content `Tim.JJ2fv1已收回訊息`, x=1209, y=621, width=199.15, height=33, `width: "199.148px"`, `lineHeight: "16px"`, padding left/right/top/bottom `20px/20px/8px/8px`, visible border, and corner radius 19px
+- **WHEN** the package is imported
+- **THEN** `dom-chat-unsend` creates a fixed backing frame with Auto Layout padding left/right/top/bottom of 20/20/8/8 and a nested editable text layer using `WIDTH_AND_HEIGHT` auto-resize and horizontal HUG sizing
+
 #### Scenario: Transparent rounded button label uses auto width
 
 - **WHEN** a captured single-line button text node has transparent background, border radius, no visible border, no visible shadow, and no explicit newline after whitespace normalization
@@ -433,6 +458,48 @@ The Figma Plugin SHALL choose a text resize mode that matches captured text geom
 - **GIVEN** a captured `button.articleResponse__comment` node `dom-answer-count` with textContent `"9則回答"`, x=1011, y=884, width=54, height=20, `backgroundColor: "rgba(0, 0, 0, 0)"`, `borderTopLeftRadius: "4px"`, and border widths `0px`
 - **WHEN** the package is imported
 - **THEN** `dom-answer-count` is a TEXT model with `textAutoResize: "WIDTH_AND_HEIGHT"` and no parent model named `Text Background / 9則回答`
+
+#### Scenario: Transparent padded emoji text uses content box
+
+- **WHEN** a captured emoji-only message text node has transparent visual styles but explicit CSS padding
+- **THEN** the imported editable text layer is placed at the padded content box instead of the outer border box
+- **AND** the text keeps HUG sizing when the emoji fits on one line
+
+##### Example: emoji-only chat bubble text
+
+- **GIVEN** a captured `pre.message__pre` node `dom-chat-emoji` with content `🥰`, x=1209, y=712, width=54, height=39, `lineHeight: "21px"`, padding left/right/top/bottom `19px/19px/9px/9px`, and transparent background
+- **WHEN** the package is imported
+- **THEN** `dom-chat-emoji` imports as editable text at x=19, y=9, width=16, height=21 relative to its parent bubble
+- **AND** `dom-chat-emoji` uses `WIDTH_AND_HEIGHT` auto-resize and horizontal HUG sizing
+
+#### Scenario: Transparent padded interactive tabs preserve wrapper frames
+
+- **WHEN** a captured single-line link/button/tab/menuitem has transparent visual styles, explicit CSS padding, and explicit captured width/height that define the interactive hit area
+- **THEN** the imported editable output preserves the outer element as a fixed-size Auto Layout frame with matching padding
+- **AND** the nested editable text sits in the padded content box and uses HUG sizing when the text fits on one line
+- **AND** parent Auto Layout rows keep those tab/link frames as children instead of direct text nodes, preserving browser tab height and spacing
+
+##### Example: ETF rank sub tab
+
+- **GIVEN** a captured `a.etfRankPage__subTab` node `dom-etf-subtab-hot` with text `熱門ETF`, x=279, y=420, width=69.875, height=37, `display: "flex"`, `alignItems: "center"`, `lineHeight: "21px"`, transparent background, and padding top/right/bottom/left `8px/8px/8px/8px`
+- **AND** its parent `nav.etfRankPage__subTabs` is a horizontal flex row with gap 4px and left/right padding 8px
+- **WHEN** the package is imported
+- **THEN** `dom-etf-subtab-hot` imports as a FRAME at x=8, y=0, width=69.875, height=37 relative to the nav with Auto Layout padding left/right/top/bottom of 8/8/8/8
+- **AND** the nested editable text imports at x=8, y=8, width=53.88, height=21 relative to the tab frame with `WIDTH_AND_HEIGHT` auto-resize and horizontal HUG sizing
+
+### Requirement: CSS box shadows import as Figma effects
+The Figma Plugin SHALL convert captured visible CSS `box-shadow` values into Figma `DROP_SHADOW` effects for imported visual boxes. The converter MUST support browser-ordered shadow strings where the color appears before the length values, and it MUST preserve the parsed color alpha, x/y offset, blur radius, and spread when present. Module and classic runtimes MUST apply the same shadow conversion.
+
+#### Scenario: Chat panel shadow imports from browser computed style
+
+- **WHEN** a captured panel has `boxShadow: "rgba(0, 0, 0, 0.2) 0px 4px 36px 0px"`
+- **THEN** the imported Figma node has a `DROP_SHADOW` effect with color alpha 0.2, offset x 0, offset y 4, radius 36, and spread 0
+
+##### Example: floating chat area panel
+
+- **GIVEN** a captured `div.chat__area` node `dom-chat-panel` at width 601 and height 520 with corner radius 15px and `boxShadow: "rgba(0, 0, 0, 0.2) 0px 4px 36px 0px"`
+- **WHEN** the package is imported through either module or classic runtime
+- **THEN** `dom-chat-panel` imports as a frame with a visible Figma `DROP_SHADOW` matching the captured CSS shadow values
 
 ### Requirement: Captured font stacks choose available Figma fonts
 The Chrome Extension SHALL capture computed CSS text font data including `font-family`, `font-style`, `font-weight`, `font-size`, and `line-height`. The Figma Plugin SHALL parse the captured CSS `font-family` stack and try concrete font family candidates in order when loading Figma text fonts. The importer MUST ignore generic CSS family names such as `sans-serif`, `serif`, `system-ui`, and `monospace`. For each concrete family, the importer MUST try the requested Figma style derived from CSS weight/style and MUST try `Regular` for the same family before moving to the next family when the requested style is not already `Regular`. The importer MUST use the configured default fallback font only after concrete CSS stack candidates fail. When the loaded Figma font differs from the first requested CSS candidate, the import report MUST include font substitution details with the source node, requested first font, requested stack, attempted fonts, and final used font.

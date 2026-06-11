@@ -1,6 +1,7 @@
 import { cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { bumpVersionIfChanged } from "./versioning.mjs";
 
 const rootDir = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 
@@ -72,6 +73,8 @@ async function copySource(workspace) {
   if (!await exists(packagePath)) {
     throw new Error(`Missing package.json for ${workspace}`);
   }
+  const workspacePackage = JSON.parse(await readFile(packagePath, "utf8"));
+  const workspaceVersion = workspacePackage.version;
 
   const files = await listFiles(srcDir);
   for (const file of files.filter((item) => !item.endsWith(".d.ts"))) {
@@ -100,7 +103,16 @@ async function copySource(workspace) {
   for (const staticFile of ["manifest.json", "popup.html", "popup.css", "ui.html", "ui.css"]) {
     const path = join(workspaceDir, staticFile);
     if (await exists(path)) {
-      await cp(path, join(distDir, staticFile));
+      const source = await readFile(path, "utf8");
+      await writeFile(
+        join(distDir, staticFile),
+        applyStaticTemplates(source, {
+          workspace,
+          staticFile,
+          version: workspaceVersion
+        }),
+        "utf8"
+      );
     }
   }
 
@@ -114,6 +126,27 @@ async function copySource(workspace) {
   }
 }
 
+function applyStaticTemplates(source, { workspace, staticFile, version }) {
+  const output = source
+    .replaceAll("__APP_VERSION__", version)
+    .replaceAll("__PLUGIN_VERSION__", version);
+
+  if (workspace === "apps/figma-plugin" && staticFile === "manifest.json") {
+    const manifest = JSON.parse(output);
+    manifest.name = `${manifest.name.replace(/\s+v\d+\.\d+\.\d+$/, "")} v${version}`;
+    return `${JSON.stringify(manifest, null, 2)}\n`;
+  }
+
+  return output;
+}
+
+const versionResult = await bumpVersionIfChanged({ rootDir });
+if (versionResult.status === "bumped") {
+  console.log(`Version bumped ${versionResult.previousVersion} -> ${versionResult.version}`);
+} else if (versionResult.status === "initialized") {
+  console.log(`Version tracking initialized at ${versionResult.version}`);
+}
+
 for (const workspace of workspaces) {
   await copySource(workspace);
 }
@@ -125,8 +158,18 @@ console.log(`Built ${workspaces.length} workspaces`);
 async function createFigmaPluginClassicRuntime() {
   const pluginDir = join(rootDir, "apps/figma-plugin");
   const distDir = join(pluginDir, "dist");
-  const css = await readFile(join(pluginDir, "ui.css"), "utf8");
-  const html = await readFile(join(pluginDir, "ui.html"), "utf8");
+  const pluginPackage = JSON.parse(await readFile(join(pluginDir, "package.json"), "utf8"));
+  const version = pluginPackage.version;
+  const css = applyStaticTemplates(await readFile(join(pluginDir, "ui.css"), "utf8"), {
+    workspace: "apps/figma-plugin",
+    staticFile: "ui.css",
+    version
+  });
+  const html = applyStaticTemplates(await readFile(join(pluginDir, "ui.html"), "utf8"), {
+    workspace: "apps/figma-plugin",
+    staticFile: "ui.html",
+    version
+  });
   const uiBundle = await bundleClassicScript(join(pluginDir, "src/ui.ts"));
   const codeBundle = await readFile(join(pluginDir, "src/code-classic.js"), "utf8");
 

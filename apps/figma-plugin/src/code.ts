@@ -34,6 +34,11 @@ export async function importPackageBytes(bytes, options = {}) {
   const figmaApi = options.figmaApi ?? globalThis.figma;
   const adapter = options.adapter ?? createFigmaApiAdapter(figmaApi, {
     assets: validation.packageData.assets,
+    screenshot: validation.packageData.screenshot,
+    viewport: {
+      width: validation.packageData.manifest.viewportWidth,
+      height: validation.packageData.manifest.viewportHeight
+    },
     fallbackFont: options.fallbackFont
   });
   const renderResult = await renderThreeFramesAsync(adapter, validation.packageData);

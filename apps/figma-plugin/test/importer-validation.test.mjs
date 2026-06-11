@@ -51,3 +51,27 @@ test("figma import validation reports unsupported schemaVersion separately", () 
   assert.equal(validation.error.category, "unsupported-schema-version");
   assert.equal(validation.error.message, "Capture package schema version is unsupported");
 });
+
+test("figma import validation rejects packages with missing referenced assets", () => {
+  const base = createValidPackage();
+  const packageData = createValidPackage({
+    capture: {
+      ...base.capture,
+      root: {
+        ...base.capture.root,
+        children: [
+          {
+            ...base.capture.root.children[1],
+            assetRef: "assets/not-packaged.png"
+          }
+        ]
+      }
+    },
+    assets: {}
+  });
+  const validation = validatePackageBytes(packFigcaptureFiles(createFigcaptureFileMap(packageData)));
+
+  assert.equal(validation.ok, false);
+  assert.equal(validation.error.category, "missing-file");
+  assert.match(validation.error.message, /not-packaged/);
+});

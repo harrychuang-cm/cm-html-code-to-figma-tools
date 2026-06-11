@@ -1,11 +1,12 @@
 {
   "name": "production-ui-to-figma",
-  "version": "0.1.0",
+  "version": "0.1.15",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.20.0",
   "scripts": {
     "build": "node scripts/build.mjs",
+    "version:sync": "node scripts/bump-version-if-changed.mjs",
     "test": "node scripts/test.mjs",
     "test:e2e": "node scripts/e2e.mjs"
   },

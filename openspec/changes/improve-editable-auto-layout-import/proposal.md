@@ -39,6 +39,9 @@
 - 第二十六輪 interactive text sizing guardrail：synthesized direct text inside mixed-content links/buttons/tabs and direct interactive link/button labels SHALL stay auto-width/HUG when the label fits on one line, even when pseudo separators or tall line boxes make the parent taller than the CSS line-height.
 - 第二十七輪 table fidelity guardrail：direct `td`/`th` and `display: table-cell` text SHALL import as fixed-size table-cell frames whose editable text child preserves CSS vertical and horizontal alignment instead of becoming a full-height top-aligned text layer.
 - 第二十八輪 tab separator fidelity guardrail：mixed-content direct text SHALL respect parent CSS padding when finding its free text segment, and pseudo decoration rectangles SHALL apply captured CSS transform translation so separators using `top:50%; transform:translateY(-50%)` stay vertically centered.
+- 第二十九輪 chat panel fidelity guardrail：browser-ordered CSS `box-shadow` values SHALL import as Figma `DROP_SHADOW` effects in module and classic runtimes, and padded single-line chat/message bubbles SHALL keep HUG editable text inside fixed-size padded backing frames instead of treating the inner content box as clipped fixed-width text.
+- 第三十輪 chat overlay fidelity guardrail：transparent padded emoji/message text SHALL place editable text inside the padded content box, and zero-height static wrappers that contain fixed-position overlays SHALL use descendant fixed numeric z-index for non-Auto Layout stacking so page go-to-top controls remain beneath higher-z-index chat panels.
+- 第三十一輪 tab bar fidelity guardrail：transparent padded interactive tab/link text boxes SHALL preserve their captured outer box as fixed-size Auto Layout wrapper frames with the editable text inside the CSS content box, so parent Auto Layout does not discard the link padding and height.
 
 ## Capabilities
 
@@ -57,6 +60,9 @@
 - `production-ui-import`: mixed direct-text labels and direct interactive labels in tabs, links, and buttons SHALL preserve single-line HUG sizing when they fit their captured text segment.
 - `production-ui-import`: direct table-cell text SHALL preserve fixed cell geometry while vertically aligning editable text from CSS `vertical-align` and horizontally aligning it from CSS `text-align` or common utility alignment classes for legacy captures.
 - `production-ui-import`: mixed direct-text labels SHALL preserve parent padding as tab/link gaps, and pseudo decoration layers SHALL apply captured CSS transform translation when imported.
+- `production-ui-import`: CSS box shadows SHALL import as Figma effects, and padded single-line visible text backing SHALL keep editable HUG text when the explicit CSS width belongs to the outer backing box.
+- `production-ui-import`: transparent padded text boxes SHALL preserve padding in editable text placement, and non-visual wrappers containing fixed-position overlays SHALL preserve browser stacking against higher-z-index fixed chat panels.
+- `production-ui-import`: transparent padded interactive tabs/links SHALL preserve the browser anchor/button hit-area frame when the padding and explicit box size are layout-significant inside a parent Auto Layout row.
 
 ## Impact
 
