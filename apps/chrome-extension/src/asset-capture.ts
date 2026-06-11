@@ -322,6 +322,7 @@ function isTransparentPlaceholderSource(src) {
 
 function cssImageSourceForNode(node) {
   const url = firstCssImageUrl(
+    node.styles?.content,
     node.styles?.maskImage,
     node.styles?.webkitMaskImage,
     node.styles?.backgroundImage
@@ -343,6 +344,7 @@ function canUseCssImageAsset(node) {
     !node.textContent &&
     (node.children?.length ?? 0) === 0 &&
     Boolean(firstCssImageUrl(
+      node.styles?.content,
       node.styles?.maskImage,
       node.styles?.webkitMaskImage,
       node.styles?.backgroundImage

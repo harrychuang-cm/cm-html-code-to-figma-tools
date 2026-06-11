@@ -44,3 +44,9 @@ dt,
 dd {
   margin: 0;
 }
+
+dd {
+  max-width: 190px;
+  overflow-wrap: anywhere;
+  text-align: right;
+}

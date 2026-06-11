@@ -105,6 +105,42 @@ The Figma Plugin SHALL convert high-confidence captured flex containers into Fig
 - **WHEN** the package is imported
 - **THEN** `dom-header-link-no-arrow` has layoutMode HORIZONTAL, counterAxisAlignItems CENTER, paddingLeft 0, paddingRight 0, paddingTop 0, and paddingBottom 0
 
+### Requirement: Table cell text preserves CSS alignment
+The Chrome Extension SHALL capture computed CSS `vertical-align` and `text-align` values for visible nodes. The Figma Plugin SHALL import direct text in `td`, `th`, or computed `display: table-cell` as a fixed-size table-cell frame with one editable text child instead of one full-height text layer. The table-cell frame MUST preserve captured cell width, height, visual style, and CSS padding. The editable text child MUST use HUG sizing for normal single-line table content. The table-cell frame MUST map CSS `vertical-align` to Figma counter-axis alignment, using CENTER when the value is missing or `middle`, MIN for top-like values, and MAX for bottom-like values. The table-cell frame MUST map CSS `text-align` to Figma primary-axis alignment; for legacy captures missing `textAlign`, it SHALL infer alignment from common utility classes such as `text-right`, `text-end`, `text-center`, `text-left`, or `text-start`.
+
+#### Scenario: Numeric table cell text is vertically centered
+
+- **WHEN** a captured `td` has direct text, `display: table-cell`, height greater than its line-height, padding, and `vertical-align: middle`
+- **THEN** the imported Figma node is a fixed-size frame with layoutMode HORIZONTAL, counterAxisAlignItems CENTER, and a HUG editable text child
+
+##### Example: ETF price cell
+
+- **GIVEN** a captured `td` `dom-etf-price` at x=542, y=726, width=138.5, height=70.5 with textContent `"100.25"`, `display: "table-cell"`, `lineHeight: "16px"`, `paddingLeft: "12px"`, `paddingRight: "12px"`, `paddingTop: "3px"`, `paddingBottom: "3px"`, `verticalAlign: "middle"`, and class `"text-right"`
+- **WHEN** the package is imported
+- **THEN** `dom-etf-price` imports as a frame with rect width 138.5 and height 70.5, layoutMode HORIZONTAL, primaryAxisAlignItems MAX, counterAxisAlignItems CENTER, paddingRight 12, and a child TEXT layer whose text is `"100.25"` and textAutoResize is `WIDTH_AND_HEIGHT`
+
+### Requirement: CSS z-index preserves Figma stacking order
+The Chrome Extension SHALL capture computed CSS `z-index` values for visible nodes. The Figma Plugin SHALL preserve numeric captured z-index values by writing `cssZIndex` plugin metadata on imported nodes. For parent frames that are not converted to Auto Layout, the importer MUST append child nodes in ascending numeric z-index order, treating missing or `auto` z-index as 0 and preserving DOM order for equal z-index values, so higher z-index children render above lower z-index children in Figma. For parent frames converted to Auto Layout, the importer MUST NOT reorder children by z-index because Auto Layout child order represents flex or inline flow; it MUST still preserve `cssZIndex` metadata for debug.
+
+#### Scenario: Non-auto-layout overlapping children stack by z-index
+
+- **WHEN** a captured non-Auto Layout container has overlapping children with numeric z-index values
+- **THEN** the imported Figma parent frame appends lower z-index child layers before higher z-index child layers
+- **AND** imported child nodes with numeric z-index expose `cssZIndex` plugin metadata
+
+##### Example: overlay child appears above base content
+
+- **GIVEN** a container `dom-stack` with child `dom-front` carrying `zIndex: "10"`, child `dom-middle` carrying no z-index, and child `dom-back` carrying `zIndex: "-1"`
+- **WHEN** the package is imported
+- **THEN** the Figma child insertion order is `dom-back`, `dom-middle`, `dom-front`
+- **AND** `dom-front` has plugin metadata `cssZIndex: "10"`
+
+#### Scenario: Auto Layout flow order is not changed by z-index
+
+- **WHEN** a captured flex row passes Auto Layout eligibility and its children carry numeric z-index values
+- **THEN** the imported Figma Auto Layout frame keeps child order from flex flow or reverse-flex visual order instead of sorting by z-index
+- **AND** each imported child with numeric z-index still exposes `cssZIndex` plugin metadata
+
 ### Requirement: Risky layout containers stay absolute
 The Figma Plugin SHALL keep risky or low-confidence containers as ordinary nested frames without Auto Layout. The importer MUST record skipped auto layout reasons in the import report for overlapping children, fixed or sticky containers, complex grid containers, missing bounds, one-child containers that lack explicit alignment evidence, absolute-positioned decoration children, and flex containers with strongly non-uniform implicit child gaps that cannot be represented by captured CSS alignment.
 
@@ -178,7 +214,7 @@ The Figma Plugin SHALL preserve elements that combine direct text content and re
 - **THEN** `dom-member-points-link` is a HORIZONTAL frame whose children are an SVG/image model, a TEXT model with sourceNodeId `dom-member-points-link::text` and text `"P點:"`, and a TEXT model with text `"4"` in that order
 
 ### Requirement: Visible CSS pseudo-elements import as decoration layers
-The Chrome Extension SHALL capture visible CSS `::before` and `::after` pseudo-elements as synthetic child nodes when their computed styles describe a visible box. The Figma Plugin SHALL import those synthetic nodes as visual rectangle layers. Containers with absolute-positioned pseudo-element children MUST keep absolute child geometry instead of treating the pseudo-element as an Auto Layout flow item.
+The Chrome Extension SHALL capture visible CSS `::before` and `::after` pseudo-elements as synthetic child nodes when their computed styles describe a visible box, visible textual `content`, or visible image `content`. The Figma Plugin SHALL import decoration pseudo nodes as visual rectangle layers, textual pseudo nodes as editable text layers, and image pseudo nodes as image/vector layers. Containers with absolute-positioned pseudo-element children MUST keep absolute child geometry instead of treating the pseudo-element as an Auto Layout flow item. Imported pseudo decoration geometry MUST apply supported captured CSS transform translation before deriving parent-relative Figma coordinates.
 
 #### Scenario: Active tab underline pseudo-element is captured
 
@@ -190,6 +226,18 @@ The Chrome Extension SHALL capture visible CSS `::before` and `::after` pseudo-e
 - **GIVEN** a captured active tab element `dom-active-tab` at x=100, y=20, width=64, height=60 whose computed `::after` has `content: "\"\""`, `display: "block"`, `position: "absolute"`, `left: "16px"`, `bottom: "0px"`, `width: "32px"`, `height: "2px"`, and `backgroundColor: "rgb(194, 41, 46)"`
 - **WHEN** the page is captured
 - **THEN** the synthetic `::after` child has rect x=116, y=78, width=32, height=2 and `attributes["data-pseudo"]: "::after"`
+
+#### Scenario: Textual before pseudo-element is captured and ordered before direct text
+
+- **WHEN** a visible element has a displayed `::before` pseudo-element with textual CSS `content` such as `"..."`, no explicit width/height, and computed font metrics
+- **THEN** the `.figcapture` node contains a synthetic pseudo child with editable `textContent` and an inferred text rect
+- **AND** the Figma import places that `::before` text before the synthesized editable direct text
+
+##### Example: read-more ellipsis
+
+- **GIVEN** a captured read-more button `dom-readmore-button` at x=500, y=354, width=96, height=27 with direct textContent `"閱讀更多"` and computed `::before` content `"..."`, font-size 18px, line-height 27px
+- **WHEN** the page is captured and imported
+- **THEN** `dom-readmore-button-before` is a TEXT child with text `"..."` and appears before the synthesized `dom-readmore-button::text` label `"閱讀更多"`
 
 #### Scenario: Absolute pseudo-element uses positioned containing block
 
@@ -212,6 +260,57 @@ The Chrome Extension SHALL capture visible CSS `::before` and `::after` pseudo-e
 - **GIVEN** a captured tab `dom-active-tab` at x=100, y=20, width=64, height=60 with text child `dom-active-tab-label` at x=116, y=38, width=32, height=24 and pseudo child `dom-active-tab-after` at x=116, y=78, width=32, height=2, `position: "absolute"`, and `backgroundColor: "rgb(194, 41, 46)"`
 - **WHEN** the package is imported
 - **THEN** `dom-active-tab` records skipped reason `absolute-position-child` and `dom-active-tab-after` is a rectangle at parent-relative x=16, y=58, width=32, height=2
+
+#### Scenario: Translated pseudo separator stays vertically centered
+
+- **WHEN** a captured absolute `::after` separator uses computed `top` plus CSS transform translation to center itself vertically
+- **THEN** the imported pseudo rectangle applies the transform translation before parent-relative placement
+
+##### Example: ETF nav separator with translateY centering
+
+- **GIVEN** a captured link `dom-etf-nav-link` at x=100, y=20, width=135.38, height=48 and an absolute pseudo child `dom-etf-nav-link-after` at x=234.38, y=44, width=1, height=20 with `position: "absolute"`, `backgroundColor: "rgb(212, 212, 212)"`, and `transform: "matrix(1, 0, 0, 1, 0, -10)"`
+- **WHEN** the package is imported
+- **THEN** `dom-etf-nav-link-after` imports as a rectangle at parent-relative x=134.38, y=14, width=1, height=20
+
+#### Scenario: Inline pseudo-element CSS image icon is captured and packaged
+
+- **WHEN** a captured element has a visible `::after` pseudo-element with `display: inline-block`, explicit width and height, no positioned offsets, and a CSS image URL in `background-image`, `mask-image`, or `-webkit-mask-image`
+- **THEN** the `.figcapture` node contains a synthetic pseudo child with an inferred trailing-edge rect
+- **AND** asset packaging stores the CSS image as an asset for that pseudo child
+- **AND** the Figma import places the `::after` icon after the synthesized editable direct text, not before it
+
+##### Example: verified creator badge
+
+- **GIVEN** a captured label `dom-creator-plan` at x=32, y=40, width=132, height=28 with textContent `"創作者計畫"` and an inline `::after` at width 16, height 16, `backgroundImage: "url(data:image/svg+xml,...)"`, and no `left`, `right`, `top`, or `bottom`
+- **WHEN** the page is captured and packaged
+- **THEN** the synthetic `::after` child has rect x=148, y=46, width=16, height=16
+- **AND** that pseudo child receives an assetRef such as `assets/icon-1.svg`
+
+#### Scenario: Pseudo-element content URL imports as an asset, not text
+
+- **WHEN** a visible pseudo-element has `content: url("data:image/svg+xml;base64,...")`, nonzero width/height, and no textual content
+- **THEN** the `.figcapture` synthetic pseudo child keeps empty `textContent`
+- **AND** asset packaging stores the content URL as an SVG asset for that pseudo child
+- **AND** the Figma import creates an image/vector layer instead of an editable text layer containing the raw data URL string
+
+#### Scenario: No-offset absolute after pseudo icon uses trailing static position
+
+- **WHEN** a captured `::after` pseudo-element uses a CSS image, has `position: absolute`, explicit width and height, and no `left`, `right`, `top`, or `bottom`
+- **THEN** capture infers its static pseudo position on the owner's trailing edge rather than the owner or containing-block leading edge
+
+### Requirement: CSS gradient backgrounds import as visible fills
+The Figma Plugin SHALL treat supported CSS `linear-gradient(...)` backgrounds as visible fills. Layout model generation MUST NOT drop nodes whose only visual style is a linear gradient, and Figma adapters MUST convert supported gradient fills into Figma gradient paints.
+
+#### Scenario: Carousel fade overlay keeps its gradient
+
+- **WHEN** a captured overlay element has `backgroundImage: "linear-gradient(to right, rgba(255, 255, 255, 0), rgb(255, 255, 255))"` and no solid background color
+- **THEN** the layout model keeps that element as a visible shape or frame
+- **AND** the imported Figma node has a `GRADIENT_LINEAR` fill
+
+#### Scenario: Read-more mask keeps its gradient
+
+- **WHEN** a captured read-more control uses a `linear-gradient(...)` background to hide overflowing text under its label
+- **THEN** the imported Figma frame keeps a visible gradient fill behind the editable read-more text
 
 ### Requirement: Editable text preserves visual bounds
 The Figma Plugin SHALL choose a text resize mode that matches captured text geometry when creating editable text layers. Text nodes captured as single-line content MUST use auto-width behavior so Figma font substitution does not wrap labels, usernames, stock codes, or short numbers into multiple lines. Auto-width text MUST also use Figma Auto Layout child HUG sizing when the host API supports it, so navigation labels size to their content inside top bars and menu rows. Text nodes captured as multiline or constrained content MUST keep their captured width so Figma auto-resize does not turn wrapped production text into overflowing single-line text. Text nodes with visible background, visible border, or shadow MUST preserve that visual backing while keeping the text editable. Text nodes with only invisible decorative styles, such as transparent background plus border radius and no visible border or shadow, MUST remain editable text without a fixed-width backing frame.
@@ -237,6 +336,54 @@ The Figma Plugin SHALL choose a text resize mode that matches captured text geom
 - **GIVEN** a captured menu row `dom-top-menu-item` with `display: "flex"`, `alignItems: "center"`, a text child `dom-top-menu-label` with textContent `"理財寶商城"`, and a 12px dropdown arrow child
 - **WHEN** the package is imported
 - **THEN** `dom-top-menu-label` has `textAutoResize: "WIDTH_AND_HEIGHT"` and `layoutSizingHorizontal: "HUG"`
+
+#### Scenario: Mixed direct tab text uses Hug sizing when it fits on one line
+
+- **WHEN** a captured link, tab, or button has direct text plus a pseudo/icon child, and the synthesized direct text has no newline with estimated single-line width fitting the available text segment
+- **THEN** the imported synthesized text node uses `WIDTH_AND_HEIGHT` text auto-resize and horizontal HUG child sizing
+- **AND** a tall parent line box or pseudo separator MUST NOT force that label into fixed-width multiline text
+
+##### Example: ETF nav link with separator
+
+- **GIVEN** a captured link `dom-etf-nav-link` at x=100, y=20, width=135.38, height=48 with direct textContent `"熱門ETF排行榜"`, font size 18px, line-height 27px, and a `::after` separator child at x=234.38, y=44, width=1, height=20
+- **WHEN** the package is imported
+- **THEN** the synthesized text node `dom-etf-nav-link::text` uses `WIDTH_AND_HEIGHT` text auto-resize and horizontal HUG child sizing instead of fixed width
+
+#### Scenario: Mixed direct tab text respects parent padding
+
+- **WHEN** a captured mixed-content link has parent padding and a trailing absolute pseudo separator outside the padded content box
+- **THEN** the synthesized direct-text node starts inside the padded content box
+- **AND** the trailing separator does not consume the label's padded gap
+
+##### Example: ETF nav padded link segment
+
+- **GIVEN** a captured link `dom-etf-region-link` at x=509.38, y=367, width=114.19, height=48 with direct textContent `"依區域選股"`, padding left/right 12px, font size 18px, line-height 27px, and an absolute `::after` separator at x=622.56, y=391, width=1, height=20
+- **WHEN** the package is imported
+- **THEN** the synthesized text node `dom-etf-region-link::text` is parent-relative x=12, y=10.5, width=90, height=27 and uses `WIDTH_AND_HEIGHT` text auto-resize with horizontal HUG sizing
+
+#### Scenario: Direct interactive tab text uses Hug sizing when it fits on one line
+
+- **WHEN** a captured link, tab, menuitem, or button has direct text without pseudo/icon children, no newline, and estimated single-line width fitting the captured box
+- **THEN** the imported text node uses `WIDTH_AND_HEIGHT` text auto-resize and horizontal HUG child sizing
+- **AND** non-interactive wide text boxes such as table cells remain fixed-width when their captured box represents a layout cell rather than the text glyph bounds
+
+##### Example: final ETF nav link without separator
+
+- **GIVEN** a captured link `dom-about-etf-link` at x=737.75, y=367, width=81.27, height=48 with textContent `"關於ETF"`, font size 18px, and line-height 27px
+- **WHEN** the package is imported
+- **THEN** `dom-about-etf-link` uses `WIDTH_AND_HEIGHT` text auto-resize and horizontal HUG child sizing
+
+#### Scenario: Tall single-line tab labels center after Hug normalization
+
+- **WHEN** a captured direct tab, link, menuitem, or button label uses a taller browser line box than its CSS line-height, has no newline, and still qualifies for `WIDTH_AND_HEIGHT` HUG sizing
+- **THEN** the imported Figma text rect is reduced to the captured CSS line-height and vertically centered inside the original captured line box
+- **AND** the label remains HUG-sized horizontally so tab and menu text does not wrap
+
+##### Example: ETF rank tab button
+
+- **GIVEN** a captured button `dom-rank-tab-popular` at x=366, y=615, width=61.41, height=47 with textContent `"熱門ETF"`, font size 16px, and line-height 24px
+- **WHEN** the package is imported
+- **THEN** `dom-rank-tab-popular` has `textAutoResize: "WIDTH_AND_HEIGHT"`, `layoutSizingHorizontal: "HUG"`, y `626.5`, and height `24`
 
 #### Scenario: Clipped single-line text keeps fixed width
 
@@ -286,6 +433,46 @@ The Figma Plugin SHALL choose a text resize mode that matches captured text geom
 - **GIVEN** a captured `button.articleResponse__comment` node `dom-answer-count` with textContent `"9則回答"`, x=1011, y=884, width=54, height=20, `backgroundColor: "rgba(0, 0, 0, 0)"`, `borderTopLeftRadius: "4px"`, and border widths `0px`
 - **WHEN** the package is imported
 - **THEN** `dom-answer-count` is a TEXT model with `textAutoResize: "WIDTH_AND_HEIGHT"` and no parent model named `Text Background / 9則回答`
+
+### Requirement: Captured font stacks choose available Figma fonts
+The Chrome Extension SHALL capture computed CSS text font data including `font-family`, `font-style`, `font-weight`, `font-size`, and `line-height`. The Figma Plugin SHALL parse the captured CSS `font-family` stack and try concrete font family candidates in order when loading Figma text fonts. The importer MUST ignore generic CSS family names such as `sans-serif`, `serif`, `system-ui`, and `monospace`. For each concrete family, the importer MUST try the requested Figma style derived from CSS weight/style and MUST try `Regular` for the same family before moving to the next family when the requested style is not already `Regular`. The importer MUST use the configured default fallback font only after concrete CSS stack candidates fail. When the loaded Figma font differs from the first requested CSS candidate, the import report MUST include font substitution details with the source node, requested first font, requested stack, attempted fonts, and final used font.
+
+#### Scenario: Later CSS font-family candidate is used before default fallback
+
+- **WHEN** a captured text node has `fontFamily: "\"Missing Webfont\", \"Available Sans\", sans-serif"`, `fontStyle: "italic"`, and `fontWeight: "700"`
+- **AND** Figma cannot load `Missing Webfont Bold Italic`, `Missing Webfont Regular`, or `Available Sans Bold Italic`
+- **AND** Figma can load `Available Sans Regular`
+- **THEN** the imported Figma text node uses fontName `{ family: "Available Sans", style: "Regular" }`
+- **AND** the import report includes a font substitution from `Missing Webfont Bold Italic` to `Available Sans Regular`
+
+#### Scenario: Exact first CSS font candidate is available
+
+- **WHEN** a captured text node has a concrete first font-family candidate and Figma can load that family/style
+- **THEN** the imported Figma text node uses that first requested font
+- **AND** the import report does not count a font substitution for that text node
+
+##### Example: first font candidate exists locally
+
+- **GIVEN** a captured text node `dom-heading` with `fontFamily: "\"Noto Sans TC\", \"PingFang TC\", sans-serif"`, `fontStyle: "normal"`, and `fontWeight: "700"`
+- **AND** Figma can load `Noto Sans TC Bold`
+- **WHEN** the package is imported
+- **THEN** `dom-heading` uses fontName `{ family: "Noto Sans TC", style: "Bold" }`
+- **AND** the import report has no font substitution entry for `dom-heading`
+
+### Requirement: Clipped overflow containers preserve browser clipping
+The Chrome Extension SHALL capture computed overflow and max-size values that affect visible clipping, including `overflow`, `overflow-x`, `overflow-y`, `max-width`, `max-height`, and `text-overflow`. The Figma Plugin SHALL import containers with clipping overflow on either axis as fixed-size frames with `clipsContent` enabled. The importer MUST preserve nested children at parent-relative positions for editing and debugging, but content outside the captured frame bounds MUST remain clipped in Figma.
+
+#### Scenario: Limited read-more text clips hidden lines
+
+- **WHEN** a captured container has `overflow-y: hidden`, `max-height: 81px`, captured height 81, and child text lines continuing beyond that height
+- **THEN** the imported Figma frame keeps height 81 and has `clipsContent: true`
+- **AND** nested child line layers beyond y=81 remain inside the frame but are visually clipped
+
+##### Example: article preview limited to three lines
+
+- **GIVEN** a captured `dom-readmore-text` container at x=24, y=40, width=540, height=81 with `overflowY: "hidden"`, `maxHeight: "81px"`, `lineHeight: "27px"`, and a fourth line child at y=121
+- **WHEN** the package is imported
+- **THEN** `dom-readmore-text` is a FRAME with `clipsContent: true`, height 81, and child `dom-readmore-line-4` at parent-relative y=81 or greater
 
 ### Requirement: Captured text preserves browser whitespace semantics
 The Chrome Extension SHALL normalize direct text content according to captured CSS `white-space` semantics before writing `textContent` into `.figcapture`. For `white-space: normal`, `nowrap`, missing, or unsupported values, the capture MUST collapse consecutive whitespace characters into a single space and trim leading and trailing whitespace. For `white-space: pre`, `pre-wrap`, or `break-spaces`, the capture MUST preserve raw direct text whitespace. For `white-space: pre-line`, the capture MUST preserve line breaks while collapsing horizontal whitespace within each line and removing indentation-only leading and trailing whitespace.
@@ -384,3 +571,31 @@ The Chrome Extension SHALL choose a real image source candidate for `img` assets
 
 - **WHEN** an image has a non-placeholder `currentSrc` and a different `data-src`
 - **THEN** the `.figcapture` package uses `currentSrc` as the selected image source
+
+### Requirement: SVG image transforms preserve browser rendering
+The Chrome Extension SHALL include computed `transform` and `transformOrigin` values in captured styles. The Figma Plugin SHALL preserve SVG image intrinsic aspect ratio inside the captured image box unless the SVG explicitly opts out of aspect-ratio preservation, and it SHALL apply supported CSS rotation transforms to the imported vector layer while positioning the vector by its rotated bounding box before clipping.
+
+#### Scenario: Rotated SVG image keeps its visual aspect
+
+- **WHEN** a captured `img` points to an SVG asset with intrinsic size 10x17, captured rect 16x16, and computed transform `matrix(-1, 0, 0, -1, 0, 0)`
+- **THEN** the imported editable output contains a 16x16 wrapper frame
+- **AND** the nested SVG vector is sized proportionally to approximately 9.41x16, rotated 180 degrees, and positioned by the rotated bounding box so it remains visible inside the clipped wrapper
+
+### Requirement: Visible borders and outlines import as editable strokes
+The Chrome Extension SHALL capture computed border side styles and outline styles for visible elements. The Figma Plugin SHALL derive an editable stroke from a uniform visible four-side border, and SHALL use a visible outline as the stroke fallback when no visible border exists. The Figma Plugin MUST NOT map one-sided or non-uniform borders to a normal Figma node stroke, because Figma strokes render all four sides. Instead, the importer SHALL create editable rectangle decoration layers for the visible border sides.
+
+#### Scenario: Outline-only button keeps a visible stroke
+
+- **WHEN** a captured button has `outlineWidth: "2px"`, `outlineStyle: "solid"`, and `outlineColor: "rgb(31, 95, 191)"` with no visible border
+- **THEN** the imported editable output contains a Figma frame for that button with stroke weight 2 and stroke color `rgb(31, 95, 191)`
+
+#### Scenario: Single-side border imports as underline decoration
+
+- **WHEN** a captured element has a visible `borderBottomWidth`, `borderBottomStyle`, and `borderBottomColor` but no top border
+- **THEN** the layout model includes a bottom-edge rectangle decoration with the captured border width and color, and the parent node does not receive a four-sided stroke
+
+##### Example: active article tab underline
+
+- **GIVEN** a captured tab item `dom-article-tab-active` at x=52, y=28, width=164, height=256 with `borderBottomWidth: "2px"`, `borderBottomStyle: "solid"`, `borderBottomColor: "rgb(194, 41, 46)"`, and all other border side widths `0px`
+- **WHEN** the package is imported
+- **THEN** `dom-article-tab-active` contains a rectangle decoration with sourceNodeId `dom-article-tab-active::border-bottom`, x=0, y=254, width=164, height=2, and fill color `rgb(194, 41, 46)`

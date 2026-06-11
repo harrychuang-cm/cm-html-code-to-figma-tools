@@ -268,6 +268,86 @@ test("asset capture packages inline svg and css mask icon assets", async () => {
   assert.match(new TextDecoder().decode(result.assets["assets/icon-1.svg"]), /<svg/);
 });
 
+test("asset capture packages pseudo-element css image assets", async () => {
+  const svgDataUrl = "data:image/svg+xml,%3Csvg%20viewBox%3D%220%200%2016%2016%22%3E%3Ccircle%20cx%3D%228%22%20cy%3D%228%22%20r%3D%228%22%2F%3E%3C%2Fsvg%3E";
+  const capture = captureElementTree(
+    {
+      tagName: "main",
+      rect: { x: 0, y: 0, width: 800, height: 600 },
+      styles: {},
+      attributes: {},
+      children: [
+        {
+          tagName: "::after",
+          nodeType: "pseudo",
+          sourceNodeId: "dom-verified-label-after",
+          rect: { x: 148, y: 46, width: 16, height: 16 },
+          styles: {
+            display: "inline-block",
+            backgroundImage: `url(\"${svgDataUrl}\")`
+          },
+          attributes: { "data-pseudo": "::after" },
+          children: []
+        }
+      ]
+    },
+    { width: 800, height: 600, devicePixelRatio: 1, scrollX: 0, scrollY: 0 },
+    {
+      sourceUrl: "https://example.com",
+      captureTimestamp: "2026-06-10T10:00:00.000Z"
+    }
+  );
+
+  const result = await captureVisualAssets(capture);
+  const pseudo = result.capture.root.children[0];
+
+  assert.deepEqual(Object.keys(result.assets), ["assets/icon-1.svg"]);
+  assert.equal(pseudo.assetRef, "assets/icon-1.svg");
+  assert.equal(pseudo.attributes.assetKind, "svg");
+  assert.match(new TextDecoder().decode(result.assets["assets/icon-1.svg"]), /<circle/);
+});
+
+test("asset capture packages pseudo-element content URL image assets", async () => {
+  const svgDataUrl = "data:image/svg+xml;base64,PHN2ZyB2aWV3Qm94PSIwIDAgOCA5Ij48cGF0aCBkPSJNMiAybDQgNC00IDQiLz48L3N2Zz4=";
+  const capture = captureElementTree(
+    {
+      tagName: "main",
+      rect: { x: 0, y: 0, width: 800, height: 600 },
+      styles: {},
+      attributes: {},
+      children: [
+        {
+          tagName: "::after",
+          nodeType: "pseudo",
+          sourceNodeId: "dom-sort-after",
+          textContent: "",
+          rect: { x: 148, y: 46, width: 8, height: 21 },
+          styles: {
+            display: "block",
+            content: `url(\"${svgDataUrl}\")`,
+            backgroundImage: "none"
+          },
+          attributes: { "data-pseudo": "::after" },
+          children: []
+        }
+      ]
+    },
+    { width: 800, height: 600, devicePixelRatio: 1, scrollX: 0, scrollY: 0 },
+    {
+      sourceUrl: "https://example.com",
+      captureTimestamp: "2026-06-10T10:00:00.000Z"
+    }
+  );
+
+  const result = await captureVisualAssets(capture);
+  const pseudo = result.capture.root.children[0];
+
+  assert.deepEqual(Object.keys(result.assets), ["assets/icon-1.svg"]);
+  assert.equal(pseudo.assetRef, "assets/icon-1.svg");
+  assert.equal(pseudo.attributes.assetKind, "svg");
+  assert.match(new TextDecoder().decode(result.assets["assets/icon-1.svg"]), /<path/);
+});
+
 test("asset capture uses lazy data-src svg when img src is a transparent placeholder", async () => {
   const placeholderGif = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
   const plusSvg = "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTIiIGhlaWdodD0iMTIiIHZpZXdCb3g9IjAgMCAxMiAxMiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cGF0aCBkPSJNNS43MTQzNiAwLjcxMzg2N1YxMC43MTM5TTAuNzE0MzU1IDUuNzEzODdIMTAuNzE0NCIgc3Ryb2tlPSIjQjBCMEIwIiBzdHJva2Utd2lkdGg9IjEuNDI4NTciIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPjwvc3ZnPg==";

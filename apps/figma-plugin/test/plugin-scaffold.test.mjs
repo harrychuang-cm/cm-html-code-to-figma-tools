@@ -68,6 +68,7 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
       "layoutSizingVertical",
       "layoutGrow",
       "lineHeight",
+      "rotation",
       "svg",
       "pluginData"
     ]);
@@ -103,6 +104,7 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
       layoutSizingVertical: "",
       layoutGrow: 0,
       lineHeight: null,
+      rotation: 0,
       svg: "",
       pluginData: {},
       resize(width, height) {
@@ -165,7 +167,14 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
       node.svg = svg;
       return node;
     },
-    async loadFontAsync() {}
+    async loadFontAsync(fontName) {
+      const key = `${fontName.family} ${fontName.style}`;
+      if (key === "Missing Classic Bold Italic" ||
+        key === "Missing Classic Regular" ||
+        key === "Classic Sans Bold Italic") {
+        throw new Error(`Missing font ${key}`);
+      }
+    }
   };
   const basePackage = createValidPackage();
   const packageData = createValidPackage({
@@ -241,6 +250,23 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
               alt: "Chart"
             },
             assetRef: "assets/image-1.png",
+            children: []
+          },
+          {
+            id: "node-classic-font",
+            sourceNodeId: "dom-classic-font",
+            nodeType: "text",
+            tagName: "#text",
+            textContent: "Font stack",
+            rect: { x: 32, y: 268, width: 96, height: 24 },
+            styles: {
+              fontFamily: "\"Missing Classic\", \"Classic Sans\", sans-serif",
+              fontStyle: "italic",
+              fontWeight: "700",
+              fontSize: "16px",
+              color: "rgb(17, 24, 39)"
+            },
+            attributes: {},
             children: []
           },
           {
@@ -576,6 +602,61 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
             children: []
           },
           {
+            id: "node-etf-nav-link",
+            sourceNodeId: "dom-etf-nav-link",
+            nodeType: "element",
+            tagName: "a",
+            textContent: "熱門ETF排行榜",
+            rect: { x: 300, y: 0, width: 135.38, height: 48 },
+            styles: {
+              fontFamily: "Inter",
+              fontSize: "18px",
+              lineHeight: "27px",
+              whiteSpace: "normal",
+              display: "flex",
+              flexDirection: "row",
+              alignItems: "center",
+              color: "rgb(194, 41, 46)",
+              backgroundColor: "rgba(0, 0, 0, 0)"
+            },
+            attributes: { class: "etfRankNav__link" },
+            children: [
+              {
+                id: "node-etf-nav-link-after",
+                sourceNodeId: "dom-etf-nav-link-after",
+                nodeType: "pseudo",
+                tagName: "::after",
+                rect: { x: 434.38, y: 24, width: 1, height: 20 },
+                styles: {
+                  position: "absolute",
+                  backgroundColor: "rgb(212, 212, 212)"
+                },
+                attributes: { "data-pseudo": "::after" },
+                children: []
+              }
+            ]
+          },
+          {
+            id: "node-about-etf-link",
+            sourceNodeId: "dom-about-etf-link",
+            nodeType: "element",
+            tagName: "a",
+            textContent: "關於ETF",
+            rect: { x: 456, y: 0, width: 81.27, height: 48 },
+            styles: {
+              fontFamily: "Inter",
+              fontSize: "18px",
+              lineHeight: "27px",
+              whiteSpace: "normal",
+              display: "flex",
+              alignItems: "center",
+              color: "rgb(194, 41, 46)",
+              backgroundColor: "rgba(0, 0, 0, 0)"
+            },
+            attributes: { class: "etfExplanation__navLink" },
+            children: []
+          },
+          {
             id: "node-member-points-link",
             sourceNodeId: "dom-member-points-link",
             nodeType: "element",
@@ -703,6 +784,169 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
             },
             assetRef: "assets/vector-1.svg",
             children: []
+          },
+          {
+            id: "node-outline-button",
+            sourceNodeId: "dom-outline-button",
+            nodeType: "element",
+            tagName: "button",
+            rect: { x: 760, y: 96, width: 120, height: 36 },
+            styles: {
+              display: "inline-flex",
+              backgroundColor: "rgba(0, 0, 0, 0)",
+              outlineWidth: "2px",
+              outlineStyle: "solid",
+              outlineColor: "rgb(31, 95, 191)",
+              zIndex: "20",
+              borderTopLeftRadius: "6px",
+              borderTopRightRadius: "6px",
+              borderBottomRightRadius: "6px",
+              borderBottomLeftRadius: "6px"
+            },
+            attributes: { class: "btn btn-outline" },
+            children: [
+              {
+                id: "node-outline-button-text",
+                sourceNodeId: "dom-outline-button-text",
+                nodeType: "text",
+                tagName: "#text",
+                textContent: "取消",
+                rect: { x: 804, y: 104, width: 32, height: 20 },
+                styles: {
+                  fontFamily: "Inter",
+                  fontSize: "14px",
+                  fontWeight: "400",
+                  lineHeight: "20px",
+                  color: "rgb(31, 95, 191)"
+                },
+                attributes: {},
+                children: []
+              }
+            ]
+          },
+          {
+            id: "node-arrow-img",
+            sourceNodeId: "dom-arrow-img",
+            nodeType: "element",
+            tagName: "img",
+            rect: { x: 840, y: 12, width: 16, height: 16 },
+            styles: {
+              objectFit: "fill",
+              transform: "matrix(-1, 0, 0, -1, 0, 0)",
+              transformOrigin: "8px 8px",
+              backgroundColor: "rgba(0, 0, 0, 0)"
+            },
+            attributes: {
+              alt: "下一張",
+              assetKind: "svg"
+            },
+            assetRef: "assets/arrow.svg",
+            children: []
+          },
+          {
+            id: "node-carousel-fade",
+            sourceNodeId: "dom-carousel-fade",
+            nodeType: "element",
+            tagName: "div",
+            rect: { x: 820, y: 0, width: 56, height: 330 },
+            styles: {
+              backgroundColor: "rgba(0, 0, 0, 0)",
+              backgroundImage: "linear-gradient(to right, rgba(255, 255, 255, 0), rgb(255, 255, 255))"
+            },
+            attributes: { class: "carousel__fade" },
+            children: []
+          },
+          {
+            id: "node-readmore-text",
+            sourceNodeId: "dom-readmore-text",
+            nodeType: "element",
+            tagName: "div",
+            rect: { x: 32, y: 300, width: 540, height: 81 },
+            styles: {
+              display: "block",
+              overflowX: "visible",
+              overflowY: "hidden",
+              maxHeight: "81px",
+              lineHeight: "27px",
+              color: "rgb(54, 54, 54)"
+            },
+            attributes: { class: "textRule__text textRule__text--limited" },
+            children: [
+              {
+                id: "node-readmore-line-1",
+                sourceNodeId: "dom-readmore-line-1",
+                nodeType: "text",
+                tagName: "#text",
+                textContent: "全球最會賺航海王！專訪長榮海運董總：你有注意到我們的名片嗎？",
+                rect: { x: 32, y: 300, width: 540, height: 27 },
+                styles: {
+                  fontFamily: "Inter",
+                  fontSize: "18px",
+                  lineHeight: "27px",
+                  color: "rgb(54, 54, 54)"
+                },
+                attributes: {},
+                children: []
+              },
+              {
+                id: "node-readmore-line-4",
+                sourceNodeId: "dom-readmore-line-4",
+                nodeType: "text",
+                tagName: "#text",
+                textContent: "海，多變。",
+                rect: { x: 32, y: 381, width: 540, height: 27 },
+                styles: {
+                  fontFamily: "Inter",
+                  fontSize: "18px",
+                  lineHeight: "27px",
+                  color: "rgb(54, 54, 54)"
+                },
+                attributes: {},
+                children: []
+              },
+              {
+                id: "node-readmore-button",
+                sourceNodeId: "dom-readmore-button",
+                nodeType: "element",
+                tagName: "button",
+                textContent: "閱讀更多",
+                rect: { x: 500, y: 354, width: 96, height: 27 },
+                styles: {
+                  display: "inline-flex",
+                  flexDirection: "row",
+                  alignItems: "center",
+                  position: "absolute",
+                  fontFamily: "Inter",
+                  fontSize: "18px",
+                  lineHeight: "27px",
+                  color: "rgb(194, 41, 46)",
+                  backgroundColor: "rgba(0, 0, 0, 0)",
+                  backgroundImage: "linear-gradient(to right, rgba(255, 255, 255, 0), rgb(255, 255, 255))"
+                },
+                attributes: { class: "textRule__btn textRule__btn--absolute" },
+                children: [
+                  {
+                    id: "node-readmore-button-before",
+                    sourceNodeId: "dom-readmore-button-before",
+                    nodeType: "pseudo",
+                    tagName: "::before",
+                    textContent: "...",
+                    rect: { x: 500, y: 354, width: 30, height: 27 },
+                    styles: {
+                      content: "\"...\"",
+                      display: "inline",
+                      fontFamily: "Inter",
+                      fontSize: "18px",
+                      lineHeight: "27px",
+                      color: "rgb(54, 54, 54)",
+                      backgroundColor: "rgba(0, 0, 0, 0)"
+                    },
+                    attributes: { "data-pseudo": "::before" },
+                    children: []
+                  }
+                ]
+              }
+            ]
           }
         ]
       }
@@ -712,7 +956,8 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
         kind: "external-image-reference",
         src: "https://example.com/chart.png"
       })),
-      "assets/vector-1.svg": new TextEncoder().encode("<svg viewBox=\"0 0 12 12\"><path d=\"M4 2l4 4-4 4\"/></svg>")
+      "assets/vector-1.svg": new TextEncoder().encode("<svg viewBox=\"0 0 12 12\"><path d=\"M4 2l4 4-4 4\"/></svg>"),
+      "assets/arrow.svg": new TextEncoder().encode("<svg width=\"10\" height=\"17\" viewBox=\"0 0 10 17\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\"><path d=\"M0 0L10 8.5L0 17Z\" fill=\"#676767\"/></svg>")
     }
   });
 
@@ -733,6 +978,7 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
   const nestedNodes = flattenNodes(accurateFrame.children);
   const autoLayoutFrame = nestedNodes.find((node) => node.type === "FRAME" && node.layoutMode === "HORIZONTAL");
   const navText = nestedNodes.find((node) => node.type === "TEXT" && node.characters === "Home");
+  const classicFontText = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-classic-font");
   const answerText = nestedNodes.find((node) => node.type === "TEXT" && node.characters === "9則回答");
   const answerBacking = nestedNodes.find((node) => node.type === "FRAME" && node.name === "Text Background / 9則回答");
   const actionRowFrame = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-action-row");
@@ -741,6 +987,8 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
   const headerLinkFrame = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-header-link-item");
   const headerLinkNoArrowFrame = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-header-link-no-arrow");
   const headerLinkNoArrowText = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-header-link-no-arrow-text");
+  const etfNavDirectText = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-etf-nav-link::text");
+  const aboutEtfText = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-about-etf-link");
   const visibleBadgeFrame = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-visible-badge");
   const visibleBadgeText = visibleBadgeFrame
     ? flattenNodes([visibleBadgeFrame]).find((node) => node.type === "TEXT" && node.characters === "讚")
@@ -750,8 +998,16 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
   const memberNameText = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-member-name");
   const activeTabFrame = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-active-tab");
   const activeTabUnderline = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-active-tab-after");
+  const outlineButtonFrame = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-outline-button");
+  const readMoreFrame = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-readmore-text");
+  const readMoreButtonFrame = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-readmore-button");
+  const readMoreEllipsisText = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-readmore-button-before");
+  const readMoreLabelText = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-readmore-button::text");
+  const carouselFade = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-carousel-fade");
   const placeholder = nestedNodes.find((node) => node.pluginData.assetRef === "assets/image-1.png");
   const vectorNode = nestedNodes.find((node) => node.type === "VECTOR" && node.pluginData.assetRef === "assets/vector-1.svg");
+  const arrowWrapper = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-arrow-img");
+  const arrowVector = arrowWrapper ? arrowWrapper.children.find((node) => node.type === "VECTOR") : null;
 
   assert(autoLayoutFrame);
   assert.equal(autoLayoutFrame.itemSpacing, 16);
@@ -763,6 +1019,12 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
   assert.equal(navText.textAutoResize, "WIDTH_AND_HEIGHT");
   assert.equal(navText.layoutSizingHorizontal, "HUG");
   assert.equal(navText.layoutSizingVertical, "HUG");
+  assert(classicFontText);
+  assert.equal(classicFontText.fontName.family, "Classic Sans");
+  assert.equal(classicFontText.fontName.style, "Regular");
+  assert.equal(posted[0].report.fontSubstitutions.length, 1);
+  assert.equal(posted[0].report.fontSubstitutions[0].used.family, "Classic Sans");
+  assert.equal(posted[0].report.fontSubstitutions[0].used.style, "Regular");
   assert(answerText);
   assert.equal(answerText.textAutoResize, "WIDTH_AND_HEIGHT");
   assert.equal(answerText.layoutSizingHorizontal, "HUG");
@@ -796,6 +1058,20 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
   assert.equal(headerLinkNoArrowText.textAutoResize, "WIDTH_AND_HEIGHT");
   assert.equal(headerLinkNoArrowText.layoutSizingHorizontal, "HUG");
   assert.equal(headerLinkNoArrowText.layoutSizingVertical, "HUG");
+  assert(etfNavDirectText);
+  assert.equal(etfNavDirectText.characters, "熱門ETF排行榜");
+  assert.equal(etfNavDirectText.textAutoResize, "WIDTH_AND_HEIGHT");
+  assert.equal(etfNavDirectText.layoutSizingHorizontal, "HUG");
+  assert.equal(etfNavDirectText.layoutSizingVertical, "HUG");
+  assert.equal(etfNavDirectText.y, 10.5);
+  assert.equal(etfNavDirectText.height, 27);
+  assert(aboutEtfText);
+  assert.equal(aboutEtfText.characters, "關於ETF");
+  assert.equal(aboutEtfText.textAutoResize, "WIDTH_AND_HEIGHT");
+  assert.equal(aboutEtfText.layoutSizingHorizontal, "HUG");
+  assert.equal(aboutEtfText.layoutSizingVertical, "HUG");
+  assert.equal(aboutEtfText.y, 10.5);
+  assert.equal(aboutEtfText.height, 27);
   assert(visibleBadgeFrame);
   assert.equal(visibleBadgeFrame.layoutMode, "HORIZONTAL");
   assert.equal(visibleBadgeFrame.primaryAxisAlignItems, "CENTER");
@@ -828,11 +1104,40 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
   assert.equal(activeTabUnderline.fills[0].color.b, 46 / 255);
   assert.equal(activeTabUnderline.x, 16);
   assert.equal(activeTabUnderline.y, 58);
+  assert(outlineButtonFrame);
+  assert.equal(outlineButtonFrame.pluginData.cssZIndex, "20");
+  assert.equal(outlineButtonFrame.strokeWeight, 2);
+  assert.equal(outlineButtonFrame.strokes[0].color.r, 31 / 255);
+  assert.equal(outlineButtonFrame.strokes[0].color.g, 95 / 255);
+  assert.equal(outlineButtonFrame.strokes[0].color.b, 191 / 255);
+  assert(readMoreFrame);
+  assert.equal(readMoreFrame.clipsContent, true);
+  assert.equal(readMoreFrame.height, 81);
+  assert(readMoreFrame.children.some((node) => node.pluginData.sourceNodeId === "dom-readmore-line-4" && node.y >= 81));
+  assert(readMoreButtonFrame);
+  assert.equal(readMoreButtonFrame.fills[0].type, "GRADIENT_LINEAR");
+  assert(readMoreEllipsisText);
+  assert.equal(readMoreEllipsisText.characters, "...");
+  assert(readMoreLabelText);
+  assert.equal(readMoreLabelText.characters, "閱讀更多");
+  assert.deepEqual(readMoreButtonFrame.children.map((node) => node.characters), ["...", "閱讀更多"]);
+  assert(carouselFade);
+  assert.equal(carouselFade.fills[0].type, "GRADIENT_LINEAR");
   assert(placeholder);
   assert.equal(placeholder.fills[0].type, "SOLID");
   assert.equal(placeholder.pluginData.fallbackReason, "external or unsupported image asset");
   assert(vectorNode);
   assert.match(vectorNode.svg, /<path/);
+  assert(arrowWrapper);
+  assert.equal(arrowWrapper.type, "FRAME");
+  assert.equal(arrowWrapper.width, 16);
+  assert.equal(arrowWrapper.height, 16);
+  assert(arrowVector);
+  assert.equal(arrowVector.rotation, 180);
+  assert.equal(arrowVector.width, 9.41);
+  assert.equal(arrowVector.height, 16);
+  assert.equal(arrowVector.x, 12.71);
+  assert.equal(arrowVector.y, 16);
 });
 
 function flattenNodes(nodes) {

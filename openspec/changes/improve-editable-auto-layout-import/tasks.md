@@ -119,3 +119,62 @@
 
 - [x] 22.1 實作 `Absolute pseudo-element uses positioned containing block`：Chrome capture SHALL infer absolute/fixed pseudo-element decoration rects against the nearest positioned containing block instead of always the pseudo owner box; verify with `apps/chrome-extension/test/capture-core.test.mjs`.
 - [x] 22.2 更新 classic content runtime and verification：manual-loaded Chrome Extension content script SHALL use the same containing-block pseudo rect inference, and `corepack pnpm build`, `corepack pnpm test`, `corepack pnpm test:e2e`, `spectra analyze improve-editable-auto-layout-import --json`, and `spectra validate improve-editable-auto-layout-import` SHALL pass.
+
+## 23. SVG Transform And Stroke Fidelity From Figma Review
+
+- [x] 23.1 實作 `SVG image transforms preserve browser rendering`：Chrome capture SHALL include `transform` and `transformOrigin`; Figma import SHALL preserve SVG intrinsic aspect ratio inside the captured image box and apply supported CSS rotation transforms; verify with `apps/chrome-extension/test/capture-core.test.mjs`, `apps/figma-plugin/test/runtime-import.test.mjs`, and `apps/figma-plugin/test/plugin-scaffold.test.mjs`.
+- [x] 23.2 實作 `Visible borders and outlines import as editable strokes`：Chrome capture SHALL include computed border styles and outline styles; Figma layout/import SHALL derive editable strokes from uniform four-side borders or outline fallback, and SHALL import one-sided/non-uniform borders as editable decoration rectangles; verify with `apps/chrome-extension/test/capture-core.test.mjs`, `apps/figma-plugin/test/layout-tree.test.mjs`, `apps/figma-plugin/test/runtime-import.test.mjs`, and `apps/figma-plugin/test/plugin-scaffold.test.mjs`.
+- [x] 23.3 更新 verification：manual-loaded Chrome/Figma runtime output SHALL build cleanly, and `corepack pnpm build`, `corepack pnpm test`, `corepack pnpm test:e2e`, `spectra analyze improve-editable-auto-layout-import --json`, and `spectra validate improve-editable-auto-layout-import` SHALL pass.
+
+## 24. Inline Pseudo Icon From Figma Review
+
+- [x] 24.1 實作 `Inline pseudo-element CSS image icons import as assets`：Chrome capture SHALL treat `::before`/`::after` pseudo-elements with visible CSS image URLs as renderable, infer conservative inline start/end rects when no positioned offsets exist, and asset packaging SHALL include those pseudo CSS images; Figma import SHALL preserve `::before` before direct text and `::after` after direct text; verify with `apps/chrome-extension/test/capture-core.test.mjs`, `apps/chrome-extension/test/asset-capture.test.mjs`, and `apps/figma-plugin/test/layout-tree.test.mjs`.
+- [x] 24.2 更新 verification：manual-loaded Chrome runtime output SHALL build cleanly, and `corepack pnpm build`, `corepack pnpm test`, `corepack pnpm test:e2e`, `spectra analyze improve-editable-auto-layout-import --json`, and `spectra validate improve-editable-auto-layout-import` SHALL pass.
+
+## 25. Preserve CSS Z-Index As Layer Stacking From Figma Review
+
+- [x] 25.1 實作 `CSS z-index preserves Figma stacking order` / `Preserve CSS Z-Index As Layer Stacking`：Chrome capture SHALL include computed `zIndex`; Figma layout tree and classic runtime SHALL preserve numeric z-index as `cssZIndex` metadata and append non-Auto Layout siblings in ascending z-index order while leaving Auto Layout flow order unchanged; verify with `apps/chrome-extension/test/capture-core.test.mjs`, `apps/figma-plugin/test/layout-tree.test.mjs`, `apps/figma-plugin/test/runtime-import.test.mjs`, and `apps/figma-plugin/test/plugin-scaffold.test.mjs`.
+- [x] 25.2 更新 verification：manual-loaded Chrome/Figma runtime output SHALL build cleanly, and `corepack pnpm build`, `corepack pnpm test`, `corepack pnpm test:e2e`, `spectra analyze improve-editable-auto-layout-import --json`, and `spectra validate improve-editable-auto-layout-import` SHALL pass.
+
+## 26. Preserve CSS Font Stack Fallbacks From Figma Review
+
+- [x] 26.1 實作 `Captured font stacks choose available Figma fonts` / `Preserve CSS Font Stack Fallbacks`：Chrome capture SHALL include computed `fontStyle`; Figma module adapter and classic runtime SHALL parse the captured CSS `fontFamily` stack, ignore generic CSS family names, try concrete family/style candidates in order, try Regular for the same family when the requested style is missing, and only then use the default fallback font; verify with `apps/chrome-extension/test/capture-core.test.mjs`, `apps/figma-plugin/test/runtime-import.test.mjs`, and `apps/figma-plugin/test/plugin-scaffold.test.mjs`.
+- [x] 26.2 實作 font substitution debug report：import report and plugin UI SHALL expose font substitution count and a concise requested-to-used summary while preserving source node, requested stack, attempted fonts, and used font in report data; verify with `apps/figma-plugin/test/import-report.test.mjs` and `apps/figma-plugin/test/runtime-import.test.mjs`.
+- [x] 26.3 更新 verification：manual-loaded Chrome/Figma runtime output SHALL build cleanly, and `corepack pnpm build`, `corepack pnpm test`, `corepack pnpm test:e2e`, `spectra analyze improve-editable-auto-layout-import --json`, and `spectra validate improve-editable-auto-layout-import` SHALL pass.
+
+## 27. Preserve Clipped Multiline Containers From Figma Review
+
+- [x] 27.1 實作 `Preserve Clipped Multiline Containers` / `Clipped overflow containers preserve browser clipping`：Chrome capture SHALL include computed `overflowX`, `overflowY`, `maxWidth`, `maxHeight`, and `textOverflow`; Figma layout tree and classic runtime SHALL map axis-specific or shorthand clipping overflow to fixed-size frames with `clipsContent` enabled; verify with `apps/chrome-extension/test/capture-core.test.mjs`, `apps/figma-plugin/test/layout-tree.test.mjs`, and `apps/figma-plugin/test/plugin-scaffold.test.mjs`.
+- [x] 27.2 更新 verification：manual-loaded Chrome/Figma runtime output SHALL build cleanly, and `corepack pnpm build`, `corepack pnpm test`, `corepack pnpm test:e2e`, `spectra analyze improve-editable-auto-layout-import --json`, and `spectra validate improve-editable-auto-layout-import` SHALL pass.
+
+## 28. Read-More Overlay And Carousel Gradient Fidelity From Figma Review
+
+- [x] 28.1 實作 `Textual pseudo-elements preserve editable content`：Chrome capture SHALL keep visible textual `::before`/`::after` content such as `...` as synthetic pseudo text nodes with inferred rects; Figma layout tree SHALL preserve `::before` ordering before synthesized direct text; verify with `apps/chrome-extension/test/capture-core.test.mjs` and `apps/figma-plugin/test/layout-tree.test.mjs`.
+- [x] 28.2 實作 `CSS gradient backgrounds import as visible fills`：Figma layout tree, module adapter, and classic runtime SHALL treat CSS `linear-gradient(...)` backgrounds as visible fills and convert supported gradients to Figma gradient paints so read-more masks and carousel fade overlays are not dropped; verify with `apps/figma-plugin/test/layout-tree.test.mjs`, `apps/figma-plugin/test/runtime-import.test.mjs`, and `apps/figma-plugin/test/plugin-scaffold.test.mjs`.
+- [x] 28.3 實作 `Rotated SVG vectors remain inside clipped wrappers`：Figma module adapter and classic runtime SHALL position SVG vector imports by their rotated bounding box before clipping, preserving arrow icons inside fixed wrappers; verify with `apps/figma-plugin/test/runtime-import.test.mjs` and `apps/figma-plugin/test/plugin-scaffold.test.mjs`.
+- [x] 28.4 更新 verification：manual-loaded Chrome/Figma runtime output SHALL build cleanly, and `corepack pnpm build`, `corepack pnpm test`, `corepack pnpm test:e2e`, `spectra analyze improve-editable-auto-layout-import --json`, and `spectra validate improve-editable-auto-layout-import` SHALL pass.
+
+## 29. Pseudo Content URL Asset From Figma Review
+
+- [x] 29.1 實作 `CSS content URL pseudo-elements import as assets`：Chrome capture SHALL treat `content: url(...)` pseudo-elements as image/vector assets instead of editable text, while preserving textual pseudo content such as `"..."`; verify with `apps/chrome-extension/test/capture-core.test.mjs` and `apps/chrome-extension/test/asset-capture.test.mjs`.
+- [x] 29.2 更新 verification：manual-loaded Chrome runtime output SHALL build cleanly, and `corepack pnpm build`, `corepack pnpm test`, `corepack pnpm test:e2e`, `spectra analyze improve-editable-auto-layout-import --json`, and `spectra validate improve-editable-auto-layout-import` SHALL pass.
+
+## 30. Mixed Direct Text Hug Sizing From Figma Review
+
+- [x] 30.1 實作 `Mixed direct nav text keeps hug sizing`：Figma layout tree and classic runtime SHALL keep mixed-content synthesized direct-text labels and direct interactive link/button labels as `WIDTH_AND_HEIGHT` / HUG when the text has no newline and its estimated single-line width fits the available segment, even if the parent link/button line box is taller than the CSS line-height; verify with `apps/figma-plugin/test/layout-tree.test.mjs` and `apps/figma-plugin/test/plugin-scaffold.test.mjs`.
+- [x] 30.2 更新 verification：manual-loaded Figma runtime output SHALL build cleanly, and `corepack pnpm build`, `corepack pnpm test`, `corepack pnpm test:e2e`, `spectra analyze improve-editable-auto-layout-import --json`, and `spectra validate improve-editable-auto-layout-import` SHALL pass.
+
+## 31. Tall Hug Text Vertical Centering From Figma Review
+
+- [x] 31.1 實作 `Tall single-line tab labels center after Hug normalization`：Figma layout tree and classic runtime SHALL reduce qualifying tall single-line HUG direct labels to CSS line-height and vertically center the text rect inside the captured browser line box; verify with `apps/figma-plugin/test/layout-tree.test.mjs` and `apps/figma-plugin/test/plugin-scaffold.test.mjs`.
+- [x] 31.2 更新 verification：manual-loaded Figma runtime output SHALL build cleanly, and `corepack pnpm build`, `corepack pnpm test`, `corepack pnpm test:e2e`, `spectra analyze improve-editable-auto-layout-import --json`, and `spectra validate improve-editable-auto-layout-import` SHALL pass.
+
+## 32. Table Cell Text Vertical Alignment From Figma Review
+
+- [x] 32.1 實作 `Table cell text preserves CSS alignment` / `Preserve Table Cell Text Alignment`：Figma layout tree and classic runtime SHALL import direct `td`/`th` or `display: table-cell` text as fixed-size table-cell frames whose editable text child is vertically aligned according to CSS `vertical-align` and horizontally aligned according to CSS `text-align`; verify with `apps/figma-plugin/test/layout-tree.test.mjs`.
+- [x] 32.2 更新 capture metadata and verification：Chrome capture SHALL include computed `verticalAlign`, manual-loaded runtimes SHALL build cleanly, and `corepack pnpm build`, `corepack pnpm test`, `corepack pnpm test:e2e`, `spectra analyze improve-editable-auto-layout-import --json`, and `spectra validate improve-editable-auto-layout-import` SHALL pass.
+
+## 33. Padded Mixed Tab Separator Alignment From Figma Review
+
+- [x] 33.1 實作 `Mixed direct tab text respects parent padding`：Figma layout tree and classic runtime SHALL derive synthesized direct-text segments from the parent padded content box and ignore absolute decoration children outside that content box when selecting the text segment; verify with `apps/figma-plugin/test/layout-tree.test.mjs`.
+- [x] 33.2 實作 `Translated pseudo separator stays vertically centered`：Figma layout tree and classic runtime SHALL apply supported CSS transform translate components to pseudo decoration geometry before parent-relative placement, so `top: 50%` plus `translateY(-50%)` separators stay centered; verify with `apps/figma-plugin/test/layout-tree.test.mjs`, `corepack pnpm build`, `corepack pnpm test`, `corepack pnpm test:e2e`, `spectra analyze improve-editable-auto-layout-import --json`, and `spectra validate improve-editable-auto-layout-import`.

@@ -11,9 +11,12 @@ export const DEFAULT_STYLE_PROPERTIES = [
   "color",
   "fontFamily",
   "fontSize",
+  "fontStyle",
   "fontWeight",
   "lineHeight",
   "whiteSpace",
+  "verticalAlign",
+  "textAlign",
   "letterSpacing",
   "paddingTop",
   "paddingRight",
@@ -23,6 +26,10 @@ export const DEFAULT_STYLE_PROPERTIES = [
   "borderRightWidth",
   "borderBottomWidth",
   "borderLeftWidth",
+  "borderTopStyle",
+  "borderRightStyle",
+  "borderBottomStyle",
+  "borderLeftStyle",
   "borderTopColor",
   "borderRightColor",
   "borderBottomColor",
@@ -31,12 +38,23 @@ export const DEFAULT_STYLE_PROPERTIES = [
   "borderTopRightRadius",
   "borderBottomRightRadius",
   "borderBottomLeftRadius",
+  "outlineWidth",
+  "outlineStyle",
+  "outlineColor",
+  "outlineOffset",
   "boxShadow",
   "opacity",
   "objectFit",
+  "transform",
+  "transformOrigin",
   "maskImage",
   "webkitMaskImage",
   "overflow",
+  "overflowX",
+  "overflowY",
+  "maxWidth",
+  "maxHeight",
+  "textOverflow",
   "gap",
   "rowGap",
   "columnGap",
@@ -45,6 +63,7 @@ export const DEFAULT_STYLE_PROPERTIES = [
   "flexDirection",
   "gridTemplateColumns",
   "gridTemplateRows",
+  "zIndex",
   "visibility",
   "content",
   "top",
@@ -236,7 +255,8 @@ function snapshotPseudoElement(element, pseudoName, ownerRect, containingBlockRe
   if (!isVisiblePseudoElement(styles)) {
     return null;
   }
-  const rect = inferPseudoRect(ownerRect, containingBlockRect, styles);
+  const textContent = cssContentText(styles.content);
+  const rect = inferPseudoRect(pseudoName, ownerRect, containingBlockRect, styles, textContent);
   if (rect.width <= 0 || rect.height <= 0) {
     return null;
   }
@@ -244,7 +264,7 @@ function snapshotPseudoElement(element, pseudoName, ownerRect, containingBlockRe
   return {
     tagName: pseudoName,
     nodeType: "pseudo",
-    textContent: "",
+    textContent,
     rect,
     styles,
     attributes: { "data-pseudo": pseudoName },
@@ -274,11 +294,15 @@ function isVisiblePseudoElement(styles) {
   }
 
   return visibleColor(styles.backgroundColor) ||
+    cssContentText(styles.content).length > 0 ||
+    visibleCssGradient(styles.backgroundImage) ||
+    visibleCssImage(styles) ||
     visibleBorder(styles) ||
+    visibleOutline(styles) ||
     visibleShadow(styles.boxShadow);
 }
 
-function inferPseudoRect(ownerRect, containingBlockRect, styles) {
+function inferPseudoRect(pseudoName, ownerRect, containingBlockRect, styles, textContent = "") {
   const position = cssKeyword(styles.position);
   const parent = normalizeRect(position === "absolute" || position === "fixed"
     ? (containingBlockRect ?? ownerRect)
@@ -294,11 +318,27 @@ function inferPseudoRect(ownerRect, containingBlockRect, styles) {
   let width = parseCssNumber(styles.width);
   let height = parseCssNumber(styles.height);
 
+  if (width <= 0 && textContent) {
+    width = estimatePseudoTextWidth(textContent, styles);
+  }
+  if (height <= 0 && textContent) {
+    height = estimatePseudoTextHeight(styles);
+  }
   if (width <= 0 && hasLeft && hasRight) {
     width = Math.max(0, parent.width - left - right);
   }
   if (height <= 0 && hasTop && hasBottom) {
     height = Math.max(0, parent.height - top - bottom);
+  }
+
+  if (!hasLeft && !hasRight && !hasTop && !hasBottom && width > 0 && height > 0 && shouldUseStaticPseudoPosition(styles, position)) {
+    const owner = normalizeRect(ownerRect);
+    return {
+      x: round(pseudoName === "::before" ? owner.x : owner.x + Math.max(0, owner.width - width)),
+      y: round(owner.y + Math.max(0, (owner.height - height) / 2)),
+      width: round(width),
+      height: round(height)
+    };
   }
 
   const x = hasLeft
@@ -318,6 +358,48 @@ function inferPseudoRect(ownerRect, containingBlockRect, styles) {
     width: round(width),
     height: round(height)
   };
+}
+
+function shouldUseStaticPseudoPosition(styles, position) {
+  const display = cssKeyword(styles.display);
+  return display === "inline" ||
+    display === "inline-block" ||
+    display === "inline-flex" ||
+    ((visibleCssImage(styles) || cssContentText(styles.content).length > 0) && (position === "absolute" || position === "fixed"));
+}
+
+function cssContentText(value) {
+  const content = String(value ?? "").trim();
+  if (!content || content === "none" || content === "normal") {
+    return "";
+  }
+  if (hasCssImageUrl(content)) {
+    return "";
+  }
+  const matches = Array.from(content.matchAll(/(["'])((?:\\.|(?!\1).)*)\1/g));
+  if (matches.length === 0) {
+    return "";
+  }
+  return matches.map((match) => decodeCssString(match[2])).join("");
+}
+
+function decodeCssString(value) {
+  return String(value ?? "")
+    .replace(/\\([0-9a-fA-F]{1,6})\s?/g, (_match, hex) => String.fromCodePoint(Number.parseInt(hex, 16)))
+    .replace(/\\(.)/g, "$1");
+}
+
+function estimatePseudoTextWidth(textContent, styles) {
+  const fontSize = parseCssNumber(styles.fontSize) || 16;
+  const letterSpacing = parseCssNumber(styles.letterSpacing);
+  const characterCount = Array.from(String(textContent)).length;
+  return round(Math.max(1, (characterCount * fontSize * 0.56) + Math.max(0, characterCount - 1) * letterSpacing));
+}
+
+function estimatePseudoTextHeight(styles) {
+  const lineHeight = parseCssNumber(styles.lineHeight);
+  const fontSize = parseCssNumber(styles.fontSize) || 16;
+  return round(Math.max(1, lineHeight || fontSize * 1.2));
 }
 
 function establishesContainingBlock(styles) {
@@ -412,10 +494,41 @@ function visibleColor(value) {
 }
 
 function visibleBorder(styles) {
-  return parseCssNumber(styles.borderTopWidth) > 0 && visibleColor(styles.borderTopColor) ||
-    parseCssNumber(styles.borderRightWidth) > 0 && visibleColor(styles.borderRightColor) ||
-    parseCssNumber(styles.borderBottomWidth) > 0 && visibleColor(styles.borderBottomColor) ||
-    parseCssNumber(styles.borderLeftWidth) > 0 && visibleColor(styles.borderLeftColor);
+  return visibleBorderSide(styles.borderTopWidth, styles.borderTopColor, styles.borderTopStyle) ||
+    visibleBorderSide(styles.borderRightWidth, styles.borderRightColor, styles.borderRightStyle) ||
+    visibleBorderSide(styles.borderBottomWidth, styles.borderBottomColor, styles.borderBottomStyle) ||
+    visibleBorderSide(styles.borderLeftWidth, styles.borderLeftColor, styles.borderLeftStyle);
+}
+
+function visibleBorderSide(width, color, style) {
+  const normalizedStyle = typeof style === "string" ? style.trim().toLowerCase() : "";
+  return parseCssNumber(width) > 0 &&
+    visibleColor(color) &&
+    normalizedStyle !== "none" &&
+    normalizedStyle !== "hidden";
+}
+
+function visibleOutline(styles) {
+  return visibleBorderSide(styles.outlineWidth, styles.outlineColor, styles.outlineStyle);
+}
+
+function visibleCssImage(styles) {
+  return hasCssImageUrl(styles.content) ||
+    hasCssImageUrl(styles.backgroundImage) ||
+    hasCssImageUrl(styles.maskImage) ||
+    hasCssImageUrl(styles.webkitMaskImage);
+}
+
+function visibleCssGradient(value) {
+  return typeof value === "string" &&
+    /(?:^|,)\s*(?:repeating-)?linear-gradient\(/i.test(value);
+}
+
+function hasCssImageUrl(value) {
+  return typeof value === "string" &&
+    value.length > 0 &&
+    value !== "none" &&
+    /url\((?:"[^"]+"|'[^']+'|[^)]*)\)/i.test(value);
 }
 
 function visibleShadow(value) {

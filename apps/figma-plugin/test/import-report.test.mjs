@@ -83,6 +83,7 @@ test("plugin UI renders import report numbers without raw JSON inspection", () =
     ["import-missing-asset-count", { textContent: "" }],
     ["import-unsupported-style-count", { textContent: "" }],
     ["font-substitution-count", { textContent: "" }],
+    ["font-substitution-summary", { textContent: "" }],
     ["auto-layout-confidence-summary", { textContent: "" }]
   ]);
   const documentRef = {
@@ -101,5 +102,50 @@ test("plugin UI renders import report numbers without raw JSON inspection", () =
   assert.equal(elements.get("import-missing-asset-count").textContent, "1");
   assert.equal(elements.get("import-unsupported-style-count").textContent, "3");
   assert.equal(elements.get("font-substitution-count").textContent, "0");
+  assert.equal(elements.get("font-substitution-summary").textContent, "");
   assert.equal(elements.get("auto-layout-confidence-summary").textContent, "0 applied / 1 skipped / 0");
+});
+
+test("plugin UI renders font substitution details for debugging", () => {
+  const elements = new Map([
+    ["import-report", { hidden: true }],
+    ["created-frame-count", { textContent: "" }],
+    ["created-node-count", { textContent: "" }],
+    ["import-fallback-count", { textContent: "" }],
+    ["import-missing-asset-count", { textContent: "" }],
+    ["import-unsupported-style-count", { textContent: "" }],
+    ["font-substitution-count", { textContent: "" }],
+    ["font-substitution-summary", { textContent: "" }],
+    ["auto-layout-confidence-summary", { textContent: "" }]
+  ]);
+  const documentRef = {
+    getElementById(id) {
+      return elements.get(id);
+    }
+  };
+
+  renderImportReport(documentRef, {
+    createdFrameCount: 2,
+    createdNodeCount: 8,
+    fallbackCount: 0,
+    missingAssetCount: 0,
+    unsupportedStyleCount: 0,
+    fontSubstitutions: [{
+      requested: { family: "Missing Webfont", style: "Bold Italic" },
+      requestedStack: [
+        { family: "Missing Webfont", style: "Bold Italic" },
+        { family: "Available Sans", style: "Bold Italic" },
+        { family: "Available Sans", style: "Regular" }
+      ],
+      used: { family: "Available Sans", style: "Regular" }
+    }],
+    autoLayoutConfidenceSummary: {
+      appliedCount: 0,
+      skippedCount: 0,
+      averageConfidence: 0
+    }
+  });
+
+  assert.equal(elements.get("font-substitution-count").textContent, "1");
+  assert.equal(elements.get("font-substitution-summary").textContent, "Missing Webfont Bold Italic -> Available Sans Regular");
 });

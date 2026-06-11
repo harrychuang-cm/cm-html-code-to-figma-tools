@@ -28,6 +28,17 @@
 - 第十五輪 clipped text sizing guardrail：single-line text that is fixed-width and clipped by CSS overflow/ellipsis SHALL stay fixed-width in Figma instead of using HUG sizing, preventing truncated header names and labels from expanding beyond their captured container.
 - 第十六輪 pseudo-element decoration guardrail：visible CSS `::before` and `::after` decoration boxes SHALL be captured as synthetic child nodes and imported as editable shape layers, so CSS-only active tab underlines and similar UI indicators are not missing in Figma.
 - 第十七輪 pseudo-positioning guardrail：absolute/fixed pseudo-element decoration rects SHALL be inferred against the nearest positioned containing block instead of always using the pseudo owner box, so CSS-only tab underlines and badges keep browser-accurate x/y placement.
+- 第十八輪 SVG image fidelity guardrail：captured CSS `transform` / `transform-origin` SHALL be preserved for visual assets, and SVG image imports SHALL keep intrinsic aspect ratio inside the captured image box while applying CSS rotation transforms.
+- 第十九輪 stroke fidelity guardrail：button and control borders/outlines SHALL be captured from computed CSS `border-*` and `outline-*` styles; uniform four-side borders and outlines SHALL import as editable Figma strokes, while one-sided or non-uniform borders SHALL import as editable decoration rectangles so active-tab underlines do not become four-sided boxes.
+- 第二十輪 pseudo icon fidelity guardrail：inline `::before`/`::after` CSS image icons SHALL be captured as synthetic pseudo nodes with inferred inline positions and packaged as assets, so verification badges and similar CSS-only icons import into Figma.
+- 第二十一輪 stacking fidelity guardrail：captured numeric CSS `z-index` SHALL be preserved in `.figcapture`, non-Auto Layout Figma siblings SHALL be appended in CSS stacking order, and imported nodes SHALL keep `cssZIndex` plugin metadata for debug because Figma has no native CSS z-index property.
+- 第二十二輪 font fidelity guardrail：captured CSS `font-family` stacks and `font-style` SHALL be used when loading Figma fonts, trying available stack candidates before the default fallback and reporting substitution details for debug.
+- 第二十三輪 overflow fidelity guardrail：captured `overflow-x`, `overflow-y`, `max-width`, `max-height`, and `text-overflow` SHALL preserve clipped read-more/multiline containers as fixed-size Figma frames with `clipsContent` enabled.
+- 第二十四輪 overlay fidelity guardrail：textual CSS pseudo-elements, CSS `linear-gradient(...)` overlays, and rotated SVG vectors SHALL be preserved so read-more ellipsis/masks and carousel arrow/fade overlays import without overlap or missing icons.
+- 第二十五輪 pseudo asset fidelity guardrail：CSS pseudo-elements whose `content` is `url(...)` SHALL be captured and packaged as image/vector assets rather than editable text, so data URL SVG strings do not appear as text layers in Figma.
+- 第二十六輪 interactive text sizing guardrail：synthesized direct text inside mixed-content links/buttons/tabs and direct interactive link/button labels SHALL stay auto-width/HUG when the label fits on one line, even when pseudo separators or tall line boxes make the parent taller than the CSS line-height.
+- 第二十七輪 table fidelity guardrail：direct `td`/`th` and `display: table-cell` text SHALL import as fixed-size table-cell frames whose editable text child preserves CSS vertical and horizontal alignment instead of becoming a full-height top-aligned text layer.
+- 第二十八輪 tab separator fidelity guardrail：mixed-content direct text SHALL respect parent CSS padding when finding its free text segment, and pseudo decoration rectangles SHALL apply captured CSS transform translation so separators using `top:50%; transform:translateY(-50%)` stay vertically centered.
 
 ## Capabilities
 
@@ -39,6 +50,13 @@
 
 - `production-ui-import`: 匯入 `.figcapture` 時，`Editable Accurate` SHALL contain nested Figma frames and conservative Auto Layout for high-confidence DOM layout containers instead of only flat absolute-position layers.
 - `production-ui-import`: capture `.figcapture` 時，direct text SHALL preserve browser-visible whitespace semantics instead of raw HTML indentation for normal text flow.
+- `production-ui-import`: capture and import SHALL preserve numeric CSS z-index through Figma layer order and plugin metadata for non-Auto Layout stacked content.
+- `production-ui-import`: Figma text import SHALL use captured CSS font-family stacks and font style when choosing local Figma fonts, with substitution details visible in the import report.
+- `production-ui-import`: capture and import SHALL preserve CSS overflow/max-size clipping so read-more or limited-height text containers do not reveal hidden DOM content in Figma.
+- `production-ui-import`: capture/import SHALL preserve textual CSS pseudo-elements, pseudo `content: url(...)` image assets, supported CSS linear-gradient backgrounds, and rotated SVG vector placement for overlay controls.
+- `production-ui-import`: mixed direct-text labels and direct interactive labels in tabs, links, and buttons SHALL preserve single-line HUG sizing when they fit their captured text segment.
+- `production-ui-import`: direct table-cell text SHALL preserve fixed cell geometry while vertically aligning editable text from CSS `vertical-align` and horizontally aligning it from CSS `text-align` or common utility alignment classes for legacy captures.
+- `production-ui-import`: mixed direct-text labels SHALL preserve parent padding as tab/link gaps, and pseudo decoration layers SHALL apply captured CSS transform translation when imported.
 
 ## Impact
 

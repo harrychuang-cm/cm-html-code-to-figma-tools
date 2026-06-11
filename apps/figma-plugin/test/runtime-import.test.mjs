@@ -17,6 +17,7 @@ import {
 import {
   createFigmaApiAdapter,
   createMockFigmaApi,
+  fontNamesFromStyle,
   isSupportedRasterImage
 } from "../dist/figma-adapter.js";
 import { renderIncomingMessage } from "../dist/ui.js";
@@ -41,7 +42,8 @@ function createRuntimePackage(overrides = {}) {
               borderTopWidth: "1px",
               borderTopColor: "rgb(229, 231, 235)",
               borderTopLeftRadius: "8px",
-              boxShadow: "0px 4px 12px rgba(0, 0, 0, 0.12)"
+              boxShadow: "0px 4px 12px rgba(0, 0, 0, 0.12)",
+              zIndex: "3"
             },
             attributes: { class: "card" },
             children: []
@@ -148,8 +150,10 @@ test("Figma API adapter creates real frame, image, text, rectangle, fallback, an
   assert.equal(result.renderResult.frames[0].children[0].imageHash, "hash-4");
   assert.equal(imageCreateCount, 1);
   const editableNodes = flattenNodes(result.renderResult.frames[1].children);
+  const cardNode = editableNodes.find((node) => node.pluginData?.sourceNodeId === "dom-card");
   assert.equal(editableNodes.some((node) => node.type === "TEXT" && node.characters === "Revenue"), true);
   assert.equal(editableNodes.some((node) => node.type === "RECTANGLE" && node.cornerRadius === 8), true);
+  assert.equal(cardNode.pluginData.cssZIndex, "3");
   const vectorNode = editableNodes.find((node) => node.type === "VECTOR" && node.assetRef === "assets/vector-1.svg");
   assert(vectorNode);
   assert.match(vectorNode.svg, /<path/);
@@ -161,6 +165,75 @@ test("Figma API adapter creates real frame, image, text, rectangle, fallback, an
   assert.equal(result.report.createdFrameCount, 2);
   assert.equal(result.report.fontSubstitutions.length, 1);
   assert.deepEqual(result.report.fontSubstitutions[0].used, { family: "Inter", style: "Regular" });
+});
+
+test("Figma API adapter tries CSS font-family stack before default fallback", async () => {
+  const figmaApi = createMockFigmaApi({
+    unavailableFonts: [
+      { family: "Missing Webfont", style: "Bold Italic" },
+      { family: "Missing Webfont", style: "Regular" },
+      { family: "Available Sans", style: "Bold Italic" }
+    ]
+  });
+  const packageData = createRuntimePackage({
+    capture: {
+      ...createRuntimePackage().capture,
+      root: {
+        id: "node-root",
+        sourceNodeId: "dom-root",
+        nodeType: "element",
+        tagName: "main",
+        rect: { x: 0, y: 0, width: 400, height: 120 },
+        styles: {},
+        attributes: {},
+        children: [
+          {
+            id: "node-title",
+            sourceNodeId: "dom-title",
+            nodeType: "text",
+            tagName: "#text",
+            textContent: "Title",
+            rect: { x: 24, y: 24, width: 80, height: 24 },
+            styles: {
+              fontFamily: "\"Missing Webfont\", \"Available Sans\", sans-serif",
+              fontStyle: "italic",
+              fontWeight: "700",
+              fontSize: "16px",
+              lineHeight: "24px",
+              color: "rgb(17, 24, 39)"
+            },
+            attributes: {},
+            children: []
+          }
+        ]
+      }
+    }
+  });
+
+  const result = await importPackageBytes(packFigcapture(packageData), { figmaApi });
+  const title = flattenNodes(result.renderResult.frames[1].children).find((node) => node.sourceNodeId === "dom-title");
+
+  assert.deepEqual(fontNamesFromStyle({
+    fontFamily: "\"Missing Webfont\", \"Available Sans\", sans-serif",
+    fontStyle: "italic",
+    fontWeight: "700"
+  }), [
+    { family: "Missing Webfont", style: "Bold Italic" },
+    { family: "Missing Webfont", style: "Regular" },
+    { family: "Available Sans", style: "Bold Italic" },
+    { family: "Available Sans", style: "Regular" }
+  ]);
+  assert.deepEqual(title.fontName, { family: "Available Sans", style: "Regular" });
+  assert.equal(result.report.fontSubstitutions.length, 1);
+  assert.deepEqual(result.report.fontSubstitutions[0].requested, { family: "Missing Webfont", style: "Bold Italic" });
+  assert.deepEqual(result.report.fontSubstitutions[0].used, { family: "Available Sans", style: "Regular" });
+  assert.equal(result.report.fontSubstitutionSummary, "Missing Webfont Bold Italic -> Available Sans Regular");
+  assert.deepEqual(figmaApi.loadedFonts.map((font) => `${font.family} ${font.style}`), [
+    "Missing Webfont Bold Italic",
+    "Missing Webfont Regular",
+    "Available Sans Bold Italic",
+    "Available Sans Regular"
+  ]);
 });
 
 test("Figma API adapter chooses auto-width and fixed-width text modes", async () => {
@@ -229,6 +302,44 @@ test("Figma API adapter chooses auto-width and fixed-width text modes", async ()
             },
             attributes: {},
             children: []
+          },
+          {
+            id: "node-outline-button",
+            sourceNodeId: "dom-outline-button",
+            nodeType: "element",
+            tagName: "button",
+            rect: { x: 80, y: 132, width: 120, height: 36 },
+            styles: {
+              display: "inline-flex",
+              backgroundColor: "rgba(0, 0, 0, 0)",
+              outlineWidth: "2px",
+              outlineStyle: "solid",
+              outlineColor: "rgb(31, 95, 191)",
+              borderTopLeftRadius: "6px",
+              borderTopRightRadius: "6px",
+              borderBottomRightRadius: "6px",
+              borderBottomLeftRadius: "6px"
+            },
+            attributes: { class: "btn btn-outline" },
+            children: [
+              {
+                id: "node-outline-button-text",
+                sourceNodeId: "dom-outline-button-text",
+                nodeType: "text",
+                tagName: "#text",
+                textContent: "取消",
+                rect: { x: 124, y: 140, width: 32, height: 20 },
+                styles: {
+                  fontFamily: "Inter",
+                  fontSize: "14px",
+                  fontWeight: "400",
+                  lineHeight: "20px",
+                  color: "rgb(31, 95, 191)"
+                },
+                attributes: {},
+                children: []
+              }
+            ]
           }
         ]
       }
@@ -240,6 +351,7 @@ test("Figma API adapter chooses auto-width and fixed-width text modes", async ()
   const longTopic = editableNodes.find((node) => node.type === "TEXT" && node.characters.includes("費半狂瀉"));
   const backing = editableNodes.find((node) => node.type === "FRAME" && node.sourceNodeId === "dom-price");
   const price = flattenNodes([backing]).find((node) => node.type === "TEXT" && node.characters === "48.35");
+  const outlineButton = editableNodes.find((node) => node.type === "FRAME" && node.sourceNodeId === "dom-outline-button");
 
   assert.equal(userName.textAutoResize, "WIDTH_AND_HEIGHT");
   assert.equal(userName.layoutSizingHorizontal, "HUG");
@@ -257,6 +369,9 @@ test("Figma API adapter chooses auto-width and fixed-width text modes", async ()
   assert.equal(price.layoutSizingHorizontal, "FIXED");
   assert.equal(price.layoutSizingVertical, "HUG");
   assert.deepEqual(price.fills[0].color, { r: 1, g: 1, b: 1 });
+  assert(outlineButton);
+  assert.equal(outlineButton.strokeWeight, 2);
+  assert.deepEqual(outlineButton.strokes[0].color, { r: 31 / 255, g: 95 / 255, b: 191 / 255 });
 });
 
 test("Figma API adapter applies CSS flex alignment to Auto Layout nodes", async () => {
@@ -339,6 +454,63 @@ test("Figma API adapter applies CSS flex alignment to Auto Layout nodes", async 
   assert.equal(label.layoutSizingVertical, "HUG");
 });
 
+test("Figma API adapter preserves SVG image aspect ratio and CSS rotation", () => {
+  const svgBytes = new TextEncoder().encode(
+    "<svg width=\"10\" height=\"17\" viewBox=\"0 0 10 17\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\"><path d=\"M0 0L10 8.5L0 17Z\" fill=\"#676767\"/></svg>"
+  );
+  const figmaApi = createMockFigmaApi();
+  const adapter = createFigmaApiAdapter(figmaApi, {
+    assets: {
+      "assets/arrow.svg": svgBytes
+    }
+  });
+
+  const node = adapter.createImageLayer({
+    name: "Vector / Next",
+    sourceNodeId: "dom-arrow",
+    assetRef: "assets/arrow.svg",
+    assetKind: "svg",
+    rect: { x: 100, y: 40, width: 16, height: 16 },
+    style: {
+      objectFit: "fill",
+      transform: "matrix(-1, 0, 0, -1, 0, 0)",
+      transformOrigin: "8px 8px"
+    }
+  });
+
+  assert.equal(node.type, "FRAME");
+  assert.equal(node.width, 16);
+  assert.equal(node.height, 16);
+  assert.equal(node.children.length, 1);
+  const vector = node.children[0];
+  assert.equal(vector.type, "VECTOR");
+  assert.equal(vector.rotation, 180);
+  assert.equal(vector.height, 16);
+  assert.equal(vector.width, 9.41);
+  assert.equal(vector.x, 12.71);
+  assert.equal(vector.y, 16);
+});
+
+test("Figma API adapter converts CSS linear gradients to Figma paints", () => {
+  const figmaApi = createMockFigmaApi();
+  const adapter = createFigmaApiAdapter(figmaApi);
+
+  const node = adapter.createRectLayer({
+    name: "Shape / fade",
+    sourceNodeId: "dom-fade",
+    rect: { x: 0, y: 0, width: 56, height: 330 },
+    style: {
+      fills: ["linear-gradient(to right, rgba(255, 255, 255, 0), rgb(255, 255, 255))"]
+    }
+  });
+
+  assert.equal(node.fills.length, 1);
+  assert.equal(node.fills[0].type, "GRADIENT_LINEAR");
+  assert.deepEqual(node.fills[0].gradientStops.map((stop) => stop.position), [0, 1]);
+  assert.deepEqual(node.fills[0].gradientStops[0].color, { r: 1, g: 1, b: 1, a: 0 });
+  assert.deepEqual(node.fills[0].gradientStops[1].color, { r: 1, g: 1, b: 1, a: 1 });
+});
+
 test("plugin runtime bridge imports a valid package and posts success report", async () => {
   const posted = [];
   const figmaApi = {
@@ -397,6 +569,7 @@ test("plugin UI reports file transfer error and renders success without raw JSON
     ["import-missing-asset-count", { textContent: "" }],
     ["import-unsupported-style-count", { textContent: "" }],
     ["font-substitution-count", { textContent: "" }],
+    ["font-substitution-summary", { textContent: "" }],
     ["auto-layout-confidence-summary", { textContent: "" }]
   ]);
   const documentRef = {
@@ -426,6 +599,7 @@ test("plugin UI reports file transfer error and renders success without raw JSON
   assert.equal(elements.get("import-report").hidden, false);
   assert.equal(elements.get("created-frame-count").textContent, "2");
   assert.equal(elements.get("font-substitution-count").textContent, "0");
+  assert.equal(elements.get("font-substitution-summary").textContent, "");
   assert.equal(elements.get("auto-layout-confidence-summary").textContent, "1 applied / 2 skipped / 0.88");
 });
 

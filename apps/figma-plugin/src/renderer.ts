@@ -143,6 +143,7 @@ export function createAccurateNodeModels(packageData) {
       type: layerTypeForNode(node),
       name: layerNameForNode(node),
       sourceNodeId: node.sourceNodeId,
+      cssZIndex: numericZIndex(node.styles?.zIndex) !== null ? String(node.styles.zIndex).trim() : undefined,
       rect: node.rect,
       text: node.textContent,
       assetRef: node.assetRef ?? node.fallbackRef ?? null,
@@ -219,6 +220,7 @@ export function createMemoryFigmaAdapter() {
         type: "IMAGE",
         name: model.name,
         sourceNodeId: model.sourceNodeId,
+        cssZIndex: model.cssZIndex,
         rect: model.rect,
         assetRef: model.assetRef,
         assetKind: model.assetKind,
@@ -236,6 +238,7 @@ export function createMemoryFigmaAdapter() {
         type: "TEXT",
         name: model.name,
         sourceNodeId: model.sourceNodeId,
+        cssZIndex: model.cssZIndex,
         rect: model.rect,
         characters: model.text,
         textAutoResize: model.textAutoResize,
@@ -247,6 +250,7 @@ export function createMemoryFigmaAdapter() {
         type: "RECTANGLE",
         name: model.name,
         sourceNodeId: model.sourceNodeId,
+        cssZIndex: model.cssZIndex,
         rect: model.rect,
         style: model.style
       };
@@ -256,6 +260,7 @@ export function createMemoryFigmaAdapter() {
         type: "FRAME",
         name: model.name,
         sourceNodeId: model.sourceNodeId,
+        cssZIndex: model.cssZIndex,
         rect: model.rect,
         style: model.style,
         layoutMode: model.autoLayout?.applied ? model.autoLayout.layoutMode : "NONE",
@@ -319,7 +324,8 @@ function traverse(node, visit) {
 function hasVisualBoxStyle(styles = {}) {
   return Boolean(
     visibleColor(styles.backgroundColor) ||
-    visibleBorder(styles) ||
+    cssStrokesFromStyles(styles).length > 0 ||
+    borderDecorationSides(styles).length > 0 ||
     visibleShadow(styles.boxShadow) ||
     parseCssNumber(styles.borderTopLeftRadius) > 0 ||
     parseCssNumber(styles.borderTopRightRadius) > 0 ||
@@ -367,14 +373,19 @@ function assetKindForNode(node) {
   return "raster";
 }
 
+function numericZIndex(value) {
+  const normalized = String(value ?? "").trim();
+  if (!/^-?\d+$/.test(normalized)) {
+    return null;
+  }
+  return Number(normalized);
+}
+
 function extractVisualStyle(node) {
   const styles = node.styles ?? {};
   return {
     fills: visibleColor(styles.backgroundColor) ? [styles.backgroundColor] : [],
-    strokes: visibleBorder(styles) ? [{
-      color: styles.borderTopColor,
-      width: parseCssNumber(styles.borderTopWidth)
-    }] : [],
+    strokes: cssStrokesFromStyles(styles),
     cornerRadius: Math.max(
       parseCssNumber(styles.borderTopLeftRadius),
       parseCssNumber(styles.borderTopRightRadius),
@@ -382,9 +393,13 @@ function extractVisualStyle(node) {
       parseCssNumber(styles.borderBottomLeftRadius)
     ),
     effects: visibleShadow(styles.boxShadow) ? [{ type: "shadow", value: styles.boxShadow }] : [],
+    objectFit: styles.objectFit ?? "",
+    transform: styles.transform ?? "",
+    transformOrigin: styles.transformOrigin ?? "",
     text: node.textContent ? {
       fontFamily: styles.fontFamily ?? "",
       fontSize: parseCssNumber(styles.fontSize),
+      fontStyle: styles.fontStyle ?? "",
       fontWeight: styles.fontWeight ?? "",
       lineHeight: styles.lineHeight ?? "",
       color: styles.color ?? ""
@@ -399,8 +414,75 @@ function visibleColor(value) {
     value !== "rgba(0, 0, 0, 0)";
 }
 
-function visibleBorder(styles) {
-  return parseCssNumber(styles.borderTopWidth) > 0 && visibleColor(styles.borderTopColor);
+function cssStrokesFromStyles(styles = {}) {
+  const sides = visibleBorderSides(styles);
+  const borderStroke = uniformBorderStrokeFromSides(sides) ?? legacyTopBorderStroke(styles, sides);
+  if (borderStroke) {
+    return [borderStroke];
+  }
+  const outlineStroke = cssStrokeSide(styles.outlineWidth, styles.outlineColor, styles.outlineStyle);
+  return outlineStroke ? [outlineStroke] : [];
+}
+
+function borderDecorationSides(styles = {}) {
+  const sides = visibleBorderSides(styles);
+  return uniformBorderStrokeFromSides(sides) || legacyTopBorderStroke(styles, sides) ? [] : sides;
+}
+
+function uniformBorderStroke(styles = {}) {
+  return uniformBorderStrokeFromSides(visibleBorderSides(styles));
+}
+
+function uniformBorderStrokeFromSides(sides) {
+  if (sides.length !== 4) {
+    return null;
+  }
+  const [first] = sides;
+  return sides.every((side) => side.width === first.width && side.color === first.color)
+    ? { color: first.color, width: first.width }
+    : null;
+}
+
+function visibleBorderSides(styles = {}) {
+  return [
+    { side: "top", ...cssStrokeSide(styles.borderTopWidth, styles.borderTopColor, styles.borderTopStyle) },
+    { side: "right", ...cssStrokeSide(styles.borderRightWidth, styles.borderRightColor, styles.borderRightStyle) },
+    { side: "bottom", ...cssStrokeSide(styles.borderBottomWidth, styles.borderBottomColor, styles.borderBottomStyle) },
+    { side: "left", ...cssStrokeSide(styles.borderLeftWidth, styles.borderLeftColor, styles.borderLeftStyle) }
+  ].filter((side) => side.width > 0);
+}
+
+function legacyTopBorderStroke(styles = {}, sides = visibleBorderSides(styles)) {
+  if (sides.length !== 1 || sides[0].side !== "top") {
+    return null;
+  }
+  const hasExplicitNonTopBorder = [
+    "borderRightWidth",
+    "borderBottomWidth",
+    "borderLeftWidth",
+    "borderRightStyle",
+    "borderBottomStyle",
+    "borderLeftStyle",
+    "borderRightColor",
+    "borderBottomColor",
+    "borderLeftColor"
+  ].some((property) => styles[property] !== undefined && styles[property] !== "");
+  return hasExplicitNonTopBorder ? null : {
+    color: sides[0].color,
+    width: sides[0].width
+  };
+}
+
+function cssStrokeSide(width, color, style) {
+  const normalizedStyle = typeof style === "string" ? style.trim().toLowerCase() : "";
+  const parsedWidth = parseCssNumber(width);
+  if (parsedWidth <= 0 || !visibleColor(color) || normalizedStyle === "none" || normalizedStyle === "hidden") {
+    return null;
+  }
+  return {
+    color,
+    width: parsedWidth
+  };
 }
 
 function visibleShadow(value) {

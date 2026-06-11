@@ -13,6 +13,7 @@ export function createImportReport(packageData, renderResult) {
     missingAssetCount: packageData.diagnostics.counts.missingAssets,
     unsupportedStyleCount: packageData.diagnostics.counts.unsupportedStyles,
     fontSubstitutions: renderResult.fontSubstitutions ?? [],
+    fontSubstitutionSummary: summarizeFontSubstitutions(renderResult.fontSubstitutions ?? []),
     autoLayoutConfidenceSummary: {
       appliedCount: autoLayoutSummary.appliedCount,
       skippedCount: autoLayoutSummary.skippedCount,
@@ -29,12 +30,35 @@ export function renderImportReport(documentRef, report) {
   setText(documentRef, "import-missing-asset-count", String(report.missingAssetCount));
   setText(documentRef, "import-unsupported-style-count", String(report.unsupportedStyleCount));
   setText(documentRef, "font-substitution-count", String(report.fontSubstitutions?.length ?? 0));
+  setText(documentRef, "font-substitution-summary", report.fontSubstitutionSummary ?? summarizeFontSubstitutions(report.fontSubstitutions ?? []));
   setText(documentRef, "auto-layout-confidence-summary", `${report.autoLayoutConfidenceSummary.appliedCount} applied / ${report.autoLayoutConfidenceSummary.skippedCount} skipped / ${report.autoLayoutConfidenceSummary.averageConfidence}`);
 
   const root = documentRef.getElementById("import-report");
   if (root) {
     root.hidden = false;
   }
+}
+
+function summarizeFontSubstitutions(substitutions) {
+  if (!Array.isArray(substitutions) || substitutions.length === 0) {
+    return "";
+  }
+  const shown = substitutions.slice(0, 3).map((item) => {
+    const requested = fontLabel(item.requested ?? item.requestedStack?.[0]);
+    const used = fontLabel(item.used);
+    return `${requested} -> ${used}`;
+  });
+  const remaining = substitutions.length - shown.length;
+  return remaining > 0
+    ? `${shown.join("; ")}; +${remaining} more`
+    : shown.join("; ");
+}
+
+function fontLabel(fontName) {
+  if (!fontName) {
+    return "Unknown";
+  }
+  return `${fontName.family ?? "Unknown"} ${fontName.style ?? ""}`.trim();
 }
 
 function countCreatedNodes(frames) {

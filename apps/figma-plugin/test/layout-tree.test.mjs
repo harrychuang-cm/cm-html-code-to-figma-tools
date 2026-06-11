@@ -168,6 +168,39 @@ test("row-reverse flex preserves browser visual child order", () => {
   assert.deepEqual(model.children.map((child) => child.text), ["讚", "留言", "分享", "打賞"]);
 });
 
+test("non-auto-layout siblings use numeric CSS z-index for Figma layer stacking order", () => {
+  const stack = node("dom-stack", "div", { x: 0, y: 0, width: 120, height: 40 }, {
+    styles: { display: "block" },
+    children: [
+      text("dom-front", "Front", { x: 0, y: 0, width: 48, height: 20 }, { zIndex: "10" }),
+      text("dom-middle", "Middle", { x: 0, y: 0, width: 56, height: 20 }),
+      text("dom-back", "Back", { x: 0, y: 0, width: 40, height: 20 }, { zIndex: "-1" })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(stack))[0];
+
+  assert.equal(model.autoLayout, null);
+  assert.deepEqual(model.children.map((child) => child.sourceNodeId), ["dom-back", "dom-middle", "dom-front"]);
+  assert.equal(model.children[0].cssZIndex, "-1");
+  assert.equal(model.children[2].cssZIndex, "10");
+});
+
+test("auto-layout siblings keep flow order even when they carry CSS z-index metadata", () => {
+  const toolbar = node("dom-toolbar-z", "div", { x: 0, y: 0, width: 160, height: 40 }, {
+    styles: { display: "flex", flexDirection: "row", gap: "16px" },
+    children: [
+      text("dom-a", "A", { x: 8, y: 10, width: 40, height: 20 }, { zIndex: "10" }),
+      text("dom-b", "B", { x: 64, y: 10, width: 40, height: 20 }, { zIndex: "1" })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(toolbar))[0];
+
+  assert.equal(model.autoLayout.applied, true);
+  assert.deepEqual(model.children.map((child) => child.sourceNodeId), ["dom-a", "dom-b"]);
+  assert.equal(model.children[0].cssZIndex, "10");
+  assert.equal(model.children[1].cssZIndex, "1");
+});
+
 test("non-uniform implicit flex spacing remains absolute instead of using a single large gap", () => {
   const responseRow = node("dom-response-row", "div", { x: 366, y: 931, width: 696, height: 20.1 }, {
     styles: {
@@ -253,6 +286,94 @@ test("mixed direct text between SVG and child text keeps visual order", () => {
   assert(label.rect.width > 22 && label.rect.width < 23);
   assert.equal(count.type, "TEXT");
   assert.equal(count.text, "4");
+});
+
+test("mixed direct text keeps after pseudo icon after the label", () => {
+  const label = node("dom-creator-label", "div", { x: 100, y: 20, width: 120, height: 28 }, {
+    textContent: "創作者計畫",
+    styles: {
+      display: "flex",
+      flexDirection: "row",
+      alignItems: "center",
+      fontSize: "16px",
+      lineHeight: "28px"
+    },
+    children: [
+      node("dom-creator-label-after", "::after", { x: 100, y: 26, width: 16, height: 16 }, {
+        nodeType: "pseudo",
+        assetRef: "assets/check.svg",
+        attributes: { "data-pseudo": "::after", assetKind: "svg" },
+        styles: {
+          display: "inline-block",
+          backgroundImage: "url(data:image/svg+xml,%3Csvg%2F%3E)"
+        }
+      })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(label))[0];
+  const [textLabel, checkIcon] = model.children;
+
+  assert.equal(model.type, "FRAME");
+  assert.equal(textLabel.type, "TEXT");
+  assert.equal(textLabel.text, "創作者計畫");
+  assert.equal(checkIcon.type, "IMAGE");
+  assert.equal(checkIcon.pseudoType, "::after");
+});
+
+test("mixed direct text keeps textual before pseudo before the label", () => {
+  const button = node("dom-readmore-button", "button", { x: 500, y: 54, width: 96, height: 27 }, {
+    textContent: "閱讀更多",
+    styles: {
+      display: "inline-flex",
+      flexDirection: "row",
+      alignItems: "center",
+      backgroundImage: "linear-gradient(to right, rgba(255, 255, 255, 0), rgb(255, 255, 255))",
+      fontSize: "18px",
+      lineHeight: "27px",
+      color: "rgb(194, 41, 46)"
+    },
+    children: [
+      node("dom-readmore-button-before", "::before", { x: 500, y: 54, width: 30, height: 27 }, {
+        nodeType: "pseudo",
+        textContent: "...",
+        styles: {
+          content: "\"...\"",
+          display: "inline",
+          fontSize: "18px",
+          lineHeight: "27px",
+          color: "rgb(54, 54, 54)"
+        },
+        attributes: { "data-pseudo": "::before" }
+      })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(button))[0];
+  const [ellipsis, label] = model.children;
+
+  assert.equal(model.type, "FRAME");
+  assert.deepEqual(model.style.fills, [
+    "linear-gradient(to right, rgba(255, 255, 255, 0), rgb(255, 255, 255))"
+  ]);
+  assert.equal(ellipsis.type, "TEXT");
+  assert.equal(ellipsis.text, "...");
+  assert.equal(ellipsis.pseudoType, "::before");
+  assert.equal(label.type, "TEXT");
+  assert.equal(label.text, "閱讀更多");
+});
+
+test("linear-gradient background imports as a visible fill", () => {
+  const fade = node("dom-carousel-fade", "div", { x: 672, y: 234, width: 56, height: 330 }, {
+    styles: {
+      backgroundColor: "rgba(0, 0, 0, 0)",
+      backgroundImage: "linear-gradient(to right, rgba(255, 255, 255, 0), rgb(255, 255, 255))"
+    }
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(fade))[0];
+
+  assert.equal(model.type, "RECTANGLE");
+  assert.deepEqual(model.style.fills, [
+    "linear-gradient(to right, rgba(255, 255, 255, 0), rgb(255, 255, 255))"
+  ]);
 });
 
 test("visible pseudo-element decoration imports as a rectangle child", () => {
@@ -580,6 +701,67 @@ test("text nodes with visible backgrounds create visual backing frames", () => {
   assert.equal(model.style.fills[0], "rgb(0, 131, 83)");
 });
 
+test("visible borders and outlines become editable stroke styles", () => {
+  const outlineButton = node("dom-outline-button", "button", { x: 24, y: 32, width: 120, height: 36 }, {
+    styles: {
+      display: "inline-flex",
+      backgroundColor: "rgba(0, 0, 0, 0)",
+      outlineWidth: "2px",
+      outlineStyle: "solid",
+      outlineColor: "rgb(31, 95, 191)"
+    },
+    children: [
+      text("dom-outline-button-text", "取消", { x: 64, y: 40, width: 32, height: 20 })
+    ]
+  });
+  const bottomBorder = node("dom-bottom-border", "div", { x: 24, y: 88, width: 120, height: 1 }, {
+    styles: {
+      borderBottomWidth: "1px",
+      borderBottomStyle: "solid",
+      borderBottomColor: "rgb(194, 41, 46)"
+    }
+  });
+  const root = node("dom-root", "main", { x: 0, y: 0, width: 200, height: 140 }, {
+    children: [outlineButton, bottomBorder]
+  });
+  const models = createEditableLayoutNodeModels(packageWithRoot(root))[0].children;
+
+  assert.deepEqual(models[0].style.strokes, [{ color: "rgb(31, 95, 191)", width: 2 }]);
+  assert.deepEqual(models[1].style.strokes, []);
+  assert.equal(models[1].children[0].name, "Border / bottom");
+  assert.deepEqual(models[1].children[0].rect, { x: 0, y: 0, width: 120, height: 1 });
+  assert.equal(models[1].children[0].style.fills[0], "rgb(194, 41, 46)");
+});
+
+test("active tab bottom border imports as underline decoration instead of all-side stroke", () => {
+  const activeTab = node("dom-active-tab", "li", { x: 366, y: 320, width: 32.07, height: 50 }, {
+    styles: {
+      borderBottomWidth: "2px",
+      borderBottomStyle: "solid",
+      borderBottomColor: "rgb(194, 41, 46)"
+    },
+    children: [
+      node("dom-active-tab-link", "a", { x: 366, y: 320, width: 32.07, height: 48 }, {
+        children: [
+          text("dom-active-tab-text", "人氣", { x: 366, y: 332, width: 32.07, height: 24 }, {
+            color: "rgb(194, 41, 46)",
+            whiteSpace: "nowrap"
+          })
+        ]
+      })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(activeTab))[0];
+  const underline = model.children.find((child) => child.sourceNodeId === "dom-active-tab::border-bottom");
+
+  assert.equal(model.type, "FRAME");
+  assert.deepEqual(model.style.strokes, []);
+  assert(underline);
+  assert.equal(underline.type, "RECTANGLE");
+  assert.deepEqual(underline.rect, { x: 0, y: 48, width: 32.07, height: 2 });
+  assert.equal(underline.style.fills[0], "rgb(194, 41, 46)");
+});
+
 test("text backing frames with CSS padding become padded auto layout", () => {
   const badge = text("dom-mark", "讚", { x: 380, y: 904.6, width: 20, height: 20.5 }, {
     backgroundColor: "rgb(54, 54, 54)",
@@ -664,6 +846,218 @@ test("transparent rounded button text stays auto width without visual backing", 
   assert.equal(model.textAutoResize, "WIDTH_AND_HEIGHT");
 });
 
+test("mixed direct nav text keeps hug sizing when parent line box is tall", () => {
+  const navLink = node("dom-etf-nav-link", "a", { x: 100, y: 20, width: 135.38, height: 48 }, {
+    nodeType: "element",
+    textContent: "熱門ETF排行榜",
+    styles: {
+      display: "flex",
+      flexDirection: "row",
+      alignItems: "center",
+      fontSize: "18px",
+      lineHeight: "27px",
+      whiteSpace: "normal",
+      color: "rgb(194, 41, 46)"
+    },
+    children: [
+      node("dom-etf-nav-link-after", "::after", { x: 234.38, y: 44, width: 1, height: 20 }, {
+        nodeType: "pseudo",
+        styles: {
+          position: "absolute",
+          backgroundColor: "rgb(212, 212, 212)"
+        },
+        attributes: { "data-pseudo": "::after" }
+      })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(navLink))[0];
+  const label = model.children.find((child) => child.sourceNodeId === "dom-etf-nav-link::text");
+
+  assert(label);
+  assert.equal(label.text, "熱門ETF排行榜");
+  assert.deepEqual(label.rect, { x: 0, y: 10.5, width: 120.24, height: 27 });
+  assert.equal(label.textAutoResize, "WIDTH_AND_HEIGHT");
+  assert.equal(label.layoutSizingHorizontal, "HUG");
+  assert.equal(label.layoutSizingVertical, "HUG");
+});
+
+test("mixed direct tab text respects parent padding and translated pseudo separators", () => {
+  const navLink = node("dom-etf-region-link", "a", { x: 509.38, y: 367, width: 114.19, height: 48 }, {
+    nodeType: "element",
+    textContent: "依區域選股",
+    styles: {
+      display: "flex",
+      flexDirection: "row",
+      alignItems: "center",
+      fontSize: "18px",
+      lineHeight: "27px",
+      whiteSpace: "normal",
+      paddingLeft: "12px",
+      paddingRight: "12px",
+      color: "rgb(194, 41, 46)"
+    },
+    children: [
+      node("dom-etf-region-link-after", "::after", { x: 622.56, y: 391, width: 1, height: 20 }, {
+        nodeType: "pseudo",
+        styles: {
+          position: "absolute",
+          backgroundColor: "rgb(212, 212, 212)",
+          transform: "matrix(1, 0, 0, 1, 0, -10)"
+        },
+        attributes: { "data-pseudo": "::after" }
+      })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(navLink))[0];
+  const label = model.children.find((child) => child.sourceNodeId === "dom-etf-region-link::text");
+  const separator = model.children.find((child) => child.sourceNodeId === "dom-etf-region-link-after");
+
+  assert(label);
+  assert(separator);
+  assert.deepEqual(label.rect, { x: 12, y: 10.5, width: 90, height: 27 });
+  assert.equal(label.textAutoResize, "WIDTH_AND_HEIGHT");
+  assert.equal(label.layoutSizingHorizontal, "HUG");
+  assert.deepEqual(separator.rect, { x: 113.18, y: 14, width: 1, height: 20 });
+});
+
+test("single-line link labels keep hug sizing when parent line box is tall", () => {
+  const root = node("dom-root", "main", { x: 0, y: 0, width: 360, height: 120 }, {
+    children: [
+      node("dom-about-etf-link", "a", { x: 24, y: 20, width: 81.27, height: 48 }, {
+        nodeType: "element",
+        textContent: "關於ETF",
+        styles: {
+          display: "flex",
+          alignItems: "center",
+          fontSize: "18px",
+          lineHeight: "27px",
+          whiteSpace: "normal",
+          color: "rgb(194, 41, 46)"
+        }
+      }),
+      node("dom-table-header", "th", { x: 132, y: 20, width: 138.5, height: 46 }, {
+        nodeType: "element",
+        textContent: "成交量",
+        styles: {
+          display: "table-cell",
+          fontSize: "16px",
+          lineHeight: "24px",
+          whiteSpace: "normal",
+          textAlign: "right",
+          verticalAlign: "middle",
+          color: "rgb(54, 54, 54)"
+        }
+      })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(root))[0];
+  const [linkLabel, tableHeader] = model.children;
+
+  assert.equal(linkLabel.text, "關於ETF");
+  assert.deepEqual(linkLabel.rect, { x: 24, y: 30.5, width: 81.27, height: 27 });
+  assert.equal(linkLabel.textAutoResize, "WIDTH_AND_HEIGHT");
+  assert.equal(linkLabel.layoutSizingHorizontal, "HUG");
+  assert.equal(linkLabel.layoutSizingVertical, "HUG");
+  assert.equal(tableHeader.type, "FRAME");
+  assert.equal(tableHeader.name, "Table Cell / 成交量");
+  assert.equal(tableHeader.autoLayout.layoutMode, "HORIZONTAL");
+  assert.equal(tableHeader.autoLayout.primaryAxisAlignItems, "MAX");
+  assert.equal(tableHeader.autoLayout.counterAxisAlignItems, "CENTER");
+  assert.deepEqual(tableHeader.rect, { x: 132, y: 20, width: 138.5, height: 46 });
+  assert.equal(tableHeader.children[0].text, "成交量");
+  assert.equal(tableHeader.children[0].textAutoResize, "WIDTH_AND_HEIGHT");
+  assert.equal(tableHeader.children[0].layoutSizingHorizontal, "HUG");
+  assert.equal(tableHeader.children[0].layoutSizingVertical, "HUG");
+});
+
+test("direct table-cell text imports as fixed cell with vertically centered editable text", () => {
+  const row = node("dom-etf-row", "tr", { x: 367, y: 726, width: 830, height: 70.5 }, {
+    styles: {
+      display: "table-row"
+    },
+    children: [
+      node("dom-etf-price", "td", { x: 542, y: 726, width: 138.5, height: 70.5 }, {
+        nodeType: "element",
+        textContent: "100.25",
+        attributes: {
+          class: "text-right"
+        },
+        styles: {
+          display: "table-cell",
+          fontSize: "16px",
+          lineHeight: "16px",
+          whiteSpace: "normal",
+          verticalAlign: "middle",
+          paddingTop: "3px",
+          paddingRight: "12px",
+          paddingBottom: "3px",
+          paddingLeft: "12px",
+          color: "rgb(38, 38, 38)"
+        }
+      }),
+      node("dom-etf-change", "td", { x: 680.5, y: 726, width: 138.5, height: 70.5 }, {
+        nodeType: "element",
+        textContent: "-3.25",
+        styles: {
+          display: "table-cell",
+          fontSize: "16px",
+          lineHeight: "16px",
+          whiteSpace: "normal",
+          textAlign: "right",
+          verticalAlign: "middle",
+          paddingTop: "3px",
+          paddingRight: "12px",
+          paddingBottom: "3px",
+          paddingLeft: "12px",
+          color: "rgb(0, 163, 108)"
+        }
+      })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(row))[0];
+  const [priceCell, changeCell] = model.children;
+
+  assert.equal(priceCell.type, "FRAME");
+  assert.equal(priceCell.name, "Table Cell / 100.25");
+  assert.deepEqual(priceCell.rect, { x: 175, y: 0, width: 138.5, height: 70.5 });
+  assert.equal(priceCell.autoLayout.layoutMode, "HORIZONTAL");
+  assert.equal(priceCell.autoLayout.primaryAxisAlignItems, "MAX");
+  assert.equal(priceCell.autoLayout.counterAxisAlignItems, "CENTER");
+  assert.equal(priceCell.autoLayout.paddingLeft, 12);
+  assert.equal(priceCell.autoLayout.paddingRight, 12);
+  assert.equal(priceCell.autoLayout.paddingTop, 3);
+  assert.equal(priceCell.autoLayout.paddingBottom, 3);
+  assert.equal(priceCell.children[0].type, "TEXT");
+  assert.equal(priceCell.children[0].text, "100.25");
+  assert.equal(priceCell.children[0].textAutoResize, "WIDTH_AND_HEIGHT");
+  assert.equal(priceCell.children[0].layoutSizingHorizontal, "HUG");
+  assert.equal(priceCell.children[0].layoutSizingVertical, "HUG");
+  assert.equal(changeCell.children[0].style.text.color, "rgb(0, 163, 108)");
+});
+
+test("tall single-line tab buttons center text geometry after hug normalization", () => {
+  const rankTab = node("dom-rank-tab-popular", "button", { x: 366, y: 615, width: 61.41, height: 47 }, {
+    nodeType: "element",
+    textContent: "熱門ETF",
+    styles: {
+      display: "inline-block",
+      fontSize: "16px",
+      lineHeight: "24px",
+      whiteSpace: "normal",
+      color: "rgb(194, 41, 46)",
+      backgroundColor: "rgba(0, 0, 0, 0)"
+    }
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(rankTab))[0];
+
+  assert.equal(model.type, "TEXT");
+  assert.equal(model.text, "熱門ETF");
+  assert.deepEqual(model.rect, { x: 366, y: 626.5, width: 61.41, height: 24 });
+  assert.equal(model.textAutoResize, "WIDTH_AND_HEIGHT");
+  assert.equal(model.layoutSizingHorizontal, "HUG");
+  assert.equal(model.layoutSizingVertical, "HUG");
+});
+
 test("text resize mode uses auto width only for captured single-line text", () => {
   const root = node("dom-root", "main", { x: 0, y: 0, width: 500, height: 240 }, {
     children: [
@@ -704,4 +1098,46 @@ test("text resize mode uses auto width only for captured single-line text", () =
   assert.equal(memberName.layoutSizingHorizontal, "FIXED");
   assert.equal(memberName.layoutSizingVertical, "HUG");
   assert.equal(memberName.rect.width, 48);
+});
+
+test("max-height overflow text containers clip overflowing read-more lines", () => {
+  const limitedText = node("dom-readmore-text", "div", { x: 24, y: 40, width: 540, height: 81 }, {
+    styles: {
+      display: "block",
+      overflowX: "visible",
+      overflowY: "hidden",
+      maxHeight: "81px",
+      lineHeight: "27px"
+    },
+    children: [
+      text("dom-readmore-line-1", "全球最會賺航海王！專訪長榮海運董總：你有注意到我們的名片嗎？", { x: 24, y: 40, width: 540, height: 27 }, {
+        lineHeight: "27px"
+      }),
+      text("dom-readmore-line-2", "", { x: 24, y: 67, width: 540, height: 27 }, {
+        lineHeight: "27px"
+      }),
+      text("dom-readmore-line-3", "長榮海運不是最大，卻是全球最會賺錢的航商。", { x: 24, y: 94, width: 540, height: 27 }, {
+        lineHeight: "27px"
+      }),
+      text("dom-readmore-line-4", "海，多變。", { x: 24, y: 121, width: 540, height: 27 }, {
+        lineHeight: "27px"
+      }),
+      node("dom-readmore-button", "button", { x: 474, y: 94, width: 90, height: 27 }, {
+        textContent: "閱讀更多",
+        styles: {
+          position: "absolute",
+          color: "rgb(0, 122, 255)",
+          fontSize: "18px",
+          lineHeight: "27px"
+        }
+      })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(limitedText))[0];
+
+  assert.equal(model.type, "FRAME");
+  assert.equal(model.clipsContent, true);
+  assert.equal(model.rect.height, 81);
+  assert(model.children.some((child) => child.sourceNodeId === "dom-readmore-line-4"));
+  assert(model.children.some((child) => child.rect.y >= 81));
 });

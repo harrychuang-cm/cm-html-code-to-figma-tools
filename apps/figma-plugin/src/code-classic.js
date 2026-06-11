@@ -98,6 +98,7 @@
     var layoutModels = createEditableLayoutNodeModels(packageData);
     var autoLayoutSummary = summarizeAutoLayoutModels(layoutModels);
     var fontPromises = [];
+    var fontSubstitutions = [];
     var index;
 
     sourceFrame.appendChild(createImageNode("Source screenshot", packageData.screenshot, {
@@ -108,7 +109,7 @@
     }, true, null, null));
 
     for (index = 0; index < layoutModels.length; index += 1) {
-      accurateFrame.appendChild(createLayerTreeForModel(layoutModels[index], packageData, fontPromises));
+      accurateFrame.appendChild(createLayerTreeForModel(layoutModels[index], packageData, fontPromises, fontSubstitutions));
     }
 
     return Promise.all(fontPromises).then(function () {
@@ -117,7 +118,7 @@
         layoutModels: layoutModels,
         autoLayoutSummary: autoLayoutSummary,
         autoLayoutFrameEnabled: false,
-        fontSubstitutions: []
+        fontSubstitutions: fontSubstitutions
       };
     });
   }
@@ -147,7 +148,7 @@
     return frames;
   }
 
-  function createLayerTreeForModel(model, packageData, fontPromises) {
+  function createLayerTreeForModel(model, packageData, fontPromises, fontSubstitutions) {
     var layer;
     var assetRef;
     var index;
@@ -155,7 +156,7 @@
     if (model.type === "FRAME") {
       layer = createFrameLayer(model);
       for (index = 0; index < model.children.length; index += 1) {
-        layer.appendChild(createLayerTreeForModel(model.children[index], packageData, fontPromises));
+        layer.appendChild(createLayerTreeForModel(model.children[index], packageData, fontPromises, fontSubstitutions));
       }
       return layer;
     }
@@ -165,13 +166,15 @@
       applyGeometry(layer, model.rect);
       layer.name = model.name;
       writeNodeMetadata(layer, "sourceNodeId", model.sourceNodeId);
+      writeNodeMetadata(layer, "cssZIndex", model.cssZIndex);
       fontPromises.push(setTextLayer(layer, {
         textContent: model.text,
+        sourceNodeId: model.sourceNodeId,
         styles: model.styles || {},
         textAutoResize: model.textAutoResize || "HEIGHT",
         layoutSizingHorizontal: model.layoutSizingHorizontal,
         layoutSizingVertical: model.layoutSizingVertical
-      }));
+      }, fontSubstitutions));
       return layer;
     }
 
@@ -184,7 +187,10 @@
         false,
         assetRef,
         model.fallbackReason || null,
-        model.assetKind || null
+        model.assetKind || null,
+        model.style || model.styles || {},
+        model.sourceNodeId,
+        model.cssZIndex
       );
     }
 
@@ -193,6 +199,7 @@
       styles: model.styles || {}
     });
     writeNodeMetadata(layer, "sourceNodeId", model.sourceNodeId);
+    writeNodeMetadata(layer, "cssZIndex", model.cssZIndex);
     return layer;
   }
 
@@ -204,6 +211,7 @@
     applyVisualStyle(frame, model.styles || {});
     applyAutoLayout(frame, model.autoLayout);
     writeNodeMetadata(frame, "sourceNodeId", model.sourceNodeId);
+    writeNodeMetadata(frame, "cssZIndex", model.cssZIndex);
     return frame;
   }
 
@@ -237,21 +245,14 @@
     writeNodeMetadata(frame, "autoLayoutConfidence", autoLayout.confidence);
   }
 
-  function createImageNode(name, bytes, rect, locked, assetRef, fallbackReasonValue, assetKind) {
+  function createImageNode(name, bytes, rect, locked, assetRef, fallbackReasonValue, assetKind, style, sourceNodeId, cssZIndex) {
     var imageBytes = toUint8Array(bytes);
     var image;
     var reason = fallbackReasonValue;
-    var svgNode;
     var node;
     if (isSvgAsset(assetRef, assetKind, imageBytes) && typeof figma.createNodeFromSvg === "function") {
       try {
-        svgNode = figma.createNodeFromSvg(decodeUtf8(imageBytes));
-        applyGeometry(svgNode, rect);
-        svgNode.name = name;
-        svgNode.locked = Boolean(locked);
-        writeNodeMetadata(svgNode, "assetRef", assetRef);
-        writeNodeMetadata(svgNode, "assetKind", "svg");
-        return svgNode;
+        return createSvgImageNode(name, imageBytes, rect, locked, assetRef, style || {}, sourceNodeId, cssZIndex);
       } catch (error) {
         reason = fallbackReasonValue || "svg-render-failed";
       }
@@ -261,6 +262,8 @@
     applyGeometry(node, rect);
     node.name = name;
     node.locked = Boolean(locked);
+    writeNodeMetadata(node, "sourceNodeId", sourceNodeId);
+    writeNodeMetadata(node, "cssZIndex", cssZIndex);
     if (isSupportedRasterImage(imageBytes)) {
       try {
         image = figma.createImage(imageBytes);
@@ -284,6 +287,232 @@
     writeNodeMetadata(node, "assetRef", assetRef);
     writeNodeMetadata(node, "fallbackReason", reason);
     return node;
+  }
+
+  function createSvgImageNode(name, imageBytes, rect, locked, assetRef, style, sourceNodeId, cssZIndex) {
+    var svgText = decodeUtf8(imageBytes);
+    var svgNode = figma.createNodeFromSvg(svgText);
+    var safeRect = rect || {};
+    var rotation = rotationFromTransform(style && style.transform);
+    var fitted = fittedSvgRect(safeRect, svgIntrinsicSize(svgText), shouldPreserveSvgAspectRatio(svgText));
+    var rectWidth = Math.max(0, Number(safeRect.width) || 0);
+    var rectHeight = Math.max(0, Number(safeRect.height) || 0);
+    var requiresWrapper = rotation !== 0 ||
+      fitted.x !== 0 ||
+      fitted.y !== 0 ||
+      fitted.width !== rectWidth ||
+      fitted.height !== rectHeight;
+    var frame;
+
+    if (!requiresWrapper) {
+      applyGeometry(svgNode, safeRect);
+      svgNode.name = name;
+      svgNode.locked = Boolean(locked);
+      writeNodeMetadata(svgNode, "sourceNodeId", sourceNodeId);
+      writeNodeMetadata(svgNode, "cssZIndex", cssZIndex);
+      writeNodeMetadata(svgNode, "assetRef", assetRef);
+      writeNodeMetadata(svgNode, "assetKind", "svg");
+      return svgNode;
+    }
+
+    frame = figma.createFrame();
+    applyGeometry(frame, safeRect);
+    frame.name = name;
+    frame.locked = Boolean(locked);
+    frame.clipsContent = true;
+    frame.fills = [];
+    writeNodeMetadata(frame, "sourceNodeId", sourceNodeId);
+    writeNodeMetadata(frame, "cssZIndex", cssZIndex);
+    writeNodeMetadata(frame, "assetRef", assetRef);
+    writeNodeMetadata(frame, "assetKind", "svg");
+
+    var placed = rotatedFittedSvgRect(safeRect, fitted, rotation);
+    svgNode.x = placed.x;
+    svgNode.y = placed.y;
+    svgNode.resize(Math.max(1, fitted.width || 1), Math.max(1, fitted.height || 1));
+    safeSetFigmaProperty(svgNode, "rotation", rotation);
+    svgNode.name = name + " / Vector";
+    writeNodeMetadata(svgNode, "assetRef", assetRef);
+    writeNodeMetadata(svgNode, "assetKind", "svg");
+    frame.appendChild(svgNode);
+    return frame;
+  }
+
+  function svgIntrinsicSize(svgText) {
+    var viewBox = extractSvgAttribute(svgText, "viewBox");
+    var values;
+    var width;
+    var height;
+    if (viewBox) {
+      values = viewBox.replace(/^\s+|\s+$/g, "").split(/[\s,]+/).map(function (value) {
+        return parseFloat(value);
+      });
+      if (values.length >= 4 && isFinite(values[2]) && isFinite(values[3]) && values[2] > 0 && values[3] > 0) {
+        return {
+          width: values[2],
+          height: values[3]
+        };
+      }
+    }
+    width = numberFromCss(extractSvgAttribute(svgText, "width"));
+    height = numberFromCss(extractSvgAttribute(svgText, "height"));
+    if (width > 0 && height > 0) {
+      return {
+        width: width,
+        height: height
+      };
+    }
+    return null;
+  }
+
+  function extractSvgAttribute(svgText, attribute) {
+    var pattern = new RegExp("\\s" + attribute + "\\s*=\\s*[\"']([^\"']+)[\"']", "i");
+    var match = String(svgText || "").match(pattern);
+    return match ? match[1] : "";
+  }
+
+  function shouldPreserveSvgAspectRatio(svgText) {
+    return !/preserveAspectRatio\s*=\s*["']none["']/i.test(String(svgText || ""));
+  }
+
+  function fittedSvgRect(rect, intrinsic, preserveAspectRatio) {
+    var width = Math.max(0, Number((rect || {}).width) || 0);
+    var height = Math.max(0, Number((rect || {}).height) || 0);
+    var scale;
+    var rawFittedWidth;
+    var rawFittedHeight;
+    var fittedWidth;
+    var fittedHeight;
+    if (!preserveAspectRatio || !intrinsic || intrinsic.width <= 0 || intrinsic.height <= 0 || width <= 0 || height <= 0) {
+      return {
+        x: 0,
+        y: 0,
+        width: width,
+        height: height
+      };
+    }
+    scale = Math.min(width / intrinsic.width, height / intrinsic.height);
+    rawFittedWidth = intrinsic.width * scale;
+    rawFittedHeight = intrinsic.height * scale;
+    fittedWidth = round(rawFittedWidth);
+    fittedHeight = round(rawFittedHeight);
+    return {
+      x: round((width - rawFittedWidth) / 2),
+      y: round((height - rawFittedHeight) / 2),
+      width: fittedWidth,
+      height: fittedHeight
+    };
+  }
+
+  function rotatedFittedSvgRect(containerRect, fitted, rotation) {
+    var angle = (Number(rotation) || 0) * Math.PI / 180;
+    var width;
+    var height;
+    var corners;
+    var minX;
+    var minY;
+    var maxX;
+    var maxY;
+    var rotatedWidth;
+    var rotatedHeight;
+    var targetX;
+    var targetY;
+    if (Math.abs(angle) < 0.0001) {
+      return fitted;
+    }
+    width = Number(fitted.width) || 0;
+    height = Number(fitted.height) || 0;
+    corners = [
+      { x: 0, y: 0 },
+      { x: width, y: 0 },
+      { x: 0, y: height },
+      { x: width, y: height }
+    ].map(function (point) {
+      return {
+        x: point.x * Math.cos(angle) - point.y * Math.sin(angle),
+        y: point.x * Math.sin(angle) + point.y * Math.cos(angle)
+      };
+    });
+    minX = Math.min.apply(null, corners.map(function (point) { return point.x; }));
+    minY = Math.min.apply(null, corners.map(function (point) { return point.y; }));
+    maxX = Math.max.apply(null, corners.map(function (point) { return point.x; }));
+    maxY = Math.max.apply(null, corners.map(function (point) { return point.y; }));
+    rotatedWidth = maxX - minX;
+    rotatedHeight = maxY - minY;
+    targetX = ((Number((containerRect || {}).width) || 0) - rotatedWidth) / 2;
+    targetY = ((Number((containerRect || {}).height) || 0) - rotatedHeight) / 2;
+    return {
+      x: round(targetX - minX),
+      y: round(targetY - minY),
+      width: fitted.width,
+      height: fitted.height
+    };
+  }
+
+  function rotationFromTransform(transform) {
+    var value = String(transform || "").replace(/^\s+|\s+$/g, "");
+    var match;
+    var parts;
+    var angle;
+    if (!value || value === "none") {
+      return 0;
+    }
+    match = value.match(/^matrix\(([^)]+)\)$/i);
+    if (match) {
+      parts = match[1].split(",").map(function (part) {
+        return parseFloat(part.replace(/^\s+|\s+$/g, ""));
+      });
+      if (parts.length >= 4 && finiteNumberList(parts)) {
+        return normalizeRotation(Math.atan2(parts[1], parts[0]) * 180 / Math.PI);
+      }
+    }
+    match = value.match(/^matrix3d\(([^)]+)\)$/i);
+    if (match) {
+      parts = match[1].split(",").map(function (part) {
+        return parseFloat(part.replace(/^\s+|\s+$/g, ""));
+      });
+      if (parts.length >= 16 && finiteNumberList(parts)) {
+        return normalizeRotation(Math.atan2(parts[1], parts[0]) * 180 / Math.PI);
+      }
+    }
+    match = value.match(/rotate\((-?[\d.]+)(deg|rad|turn)?\)/i);
+    if (match) {
+      angle = parseFloat(match[1]);
+      if (!isFinite(angle)) {
+        return 0;
+      }
+      if (match[2] === "rad") {
+        angle = angle * 180 / Math.PI;
+      } else if (match[2] === "turn") {
+        angle *= 360;
+      }
+      return normalizeRotation(angle);
+    }
+    return 0;
+  }
+
+  function finiteNumberList(values) {
+    var index;
+    for (index = 0; index < values.length; index += 1) {
+      if (!isFinite(values[index])) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  function normalizeRotation(angle) {
+    var rounded = round(angle);
+    if (Math.abs(rounded) < 0.01) {
+      return 0;
+    }
+    if (rounded <= -180) {
+      return round(rounded + 360);
+    }
+    if (rounded > 180) {
+      return round(rounded - 360);
+    }
+    return rounded;
   }
 
   function writeNodeMetadata(node, key, value) {
@@ -336,10 +565,11 @@
   }
 
   function applyVisualStyle(node, styles) {
-    node.fills = paintArray(styles.backgroundColor);
-    if (numberFromCss(styles.borderTopWidth) > 0 && parseCssColor(styles.borderTopColor)) {
-      node.strokes = paintArray(styles.borderTopColor);
-      node.strokeWeight = numberFromCss(styles.borderTopWidth);
+    var stroke = cssStrokeFromStyles(styles);
+    node.fills = fillPaintArray(styles);
+    if (stroke) {
+      node.strokes = paintArray(stroke.color);
+      node.strokeWeight = stroke.width;
     } else {
       node.strokes = [];
       node.strokeWeight = 0;
@@ -352,23 +582,21 @@
     );
   }
 
-  function setTextLayer(layer, captureNode) {
+  function setTextLayer(layer, captureNode, fontSubstitutions) {
     var styles = captureNode.styles || {};
-    var requestedFont = {
-      family: parseFontFamily(styles.fontFamily) || FALLBACK_FONT.family,
-      style: numberFromCss(styles.fontWeight) >= 600 ? "Bold" : "Regular"
-    };
+    var requestedFonts = fontNamesFromStyles(styles);
 
-    return figma.loadFontAsync(requestedFont)
-      .then(function () {
-        return requestedFont;
-      })
-      .catch(function () {
-        return figma.loadFontAsync(FALLBACK_FONT).then(function () {
-          return FALLBACK_FONT;
-        });
-      })
-      .then(function (fontName) {
+    return loadFontWithFallback(requestedFonts).then(function (loadedFont) {
+        var fontName = loadedFont.fontName;
+        if (loadedFont.substituted) {
+          fontSubstitutions.push({
+            sourceNodeId: captureNode.sourceNodeId,
+            requested: loadedFont.requested,
+            requestedStack: loadedFont.requestedStack,
+            attempted: loadedFont.attempted,
+            used: loadedFont.fontName
+          });
+        }
         layer.fontName = fontName;
         layer.characters = captureNode.textContent || "";
         if (numberFromCss(styles.fontSize) > 0) {
@@ -387,6 +615,173 @@
         layer.fills = paintArray(styles.color);
         applyTextResizeAndLayoutSizing(layer, captureNode);
       });
+  }
+
+  function loadFontWithFallback(requestedFonts) {
+    var requestedStack = normalizeFontCandidates(requestedFonts);
+    var candidates = dedupeFontNames(requestedStack.concat([FALLBACK_FONT]));
+    var attempted = [];
+    var index = 0;
+
+    function tryNext() {
+      var fontName;
+      if (index >= candidates.length) {
+        attempted.push(FALLBACK_FONT);
+        return figma.loadFontAsync(FALLBACK_FONT).then(function () {
+          return {
+            fontName: FALLBACK_FONT,
+            requested: requestedStack[0] || FALLBACK_FONT,
+            requestedStack: requestedStack,
+            attempted: attempted.slice(),
+            substituted: !sameFontName(FALLBACK_FONT, requestedStack[0] || FALLBACK_FONT)
+          };
+        });
+      }
+      fontName = candidates[index];
+      index += 1;
+      attempted.push(fontName);
+      return figma.loadFontAsync(fontName).then(function () {
+        return {
+          fontName: fontName,
+          requested: requestedStack[0] || FALLBACK_FONT,
+          requestedStack: requestedStack,
+          attempted: attempted.slice(),
+          substituted: !sameFontName(fontName, requestedStack[0] || FALLBACK_FONT)
+        };
+      }).catch(function () {
+        return tryNext();
+      });
+    }
+
+    return tryNext();
+  }
+
+  function fontNamesFromStyles(styles) {
+    var requestedStyle = parseFontStyle(styles.fontWeight, styles.fontStyle);
+    var families = parseFontFamilyStack(styles.fontFamily);
+    var candidates = [];
+    var index;
+    var family;
+
+    for (index = 0; index < families.length; index += 1) {
+      family = families[index];
+      if (!isGenericFontFamily(family)) {
+        candidates.push({ family: family, style: requestedStyle });
+        if (requestedStyle !== "Regular") {
+          candidates.push({ family: family, style: "Regular" });
+        }
+      }
+    }
+
+    return normalizeFontCandidates(candidates);
+  }
+
+  function normalizeFontCandidates(fonts) {
+    var list = Array.isArray(fonts) ? fonts : [fonts];
+    var candidates = [];
+    var index;
+    var fontName;
+    for (index = 0; index < list.length; index += 1) {
+      fontName = list[index] || {};
+      if (String(fontName.family || "").replace(/^\s+|\s+$/g, "").length > 0) {
+        candidates.push({
+          family: String(fontName.family || "").replace(/^\s+|\s+$/g, ""),
+          style: String(fontName.style || "Regular").replace(/^\s+|\s+$/g, "") || "Regular"
+        });
+      }
+    }
+    candidates = dedupeFontNames(candidates);
+    return candidates.length > 0 ? candidates : [FALLBACK_FONT];
+  }
+
+  function dedupeFontNames(fonts) {
+    var seen = {};
+    var unique = [];
+    var index;
+    var key;
+    for (index = 0; index < fonts.length; index += 1) {
+      key = fontKey(fonts[index]);
+      if (!seen[key]) {
+        seen[key] = true;
+        unique.push(fonts[index]);
+      }
+    }
+    return unique;
+  }
+
+  function sameFontName(a, b) {
+    return fontKey(a) === fontKey(b);
+  }
+
+  function fontKey(fontName) {
+    return String(fontName && fontName.family || "") + "\n" + String(fontName && fontName.style || "");
+  }
+
+  function parseFontFamilyStack(value) {
+    var families = [];
+    var current = "";
+    var quote = "";
+    var source = String(value || "");
+    var index;
+    var char;
+    for (index = 0; index < source.length; index += 1) {
+      char = source[index];
+      if (char === "\\" && index + 1 < source.length) {
+        current += source[index + 1];
+        index += 1;
+      } else if ((char === "\"" || char === "'") && (!quote || quote === char)) {
+        quote = quote ? "" : char;
+        current += char;
+      } else if (char === "," && !quote) {
+        pushFontFamily(families, current);
+        current = "";
+      } else {
+        current += char;
+      }
+    }
+    pushFontFamily(families, current);
+    return families;
+  }
+
+  function pushFontFamily(families, value) {
+    var family = String(value || "")
+      .replace(/^\s+|\s+$/g, "")
+      .replace(/^['"]|['"]$/g, "")
+      .replace(/^\s+|\s+$/g, "");
+    if (family.length > 0) {
+      families.push(family);
+    }
+  }
+
+  function isGenericFontFamily(family) {
+    var key = String(family || "").replace(/^\s+|\s+$/g, "").toLowerCase();
+    return key === "serif" ||
+      key === "sans-serif" ||
+      key === "monospace" ||
+      key === "cursive" ||
+      key === "fantasy" ||
+      key === "system-ui" ||
+      key === "ui-serif" ||
+      key === "ui-sans-serif" ||
+      key === "ui-monospace" ||
+      key === "ui-rounded" ||
+      key === "emoji" ||
+      key === "math" ||
+      key === "fangsong" ||
+      key === "-apple-system" ||
+      key === "blinkmacsystemfont";
+  }
+
+  function parseFontStyle(fontWeight, fontStyle) {
+    var bold = numberFromCss(fontWeight) >= 600;
+    var italic = /italic|oblique/i.test(String(fontStyle || ""));
+    if (bold && italic) {
+      return "Bold Italic";
+    }
+    if (bold) {
+      return "Bold";
+    }
+    return italic ? "Italic" : "Regular";
   }
 
   function applyTextResizeAndLayoutSizing(layer, captureNode) {
@@ -437,6 +832,7 @@
     var absoluteRect;
     var rect;
     var children = [];
+    var borderDecorations;
     var nodeChildren;
     var index;
     var childModel;
@@ -446,7 +842,7 @@
       return null;
     }
 
-    absoluteRect = normalizeModelRect(node.rect);
+    absoluteRect = geometryAdjustedAbsoluteRect(node, normalizeModelRect(node.rect));
     rect = relativeModelRect(absoluteRect, context.parentRect);
     nodeChildren = node.children || [];
     for (index = 0; index < nodeChildren.length; index += 1) {
@@ -458,10 +854,12 @@
         children.push(childModel);
       }
     }
+    borderDecorations = createBorderDecorationModels(node, rect, absoluteRect);
 
     if (node.textContent && children.length > 0) {
       childModel = createDirectTextModel(node, absoluteRect, children);
       children = insertMixedContentTextChild(children, childModel, node);
+      children = children.concat(borderDecorations);
       model = baseLayoutModel(node, "FRAME", rect, absoluteRect, children);
       model.autoLayout = inferAutoLayout(node, children);
       model.children = orderedChildrenForAutoLayout(children, model.autoLayout);
@@ -470,6 +868,9 @@
     }
 
     if (node.textContent) {
+      if (isDirectTableCellTextNode(node)) {
+        return createTableCellTextModel(node, rect, absoluteRect, borderDecorations);
+      }
       model = createTextModel(node, rect, absoluteRect, inferTextAutoResize(node, rect));
       if (hasVisualBoxStyle(node.styles)) {
         var backingPadding = explicitCssPadding(node.styles);
@@ -484,9 +885,11 @@
         childModel.textAutoResize = backingTextAutoResize;
         childModel.layoutSizingHorizontal = textLayoutSizingHorizontal(backingTextAutoResize);
         childModel.layoutSizingVertical = textLayoutSizingVertical(backingTextAutoResize);
-        model = baseLayoutModel(node, "FRAME", rect, absoluteRect, [childModel]);
+        model = baseLayoutModel(node, "FRAME", rect, absoluteRect, [childModel].concat(borderDecorations));
         model.name = "Text Background / " + String(node.textContent || "").slice(0, 32);
-        model.autoLayout = shouldUsePaddedBacking ? textBackingAutoLayout(backingPadding, backingTextAutoResize) : null;
+        model.autoLayout = shouldUsePaddedBacking && borderDecorations.length === 0
+          ? textBackingAutoLayout(backingPadding, backingTextAutoResize)
+          : null;
       }
       return model;
     }
@@ -507,6 +910,7 @@
     }
 
     if (children.length > 0) {
+      children = children.concat(borderDecorations);
       model = baseLayoutModel(node, "FRAME", rect, absoluteRect, children);
       model.autoLayout = inferAutoLayout(node, children);
       model.children = orderedChildrenForAutoLayout(children, model.autoLayout);
@@ -518,25 +922,174 @@
       return null;
     }
 
+    if (borderDecorations.length > 0) {
+      model = baseLayoutModel(node, "FRAME", rect, absoluteRect, borderDecorations);
+      model.autoLayout = null;
+      model.clipsContent = shouldClipContent(node);
+      return model;
+    }
+
     return baseLayoutModel(node, "RECTANGLE", rect, absoluteRect, []);
   }
 
-  function baseLayoutModel(node, type, rect, absoluteRect, children) {
+  function createBorderDecorationModels(node, rect, absoluteRect) {
+    var sides = borderDecorationSides(node.styles);
+    var models = [];
+    var index;
+    var side;
+    var decorationRect;
+    var decorationAbsoluteRect;
+    for (index = 0; index < sides.length; index += 1) {
+      side = sides[index];
+      decorationRect = borderDecorationRect(side, rect);
+      decorationAbsoluteRect = {
+        x: round(absoluteRect.x + decorationRect.x),
+        y: round(absoluteRect.y + decorationRect.y),
+        width: decorationRect.width,
+        height: decorationRect.height
+      };
+      models.push({
+        id: node.sourceNodeId + "::border-" + side.side,
+        type: "RECTANGLE",
+        name: "Border / " + side.side,
+        sourceNodeId: node.sourceNodeId + "::border-" + side.side,
+        rect: decorationRect,
+        absoluteRect: decorationAbsoluteRect,
+        styles: {
+          position: "absolute",
+          backgroundColor: side.color
+        },
+        style: {
+          fills: [side.color],
+          strokes: [],
+          cornerRadius: 0,
+          effects: [],
+          text: null
+        },
+        children: []
+      });
+    }
+    return models;
+  }
+
+  function geometryAdjustedAbsoluteRect(node, absoluteRect) {
+    var translation;
+    if (node.nodeType !== "pseudo") {
+      return absoluteRect;
+    }
+
+    translation = transformTranslation(node.styles && node.styles.transform);
+    if (Math.abs(translation.x) < 0.001 && Math.abs(translation.y) < 0.001) {
+      return absoluteRect;
+    }
     return {
+      x: round(absoluteRect.x + translation.x),
+      y: round(absoluteRect.y + translation.y),
+      width: absoluteRect.width,
+      height: absoluteRect.height
+    };
+  }
+
+  function transformTranslation(transform) {
+    var value = String(transform || "").replace(/^\s+|\s+$/g, "");
+    var match;
+    var parts;
+    if (!value || value === "none") {
+      return { x: 0, y: 0 };
+    }
+
+    match = value.match(/^matrix\(([^)]+)\)$/i);
+    if (match) {
+      parts = parseTransformNumbers(match[1]);
+      return {
+        x: parts.length >= 6 ? parts[4] : 0,
+        y: parts.length >= 6 ? parts[5] : 0
+      };
+    }
+
+    match = value.match(/^matrix3d\(([^)]+)\)$/i);
+    if (match) {
+      parts = parseTransformNumbers(match[1]);
+      return {
+        x: parts.length >= 16 ? parts[12] : 0,
+        y: parts.length >= 16 ? parts[13] : 0
+      };
+    }
+
+    match = value.match(/^translate3d\(([^)]+)\)$/i);
+    if (match) {
+      parts = parseTransformNumbers(match[1]);
+      return { x: parts[0] || 0, y: parts[1] || 0 };
+    }
+
+    match = value.match(/^translateX\(([^)]+)\)$/i);
+    if (match) {
+      return { x: numberFromCss(match[1]), y: 0 };
+    }
+
+    match = value.match(/^translateY\(([^)]+)\)$/i);
+    if (match) {
+      return { x: 0, y: numberFromCss(match[1]) };
+    }
+
+    match = value.match(/^translate\(([^)]+)\)$/i);
+    if (match) {
+      parts = parseTransformNumbers(match[1]);
+      return { x: parts[0] || 0, y: parts[1] || 0 };
+    }
+
+    return { x: 0, y: 0 };
+  }
+
+  function parseTransformNumbers(value) {
+    var rawParts = String(value || "").split(/[\s,]+/);
+    var parts = [];
+    var index;
+    var parsed;
+    for (index = 0; index < rawParts.length; index += 1) {
+      parsed = numberFromCss(rawParts[index]);
+      if (isFinite(parsed)) {
+        parts.push(parsed);
+      }
+    }
+    return parts;
+  }
+
+  function borderDecorationRect(side, rect) {
+    if (side.side === "top") {
+      return { x: 0, y: 0, width: rect.width, height: side.width };
+    }
+    if (side.side === "right") {
+      return { x: round(rect.width - side.width), y: 0, width: side.width, height: rect.height };
+    }
+    if (side.side === "bottom") {
+      return { x: 0, y: round(rect.height - side.width), width: rect.width, height: side.width };
+    }
+    return { x: 0, y: 0, width: side.width, height: rect.height };
+  }
+
+  function baseLayoutModel(node, type, rect, absoluteRect, children) {
+    var model = {
       id: node.sourceNodeId,
       type: type,
       name: layoutLayerNameForNode(node, type),
       sourceNodeId: node.sourceNodeId,
+      pseudoType: node.nodeType === "pseudo" ? node.tagName : undefined,
       rect: rect,
       absoluteRect: absoluteRect,
       style: extractVisualStyle(node),
       styles: node.styles || {},
       children: children
     };
+    if (numericZIndex(node.styles && node.styles.zIndex) !== null) {
+      model.cssZIndex = String(node.styles.zIndex).replace(/^\s+|\s+$/g, "");
+    }
+    return model;
   }
 
   function createTextModel(node, rect, absoluteRect, textAutoResize) {
-    var model = baseLayoutModel(node, "TEXT", rect, absoluteRect, []);
+    var geometry = normalizeTallHugTextGeometry(node, rect, absoluteRect, textAutoResize);
+    var model = baseLayoutModel(node, "TEXT", geometry.rect, geometry.absoluteRect, []);
     model.text = node.textContent;
     model.textAutoResize = textAutoResize;
     model.layoutSizingHorizontal = textLayoutSizingHorizontal(textAutoResize);
@@ -544,37 +1097,213 @@
     return model;
   }
 
+  function createTableCellTextModel(node, rect, absoluteRect, borderDecorations) {
+    var padding = explicitCssPadding(node.styles) || zeroPadding();
+    var textAutoResize = tableCellTextAutoResize(node, rect);
+    var textModel = createTextModel(
+      node,
+      tableCellTextRect(rect, padding, node.styles || {}, textAutoResize),
+      tableCellTextAbsoluteRect(absoluteRect, rect, padding, node.styles || {}, textAutoResize),
+      textAutoResize
+    );
+    var model = baseLayoutModel(node, "FRAME", rect, absoluteRect, [textModel].concat(borderDecorations));
+    model.name = "Table Cell / " + String(node.textContent || "").slice(0, 32);
+    model.autoLayout = borderDecorations.length === 0
+      ? tableCellAutoLayout(padding, node)
+      : null;
+    return model;
+  }
+
+  function tableCellTextAutoResize(node, rect) {
+    return isClippedSingleLineText(node, rect, node.styles || {})
+      ? "TRUNCATE"
+      : "WIDTH_AND_HEIGHT";
+  }
+
+  function tableCellTextRect(rect, padding, styles, textAutoResize) {
+    var lineHeight;
+    var textHeight;
+    var contentHeight;
+    var yOffset;
+    if (textAutoResize !== "WIDTH_AND_HEIGHT") {
+      return contentRectFromPadding(rect, padding);
+    }
+
+    lineHeight = numberFromCss(styles && styles.lineHeight) ||
+      numberFromCss(styles && styles.fontSize) * 1.2 ||
+      rect.height;
+    textHeight = round(Math.min(rect.height, Math.max(1, lineHeight)));
+    contentHeight = Math.max(1, rect.height - padding.top - padding.bottom);
+    yOffset = tableCellVerticalOffset(styles && styles.verticalAlign, contentHeight, textHeight);
+    return {
+      x: padding.left,
+      y: round(padding.top + yOffset),
+      width: round(Math.max(1, rect.width - padding.left - padding.right)),
+      height: textHeight
+    };
+  }
+
+  function tableCellTextAbsoluteRect(absoluteRect, rect, padding, styles, textAutoResize) {
+    var childRect = tableCellTextRect(rect, padding, styles, textAutoResize);
+    return {
+      x: round(absoluteRect.x + childRect.x),
+      y: round(absoluteRect.y + childRect.y),
+      width: childRect.width,
+      height: childRect.height
+    };
+  }
+
+  function tableCellAutoLayout(padding, node) {
+    var styles = node.styles || {};
+    return {
+      applied: true,
+      layoutMode: "HORIZONTAL",
+      itemSpacing: 0,
+      primaryAxisAlignItems: tableCellPrimaryAxisAlignment(styles && styles.textAlign, node.attributes && node.attributes.class),
+      counterAxisAlignItems: tableCellCounterAxisAlignment(styles && styles.verticalAlign),
+      paddingLeft: padding.left,
+      paddingRight: padding.right,
+      paddingTop: padding.top,
+      paddingBottom: padding.bottom,
+      confidence: 0.9
+    };
+  }
+
+  function tableCellPrimaryAxisAlignment(textAlign, className) {
+    var normalized = normalizeCssKeyword(textAlign);
+    var classes;
+    if (normalized === "right" || normalized === "end" || normalized === "-webkit-right") {
+      return "MAX";
+    }
+    if (normalized === "center" || normalized === "-webkit-center") {
+      return "CENTER";
+    }
+    classes = classTokens(className);
+    if (classes["text-right"] || classes["text-end"]) {
+      return "MAX";
+    }
+    if (classes["text-center"]) {
+      return "CENTER";
+    }
+    if (classes["text-left"] || classes["text-start"]) {
+      return "MIN";
+    }
+    return "MIN";
+  }
+
+  function tableCellCounterAxisAlignment(verticalAlign) {
+    var normalized = normalizeCssKeyword(verticalAlign);
+    if (normalized === "top" || normalized === "text-top" || normalized === "super") {
+      return "MIN";
+    }
+    if (normalized === "bottom" || normalized === "text-bottom" || normalized === "sub") {
+      return "MAX";
+    }
+    return "CENTER";
+  }
+
+  function tableCellVerticalOffset(verticalAlign, contentHeight, textHeight) {
+    var available = Math.max(0, contentHeight - textHeight);
+    var alignment = tableCellCounterAxisAlignment(verticalAlign);
+    if (alignment === "MIN") {
+      return 0;
+    }
+    if (alignment === "MAX") {
+      return round(available);
+    }
+    return round(available / 2);
+  }
+
+  function isDirectTableCellTextNode(node) {
+    var tagName = String(node.tagName || "").toLowerCase();
+    var display = normalizeCssKeyword(node.styles && node.styles.display);
+    return tagName === "td" || tagName === "th" || display === "table-cell";
+  }
+
+  function classTokens(className) {
+    var tokens = {};
+    var parts = String(className || "").split(/\s+/);
+    var index;
+    for (index = 0; index < parts.length; index += 1) {
+      if (parts[index]) {
+        tokens[parts[index]] = true;
+      }
+    }
+    return tokens;
+  }
+
   function createDirectTextModel(node, parentAbsoluteRect, children) {
     var absoluteRect = inferDirectTextRect(node, parentAbsoluteRect, children);
     var rect = relativeModelRect(absoluteRect, parentAbsoluteRect);
     var textNode = {};
+    var textStyles = {};
     Object.keys(node).forEach(function (key) {
       textNode[key] = node[key];
+    });
+    Object.keys(node.styles || {}).forEach(function (key) {
+      if (key !== "zIndex") {
+        textStyles[key] = node.styles[key];
+      }
     });
     textNode.sourceNodeId = String(node.sourceNodeId || "") + "::text";
     textNode.tagName = "#text";
     textNode.children = [];
     textNode.rect = absoluteRect;
+    textNode.styles = textStyles;
     return createTextModel(textNode, rect, absoluteRect, inferTextContentAutoResize(textNode, rect));
   }
 
   function insertMixedContentTextChild(children, textModel, node) {
     var flexDirection = node.styles && node.styles.flexDirection || "row";
     var layoutMode = String(flexDirection).indexOf("column") === 0 ? "VERTICAL" : "HORIZONTAL";
-    return children.concat([textModel]).sort(function (a, b) {
-      return layoutMode === "HORIZONTAL"
-        ? a.absoluteRect.x - b.absoluteRect.x
-        : a.absoluteRect.y - b.absoluteRect.y;
-    });
+    var sorted = function (items) {
+      return items.slice().sort(function (a, b) {
+        return layoutMode === "HORIZONTAL"
+          ? a.absoluteRect.x - b.absoluteRect.x
+          : a.absoluteRect.y - b.absoluteRect.y;
+      });
+    };
+    var beforeChildren = sorted(children.filter(isBeforePseudoModel));
+    var afterChildren = sorted(children.filter(isAfterPseudoModel));
+    var flowChildren = sorted(children.filter(function (child) {
+      return !isBeforePseudoModel(child) && !isAfterPseudoModel(child);
+    }));
+    return beforeChildren.concat(sorted(flowChildren.concat([textModel]))).concat(afterChildren);
+  }
+
+  function isBeforePseudoModel(model) {
+    return model.pseudoType === "::before" || hasNameSuffix(model, " / ::before");
+  }
+
+  function isAfterPseudoModel(model) {
+    return model.pseudoType === "::after" || hasNameSuffix(model, " / ::after");
+  }
+
+  function hasNameSuffix(model, suffix) {
+    var name = String(model && model.name || "");
+    return name.slice(name.length - suffix.length) === suffix;
   }
 
   function inferDirectTextRect(node, parentRect, children) {
     var styles = node.styles || {};
     var flexDirection = styles.flexDirection || "row";
     var layoutMode = String(flexDirection).indexOf("column") === 0 ? "VERTICAL" : "HORIZONTAL";
-    var parentStart = layoutMode === "HORIZONTAL" ? parentRect.x : parentRect.y;
-    var parentEnd = parentStart + (layoutMode === "HORIZONTAL" ? parentRect.width : parentRect.height);
-    var sorted = children.slice().sort(function (a, b) {
+    var padding = explicitCssPadding(styles) || zeroPadding();
+    var parentStart = layoutMode === "HORIZONTAL"
+      ? parentRect.x + padding.left
+      : parentRect.y + padding.top;
+    var parentEnd = layoutMode === "HORIZONTAL"
+      ? parentRect.x + Math.max(0, parentRect.width - padding.right)
+      : parentRect.y + Math.max(0, parentRect.height - padding.bottom);
+    var crossStart = layoutMode === "HORIZONTAL"
+      ? parentRect.y + padding.top
+      : parentRect.x + padding.left;
+    var crossSize = layoutMode === "HORIZONTAL"
+      ? Math.max(1, parentRect.height - padding.top - padding.bottom)
+      : Math.max(1, parentRect.width - padding.left - padding.right);
+    var sorted = children.filter(function (child) {
+      return directTextChildOverlapsContent(child, layoutMode, parentStart, parentEnd);
+    }).sort(function (a, b) {
       return layoutMode === "HORIZONTAL"
         ? a.absoluteRect.x - b.absoluteRect.x
         : a.absoluteRect.y - b.absoluteRect.y;
@@ -583,6 +1312,8 @@
     var cursor = parentStart;
     var index;
     var child;
+    var rawChildStart;
+    var rawChildEnd;
     var childStart;
     var childEnd;
     var bestSegment;
@@ -591,8 +1322,10 @@
 
     for (index = 0; index < sorted.length; index += 1) {
       child = sorted[index];
-      childStart = layoutMode === "HORIZONTAL" ? child.absoluteRect.x : child.absoluteRect.y;
-      childEnd = childStart + (layoutMode === "HORIZONTAL" ? child.absoluteRect.width : child.absoluteRect.height);
+      rawChildStart = layoutMode === "HORIZONTAL" ? child.absoluteRect.x : child.absoluteRect.y;
+      rawChildEnd = rawChildStart + (layoutMode === "HORIZONTAL" ? child.absoluteRect.width : child.absoluteRect.height);
+      childStart = clampNumber(rawChildStart, parentStart, parentEnd);
+      childEnd = clampNumber(rawChildEnd, parentStart, parentEnd);
       addDirectTextSegment(segments, cursor, childStart, cursor > parentStart, true);
       cursor = Math.max(cursor, childEnd);
     }
@@ -618,17 +1351,27 @@
     if (layoutMode === "HORIZONTAL") {
       return {
         x: round(start),
-        y: parentRect.y,
+        y: round(crossStart),
         width: round(Math.max(1, estimatedTextSize)),
-        height: parentRect.height
+        height: round(crossSize)
       };
     }
     return {
-      x: parentRect.x,
+      x: round(crossStart),
       y: round(start),
-      width: parentRect.width,
+      width: round(crossSize),
       height: round(Math.max(1, estimatedTextSize))
     };
+  }
+
+  function directTextChildOverlapsContent(child, layoutMode, parentStart, parentEnd) {
+    var childStart = layoutMode === "HORIZONTAL" ? child.absoluteRect.x : child.absoluteRect.y;
+    var childEnd = childStart + (layoutMode === "HORIZONTAL" ? child.absoluteRect.width : child.absoluteRect.height);
+    return childEnd > parentStart + 0.5 && childStart < parentEnd - 0.5;
+  }
+
+  function clampNumber(value, min, max) {
+    return Math.min(max, Math.max(min, value));
   }
 
   function addDirectTextSegment(segments, start, end, hasPrevious, hasNext) {
@@ -771,7 +1514,39 @@
     if (autoLayout && autoLayout.applied && autoLayout.reversedChildren) {
       return children.slice().reverse();
     }
+    if (!autoLayout || !autoLayout.applied) {
+      return stackOrderedChildren(children);
+    }
     return children;
+  }
+
+  function stackOrderedChildren(children) {
+    var hasExplicitZIndex = children.some(function (child) {
+      return numericZIndex(child.styles && child.styles.zIndex) !== null;
+    });
+    if (!hasExplicitZIndex) {
+      return children;
+    }
+    return children.map(function (child, index) {
+      var zIndex = numericZIndex(child.styles && child.styles.zIndex);
+      return {
+        child: child,
+        index: index,
+        zIndex: zIndex === null ? 0 : zIndex
+      };
+    }).sort(function (a, b) {
+      return a.zIndex - b.zIndex || a.index - b.index;
+    }).map(function (item) {
+      return item.child;
+    });
+  }
+
+  function numericZIndex(value) {
+    var normalized = String(value == null ? "" : value).replace(/^\s+|\s+$/g, "");
+    if (!/^-?\d+$/.test(normalized)) {
+      return null;
+    }
+    return Number(normalized);
   }
 
   function isReverseFlexDirection(value) {
@@ -1010,19 +1785,100 @@
 
     lineHeight = numberFromCss(styles.lineHeight) || numberFromCss(styles.fontSize) * 1.2;
     if (lineHeight > 0 && rect.height > lineHeight * 1.75) {
+      if (shouldPreserveTallSingleLineHug(node, rect, styles)) {
+        return "WIDTH_AND_HEIGHT";
+      }
       return "HEIGHT";
     }
 
     return "WIDTH_AND_HEIGHT";
   }
 
+  function shouldPreserveTallSingleLineHug(node, rect, styles) {
+    return (isSyntheticDirectTextNode(node) || isInteractiveSingleLineTextElement(node)) &&
+      fitsEstimatedSingleLineText(node, rect, styles);
+  }
+
+  function normalizeTallHugTextGeometry(node, rect, absoluteRect, textAutoResize) {
+    var styles;
+    var lineHeight;
+    var height;
+    var yOffset;
+    if (textAutoResize !== "WIDTH_AND_HEIGHT") {
+      return { rect: rect, absoluteRect: absoluteRect };
+    }
+
+    styles = node.styles || {};
+    lineHeight = numberFromCss(styles.lineHeight) || numberFromCss(styles.fontSize) * 1.2;
+    if (!(lineHeight > 0) || rect.height <= lineHeight + 1) {
+      return { rect: rect, absoluteRect: absoluteRect };
+    }
+
+    if (!shouldNormalizeTallSingleLineHugGeometry(node, rect, styles)) {
+      return { rect: rect, absoluteRect: absoluteRect };
+    }
+
+    height = round(Math.min(rect.height, lineHeight));
+    yOffset = round((rect.height - height) / 2);
+    return {
+      rect: {
+        x: rect.x,
+        y: round(rect.y + yOffset),
+        width: rect.width,
+        height: height
+      },
+      absoluteRect: {
+        x: absoluteRect.x,
+        y: round(absoluteRect.y + yOffset),
+        width: absoluteRect.width,
+        height: height
+      }
+    };
+  }
+
+  function shouldNormalizeTallSingleLineHugGeometry(node, rect, styles) {
+    return (isSynthesizedDirectTextNode(node) || isInteractiveSingleLineTextElement(node)) &&
+      fitsEstimatedSingleLineText(node, rect, styles);
+  }
+
+  function isSynthesizedDirectTextNode(node) {
+    return String(node.sourceNodeId || "").slice(-6) === "::text";
+  }
+
+  function isSyntheticDirectTextNode(node) {
+    return node.tagName === "#text" || String(node.sourceNodeId || "").slice(-6) === "::text";
+  }
+
+  function isInteractiveSingleLineTextElement(node) {
+    var tagName = String(node.tagName || "").toLowerCase();
+    var role = String(node.attributes && node.attributes.role || "").toLowerCase();
+    return tagName === "a" ||
+      tagName === "button" ||
+      role === "tab" ||
+      role === "button" ||
+      role === "link" ||
+      role === "menuitem";
+  }
+
+  function fitsEstimatedSingleLineText(node, rect, styles) {
+    var fontSize;
+    var tolerance;
+    if (rect.width <= 0) {
+      return false;
+    }
+    fontSize = numberFromCss(styles.fontSize) || 14;
+    tolerance = Math.max(2, fontSize * 0.25);
+    return estimateTextPrimarySize(node.textContent, styles) <= rect.width + tolerance;
+  }
+
   function isClippedSingleLineText(node, rect, styles) {
     var overflow = normalizeCssKeyword(styles.overflow);
+    var overflowX = normalizeCssKeyword(styles.overflowX);
     var textOverflow = normalizeCssKeyword(styles.textOverflow);
     var whiteSpace = normalizeCssKeyword(styles.whiteSpace);
     var clipsInline = textOverflow === "ellipsis" ||
-      overflow === "hidden" ||
-      overflow === "clip";
+      clipsOverflowKeyword(overflowX) ||
+      clipsOverflowShorthand(overflow, "x");
     var preventsWrapping = whiteSpace === "nowrap" ||
       whiteSpace === "pre" ||
       whiteSpace === "pre-wrap";
@@ -1065,6 +1921,15 @@
       padding.top > 0 ||
       padding.bottom > 0
     );
+  }
+
+  function zeroPadding() {
+    return {
+      left: 0,
+      right: 0,
+      top: 0,
+      bottom: 0
+    };
   }
 
   function textLayoutSizingHorizontal(textAutoResize) {
@@ -1270,12 +2135,10 @@
 
   function extractVisualStyle(node) {
     var styles = node.styles || {};
+    var stroke = cssStrokeFromStyles(styles);
     return {
-      fills: visibleColor(styles.backgroundColor) ? [styles.backgroundColor] : [],
-      strokes: visibleBorder(styles) ? [{
-        color: styles.borderTopColor,
-        width: numberFromCss(styles.borderTopWidth)
-      }] : [],
+      fills: cssFillsFromStyles(styles),
+      strokes: stroke ? [stroke] : [],
       cornerRadius: Math.max(
         numberFromCss(styles.borderTopLeftRadius),
         numberFromCss(styles.borderTopRightRadius),
@@ -1283,9 +2146,13 @@
         numberFromCss(styles.borderBottomLeftRadius)
       ),
       effects: visibleShadow(styles.boxShadow) ? [{ type: "shadow", value: styles.boxShadow }] : [],
+      objectFit: styles.objectFit || "",
+      transform: styles.transform || "",
+      transformOrigin: styles.transformOrigin || "",
       text: node.textContent ? {
         fontFamily: styles.fontFamily || "",
         fontSize: numberFromCss(styles.fontSize),
+        fontStyle: styles.fontStyle || "",
         fontWeight: styles.fontWeight || "",
         lineHeight: styles.lineHeight || "",
         color: styles.color || ""
@@ -1345,14 +2212,45 @@
     var safeStyles = styles || {};
     return Boolean(
       visibleColor(safeStyles.backgroundColor) ||
-      visibleBorder(safeStyles) ||
+      visibleCssLinearGradient(safeStyles.backgroundImage) ||
+      Boolean(cssStrokeFromStyles(safeStyles)) ||
+      borderDecorationSides(safeStyles).length > 0 ||
       visibleShadow(safeStyles.boxShadow)
     );
   }
 
   function shouldClipContent(node) {
-    var overflow = node.styles && node.styles.overflow;
-    return overflow === "hidden" || overflow === "clip" || overflow === "scroll" || overflow === "auto";
+    var styles = node.styles || {};
+    return clipsOverflowShorthand(styles.overflow, "x") ||
+      clipsOverflowShorthand(styles.overflow, "y") ||
+      clipsOverflowKeyword(styles.overflowX) ||
+      clipsOverflowKeyword(styles.overflowY);
+  }
+
+  function clipsOverflowShorthand(value, axis) {
+    var parts;
+    var axisValue;
+    if (typeof value !== "string") {
+      return false;
+    }
+    parts = value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    if (parts.length === 0) {
+      return false;
+    }
+    if (parts.length === 1) {
+      return clipsOverflowKeyword(parts[0]);
+    }
+    axisValue = axis === "y" ? parts[1] : parts[0];
+    return clipsOverflowKeyword(axisValue);
+  }
+
+  function clipsOverflowKeyword(value) {
+    var keyword = normalizeCssKeyword(value);
+    return keyword === "hidden" ||
+      keyword === "clip" ||
+      keyword === "scroll" ||
+      keyword === "auto" ||
+      keyword === "overlay";
   }
 
   function assetKindForNode(node) {
@@ -1372,8 +2270,119 @@
     return Boolean(color && color.a > 0);
   }
 
-  function visibleBorder(styles) {
-    return numberFromCss(styles.borderTopWidth) > 0 && visibleColor(styles.borderTopColor);
+  function cssFillsFromStyles(styles) {
+    var safeStyles = styles || {};
+    var fills = [];
+    if (visibleColor(safeStyles.backgroundColor)) {
+      fills.push(safeStyles.backgroundColor);
+    }
+    if (visibleCssLinearGradient(safeStyles.backgroundImage)) {
+      fills.push(safeStyles.backgroundImage);
+    }
+    return fills;
+  }
+
+  function visibleCssLinearGradient(value) {
+    return typeof value === "string" &&
+      /(?:^|,)\s*(?:repeating-)?linear-gradient\(/i.test(value);
+  }
+
+  function cssStrokeFromStyles(styles) {
+    var safeStyles = styles || {};
+    var sides = visibleBorderSides(safeStyles);
+    var borderStroke = uniformBorderStrokeFromSides(sides) || legacyTopBorderStroke(safeStyles, sides);
+    var outlineStroke;
+    if (borderStroke) {
+      return borderStroke;
+    }
+    outlineStroke = cssStrokeSide(safeStyles.outlineWidth, safeStyles.outlineColor, safeStyles.outlineStyle);
+    return outlineStroke;
+  }
+
+  function borderDecorationSides(styles) {
+    var sides = visibleBorderSides(styles || {});
+    return uniformBorderStrokeFromSides(sides) || legacyTopBorderStroke(styles || {}, sides) ? [] : sides;
+  }
+
+  function uniformBorderStroke(styles) {
+    return uniformBorderStrokeFromSides(visibleBorderSides(styles || {}));
+  }
+
+  function uniformBorderStrokeFromSides(sides) {
+    var first;
+    var index;
+    if (sides.length !== 4) {
+      return null;
+    }
+    first = sides[0];
+    for (index = 1; index < sides.length; index += 1) {
+      if (sides[index].width !== first.width || sides[index].color !== first.color) {
+        return null;
+      }
+    }
+    return {
+      color: first.color,
+      width: first.width
+    };
+  }
+
+  function visibleBorderSides(styles) {
+    var sides = [];
+    addVisibleBorderSide(sides, "top", styles.borderTopWidth, styles.borderTopColor, styles.borderTopStyle);
+    addVisibleBorderSide(sides, "right", styles.borderRightWidth, styles.borderRightColor, styles.borderRightStyle);
+    addVisibleBorderSide(sides, "bottom", styles.borderBottomWidth, styles.borderBottomColor, styles.borderBottomStyle);
+    addVisibleBorderSide(sides, "left", styles.borderLeftWidth, styles.borderLeftColor, styles.borderLeftStyle);
+    return sides;
+  }
+
+  function addVisibleBorderSide(sides, side, width, color, style) {
+    var stroke = cssStrokeSide(width, color, style);
+    if (stroke) {
+      sides.push({
+        side: side,
+        color: stroke.color,
+        width: stroke.width
+      });
+    }
+  }
+
+  function legacyTopBorderStroke(styles, sides) {
+    var properties = [
+      "borderRightWidth",
+      "borderBottomWidth",
+      "borderLeftWidth",
+      "borderRightStyle",
+      "borderBottomStyle",
+      "borderLeftStyle",
+      "borderRightColor",
+      "borderBottomColor",
+      "borderLeftColor"
+    ];
+    var index;
+    if (sides.length !== 1 || sides[0].side !== "top") {
+      return null;
+    }
+    for (index = 0; index < properties.length; index += 1) {
+      if (styles[properties[index]] !== undefined && styles[properties[index]] !== "") {
+        return null;
+      }
+    }
+    return {
+      color: sides[0].color,
+      width: sides[0].width
+    };
+  }
+
+  function cssStrokeSide(width, color, style) {
+    var normalizedStyle = typeof style === "string" ? style.replace(/^\s+|\s+$/g, "").toLowerCase() : "";
+    var parsedWidth = numberFromCss(width);
+    if (parsedWidth <= 0 || !visibleColor(color) || normalizedStyle === "none" || normalizedStyle === "hidden") {
+      return null;
+    }
+    return {
+      color: color,
+      width: parsedWidth
+    };
   }
 
   function visibleShadow(value) {
@@ -1453,6 +2462,153 @@
     node.resize(Math.max(1, Number(safeRect.width) || 1), Math.max(1, Number(safeRect.height) || 1));
   }
 
+  function fillPaintArray(styles) {
+    var fills = cssFillsFromStyles(styles || {});
+    return fills.map(function (fill) {
+      return cssFillToPaint(fill);
+    }).filter(Boolean);
+  }
+
+  function cssFillToPaint(value) {
+    return cssLinearGradientToPaint(value) || paintArray(value)[0] || null;
+  }
+
+  function cssLinearGradientToPaint(value) {
+    var args = extractCssFunctionArgs(value, ["linear-gradient", "repeating-linear-gradient"]);
+    var parts;
+    var first;
+    var stops;
+    var reverseStops = false;
+    var parsedStops;
+    var gradientStops;
+    if (!args) {
+      return null;
+    }
+    parts = splitCssArguments(args);
+    if (parts.length < 2) {
+      return null;
+    }
+    stops = parts;
+    first = parts[0].replace(/^\s+|\s+$/g, "").toLowerCase();
+    if (isCssGradientDirection(first)) {
+      stops = parts.slice(1);
+      reverseStops = first === "to left" || first === "270deg" || first === "-90deg";
+    }
+    if (stops.length < 2) {
+      return null;
+    }
+    parsedStops = stops.map(function (stop, index) {
+      return cssGradientStop(stop, index, stops.length);
+    }).filter(Boolean);
+    if (parsedStops.length < 2) {
+      return null;
+    }
+    gradientStops = reverseStops
+      ? parsedStops.map(function (stop) {
+        return {
+          position: round(1 - stop.position),
+          color: stop.color
+        };
+      }).sort(function (a, b) { return a.position - b.position; })
+      : parsedStops;
+    return {
+      type: "GRADIENT_LINEAR",
+      gradientTransform: [
+        [1, 0, 0],
+        [0, 1, 0]
+      ],
+      gradientStops: gradientStops
+    };
+  }
+
+  function extractCssFunctionArgs(value, names) {
+    var source = String(value || "");
+    var lower = source.toLowerCase();
+    var nameIndex;
+    var name;
+    var start;
+    var depth;
+    var index;
+    var char;
+    for (nameIndex = 0; nameIndex < names.length; nameIndex += 1) {
+      name = names[nameIndex];
+      start = lower.indexOf(name + "(");
+      if (start < 0) {
+        continue;
+      }
+      depth = 0;
+      for (index = start + name.length; index < source.length; index += 1) {
+        char = source[index];
+        if (char === "(") {
+          depth += 1;
+        } else if (char === ")") {
+          depth -= 1;
+          if (depth === 0) {
+            return source.slice(start + name.length + 1, index);
+          }
+        }
+      }
+    }
+    return "";
+  }
+
+  function splitCssArguments(value) {
+    var parts = [];
+    var depth = 0;
+    var start = 0;
+    var source = String(value || "");
+    var index;
+    var char;
+    for (index = 0; index < source.length; index += 1) {
+      char = source[index];
+      if (char === "(") {
+        depth += 1;
+      } else if (char === ")") {
+        depth -= 1;
+      } else if (char === "," && depth === 0) {
+        parts.push(source.slice(start, index).replace(/^\s+|\s+$/g, ""));
+        start = index + 1;
+      }
+    }
+    parts.push(source.slice(start).replace(/^\s+|\s+$/g, ""));
+    return parts.filter(Boolean);
+  }
+
+  function isCssGradientDirection(value) {
+    return /^to\s+(?:left|right|top|bottom)$/.test(value) ||
+      /^-?\d+(?:\.\d+)?deg$/.test(value);
+  }
+
+  function cssGradientStop(value, index, total) {
+    var source = String(value || "").replace(/^\s+|\s+$/g, "");
+    var colorMatch = source.match(/^(transparent|rgba?\([^)]+\)|#[0-9a-f]{3,8})/i);
+    var color;
+    var remainder;
+    var positionMatch;
+    var fallbackPosition;
+    var position;
+    if (!colorMatch) {
+      return null;
+    }
+    color = parseCssColor(colorMatch[1]);
+    if (!color) {
+      return null;
+    }
+    remainder = source.slice(colorMatch[0].length).replace(/^\s+|\s+$/g, "");
+    positionMatch = remainder.match(/(-?[\d.]+)%/);
+    fallbackPosition = total <= 1 ? 0 : index / (total - 1);
+    position = positionMatch ? clamp(parseFloat(positionMatch[1]) / 100, 0, 1) : fallbackPosition;
+    return {
+      position: round(position),
+      color: {
+        r: color.r / 255,
+        g: color.g / 255,
+        b: color.b / 255,
+        a: color.a
+      }
+    };
+  }
+
   function paintArray(value) {
     var color = parseCssColor(value);
     if (!color) {
@@ -1472,24 +2628,46 @@
   function parseCssColor(value) {
     var match;
     var parts;
-    if (typeof value !== "string" || value === "" || value === "transparent") {
+    var expanded;
+    if (typeof value !== "string" || value === "") {
       return null;
     }
+    if (value === "transparent") {
+      return {
+        r: 0,
+        g: 0,
+        b: 0,
+        a: 0
+      };
+    }
     match = value.match(/^rgba?\(([^)]+)\)$/i);
+    if (match) {
+      parts = match[1].split(",").map(function (part) {
+        return Number(part.trim());
+      });
+      if (parts.length < 3 || !isFinite(parts[0]) || !isFinite(parts[1]) || !isFinite(parts[2])) {
+        return null;
+      }
+      return {
+        r: clamp(parts[0], 0, 255),
+        g: clamp(parts[1], 0, 255),
+        b: clamp(parts[2], 0, 255),
+        a: clamp(isFinite(parts[3]) ? parts[3] : 1, 0, 1)
+      };
+    }
+
+    match = value.match(/^#([0-9a-f]{3,8})$/i);
     if (!match) {
       return null;
     }
-    parts = match[1].split(",").map(function (part) {
-      return Number(part.trim());
-    });
-    if (parts.length < 3 || !isFinite(parts[0]) || !isFinite(parts[1]) || !isFinite(parts[2])) {
-      return null;
-    }
+    expanded = match[1].length === 3 || match[1].length === 4
+      ? match[1].split("").map(function (char) { return char + char; }).join("")
+      : match[1];
     return {
-      r: clamp(parts[0], 0, 255),
-      g: clamp(parts[1], 0, 255),
-      b: clamp(parts[2], 0, 255),
-      a: clamp(isFinite(parts[3]) ? parts[3] : 1, 0, 1)
+      r: parseInt(expanded.slice(0, 2), 16),
+      g: parseInt(expanded.slice(2, 4), 16),
+      b: parseInt(expanded.slice(4, 6), 16),
+      a: expanded.length >= 8 ? clamp(parseInt(expanded.slice(6, 8), 16) / 255, 0, 1) : 1
     };
   }
 
@@ -1511,10 +2689,6 @@
       maxY = Math.max(maxY, children[index].rect.y);
     }
     return (maxX - minX) >= (maxY - minY) ? "x" : "y";
-  }
-
-  function parseFontFamily(value) {
-    return String(value || "").split(",")[0].trim().replace(/^['"]|['"]$/g, "");
   }
 
   function numberFromCss(value) {
