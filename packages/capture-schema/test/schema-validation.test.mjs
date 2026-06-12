@@ -89,3 +89,45 @@ test("assertValidCapturePackage throws with validation errors for invalid packag
     }
   );
 });
+
+test("full-page manifest fields validate when well formed", () => {
+  const packageData = createValidPackage();
+  const validation = validateManifest({
+    ...packageData.manifest,
+    captureMode: "full-page",
+    documentWidth: 1440,
+    documentHeight: 5200
+  });
+
+  assert.equal(validation.ok, true);
+});
+
+test("invalid captureMode is rejected", () => {
+  const packageData = createValidPackage();
+  const validation = validateManifest({
+    ...packageData.manifest,
+    captureMode: "partial"
+  });
+
+  assert.equal(validation.ok, false);
+  assert.equal(validation.errors[0].path, "manifest.captureMode");
+});
+
+test("full-page manifest requires positive document dimensions", () => {
+  const packageData = createValidPackage();
+  const validation = validateManifest({
+    ...packageData.manifest,
+    captureMode: "full-page",
+    documentWidth: 1440
+  });
+
+  assert.equal(validation.ok, false);
+  assert.equal(validation.errors[0].path, "manifest.documentHeight");
+});
+
+test("viewport packages without full-page fields remain valid", () => {
+  const packageData = createValidPackage();
+  const validation = validateManifest(packageData.manifest);
+
+  assert.equal(validation.ok, true);
+});

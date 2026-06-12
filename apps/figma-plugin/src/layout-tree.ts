@@ -1,3 +1,5 @@
+import { createSemanticNameMap } from "./semantic-naming.ts";
+
 export function createEditableLayoutNodeModels(packageData) {
   const fallbackReasons = new Map(
     (packageData.diagnostics?.fallbackReasons ?? []).map((item) => [item.sourceNodeId, item.reason])
@@ -9,7 +11,140 @@ export function createEditableLayoutNodeModels(packageData) {
     clippedAncestor: false
   });
 
-  return rootModel ? [rootModel] : [];
+  if (!rootModel) {
+    return [];
+  }
+
+  try {
+    const semanticNaming = createSemanticNameMap(packageData.capture.root, packageData.capture.viewport);
+    const semanticNameCount = applySemanticNamesToModels(rootModel, semanticNaming.names);
+    const collapsedWrappers = collapseNonVisualWrappers(rootModel, semanticNaming.names);
+    rootModel.semanticNamingSummary = {
+      semanticNames: semanticNameCount,
+      repeatedGroups: semanticNaming.repeatedGroupCount,
+      collapsedWrappers
+    };
+  } catch {
+    rootModel.semanticNamingSummary = { semanticNames: 0, repeatedGroups: 0, collapsedWrappers: 0 };
+  }
+
+  return [rootModel];
+}
+
+export function summarizeSemanticNamingModels(models) {
+  const summary = models?.[0]?.semanticNamingSummary;
+  return {
+    semanticNames: summary?.semanticNames ?? 0,
+    repeatedGroups: summary?.repeatedGroups ?? 0,
+    collapsedWrappers: summary?.collapsedWrappers ?? 0
+  };
+}
+
+function applySemanticNamesToModels(rootModel, names) {
+  const consumed = new Set();
+  let renamed = 0;
+
+  const visit = (model) => {
+    if (model.sourceNodeId && names.has(model.sourceNodeId) && !consumed.has(model.sourceNodeId)) {
+      consumed.add(model.sourceNodeId);
+      model.name = names.get(model.sourceNodeId);
+      renamed += 1;
+    }
+    for (const child of model.children ?? []) {
+      visit(child);
+    }
+  };
+
+  visit(rootModel);
+  return renamed;
+}
+
+export function collapseNonVisualWrappers(rootModel, semanticNames = new Map()) {
+  let collapsedCount = 0;
+
+  const collapseChildren = (parent) => {
+    const children = parent.children ?? [];
+    for (let index = 0; index < children.length; index += 1) {
+      let child = children[index];
+      while (shouldCollapseWrapper(child, parent, semanticNames)) {
+        const grandchild = child.children[0];
+        children[index] = {
+          ...grandchild,
+          rect: {
+            x: round(child.rect.x + grandchild.rect.x),
+            y: round(child.rect.y + grandchild.rect.y),
+            width: grandchild.rect.width,
+            height: grandchild.rect.height
+          }
+        };
+        child = children[index];
+        collapsedCount += 1;
+      }
+      collapseChildren(child);
+    }
+  };
+
+  collapseChildren(rootModel);
+  return collapsedCount;
+}
+
+function shouldCollapseWrapper(model, parent, semanticNames) {
+  if (model.type !== "FRAME" || (model.children?.length ?? 0) !== 1) {
+    return false;
+  }
+  if (model.assetRef || model.fallbackReason || model.clipsContent) {
+    return false;
+  }
+  if (model.autoLayout?.applied || parent.autoLayout?.applied) {
+    return false;
+  }
+  if (semanticNames.has(model.sourceNodeId)) {
+    return false;
+  }
+  if (hasModelVisualStyle(model.style) || hasCollapseBlockingStyles(model.styles)) {
+    return false;
+  }
+
+  const child = model.children[0];
+  if (!child || sharesSourceIdentity(model, child)) {
+    return false;
+  }
+
+  return rectsMatchWithinTolerance(model.absoluteRect, child.absoluteRect, 1);
+}
+
+function sharesSourceIdentity(model, child) {
+  return Boolean(
+    child.sourceNodeId &&
+    model.sourceNodeId &&
+    (child.sourceNodeId === model.sourceNodeId || child.sourceNodeId.startsWith(`${model.sourceNodeId}::`))
+  );
+}
+
+function hasCollapseBlockingStyles(styles = {}) {
+  const opacity = styles.opacity === undefined ? 1 : Number.parseFloat(styles.opacity);
+  if (Number.isFinite(opacity) && opacity < 1) {
+    return true;
+  }
+  const transform = String(styles.transform ?? "").trim();
+  if (transform && transform !== "none") {
+    return true;
+  }
+  return hasCssGradient(styles.backgroundImage);
+}
+
+function hasCssGradient(value) {
+  return typeof value === "string" && /gradient\(/i.test(value);
+}
+
+function rectsMatchWithinTolerance(a, b, tolerance) {
+  if (!a || !b) {
+    return false;
+  }
+  return Math.abs(a.x - b.x) <= tolerance &&
+    Math.abs(a.y - b.y) <= tolerance &&
+    Math.abs(a.width - b.width) <= tolerance &&
+    Math.abs(a.height - b.height) <= tolerance;
 }
 
 export function summarizeAutoLayoutModels(models) {

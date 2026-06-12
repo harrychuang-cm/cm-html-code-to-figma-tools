@@ -79,6 +79,25 @@ export function validateManifest(value) {
     errors.push(error(ERROR_CODES.INVALID_FIELD, "deviceLabel must be a string", "manifest.deviceLabel"));
   }
 
+  if ("captureMode" in value && value.captureMode !== "viewport" && value.captureMode !== "full-page") {
+    errors.push(error(
+      ERROR_CODES.INVALID_FIELD,
+      "captureMode must be viewport or full-page",
+      "manifest.captureMode"
+    ));
+  }
+  if (value.captureMode === "full-page") {
+    requirePositiveNumber(value, "documentWidth", "manifest.documentWidth", errors);
+    requirePositiveNumber(value, "documentHeight", "manifest.documentHeight", errors);
+  } else {
+    if ("documentWidth" in value) {
+      requirePositiveNumber(value, "documentWidth", "manifest.documentWidth", errors);
+    }
+    if ("documentHeight" in value) {
+      requirePositiveNumber(value, "documentHeight", "manifest.documentHeight", errors);
+    }
+  }
+
   return result(errors);
 }
 

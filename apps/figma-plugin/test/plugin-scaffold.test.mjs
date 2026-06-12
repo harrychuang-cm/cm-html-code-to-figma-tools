@@ -2538,3 +2538,291 @@ function isPng(bytes) {
     && bytes[2] === 0x4e
     && bytes[3] === 0x47;
 }
+
+test("classic Figma runtime matches module runtime semantic names, collapsed tree, and statistics", async () => {
+  const main = await readFile("apps/figma-plugin/dist/code.js", "utf8");
+  const { createEditableLayoutNodeModels, summarizeSemanticNamingModels } = await import("../dist/layout-tree.js");
+  const posted = [];
+
+  function captureNode(sourceNodeId, tagName, rect, extra = {}) {
+    return {
+      id: `node-${sourceNodeId}`,
+      sourceNodeId,
+      nodeType: "element",
+      tagName,
+      textContent: extra.textContent ?? "",
+      rect,
+      styles: extra.styles ?? {},
+      attributes: extra.attributes ?? {},
+      children: extra.children ?? []
+    };
+  }
+
+  const card = (id, x) => captureNode(id, "div", { x, y: 200, width: 200, height: 180 }, {
+    attributes: { class: "card" },
+    styles: { backgroundColor: "rgb(255, 255, 255)", borderTopLeftRadius: "8px" },
+    children: [
+      captureNode(`${id}-title`, "p", { x: x + 16, y: 216, width: 80, height: 20 }, {
+        textContent: "標題",
+        styles: { fontSize: "14px", color: "rgb(17, 24, 39)" }
+      })
+    ]
+  });
+  const root = captureNode("dom-root", "body", { x: 0, y: 0, width: 1440, height: 900 }, {
+    children: [
+      captureNode("dom-header", "header", { x: 0, y: 0, width: 1440, height: 64 }, {
+        styles: { backgroundColor: "rgb(255, 255, 255)" },
+        children: [
+          captureNode("dom-nav", "nav", { x: 32, y: 12, width: 400, height: 40 }, {
+            styles: { backgroundColor: "rgb(247, 247, 247)" }
+          })
+        ]
+      }),
+      captureNode("dom-login", "button", { x: 1300, y: 16, width: 80, height: 32 }, {
+        textContent: "登入",
+        styles: { fontSize: "14px", color: "rgb(17, 24, 39)" }
+      }),
+      card("dom-card-a", 20),
+      card("dom-card-b", 240),
+      captureNode("dom-wrapper", "div", { x: 600, y: 200, width: 300, height: 200 }, {
+        children: [
+          captureNode("dom-inner", "div", { x: 600, y: 200, width: 300, height: 200 }, {
+            styles: { backgroundColor: "rgb(240, 240, 240)" },
+            children: [
+              captureNode("dom-inner-label", "p", { x: 616, y: 216, width: 60, height: 20 }, {
+                textContent: "內容",
+                styles: { fontSize: "14px", color: "rgb(17, 24, 39)" }
+              })
+            ]
+          })
+        ]
+      }),
+      captureNode("dom-footer", "footer", { x: 0, y: 836, width: 1440, height: 64 }, {
+        styles: { backgroundColor: "rgb(17, 24, 39)" }
+      })
+    ]
+  });
+  const basePackage = createValidPackage();
+  const packageData = createValidPackage({
+    capture: {
+      ...basePackage.capture,
+      root
+    },
+    diagnostics: {
+      ...basePackage.diagnostics,
+      fallbackReasons: []
+    }
+  });
+
+  const moduleModels = createEditableLayoutNodeModels(packageData);
+  const moduleSummary = summarizeSemanticNamingModels(moduleModels);
+  const flattenModelNames = (model) => [model.name, ...(model.children ?? []).flatMap(flattenModelNames)];
+  const moduleNames = flattenModelNames(moduleModels[0]);
+
+  function createNode(type) {
+    return {
+      type,
+      name: "",
+      children: [],
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0,
+      fills: [],
+      strokes: [],
+      pluginData: {},
+      resize(width, height) {
+        this.width = width;
+        this.height = height;
+      },
+      appendChild(child) {
+        this.children.push(child);
+      },
+      setPluginData(key, value) {
+        this.pluginData[key] = value;
+      }
+    };
+  }
+
+  const figma = {
+    currentPage: {
+      children: [],
+      appendChild(child) {
+        this.children.push(child);
+      }
+    },
+    ui: {
+      onmessage: null,
+      postMessage(message) {
+        posted.push(message);
+      }
+    },
+    showUI() {},
+    createFrame() {
+      return createNode("FRAME");
+    },
+    createRectangle() {
+      return createNode("RECTANGLE");
+    },
+    createText() {
+      return createNode("TEXT");
+    },
+    createImage(bytes) {
+      return {
+        hash: `hash-${bytes.length}`
+      };
+    },
+    async loadFontAsync() {}
+  };
+
+  vm.runInNewContext(main, {
+    figma,
+    Uint8Array,
+    Uint32Array,
+    ArrayBuffer,
+    DataView,
+    Error,
+    JSON,
+    Math,
+    Number,
+    Object,
+    Promise,
+    String,
+    Boolean,
+    Array,
+    isFinite,
+    parseFloat
+  });
+  await figma.ui.onmessage({
+    type: "IMPORT_PACKAGE",
+    filename: "parity.figcapture",
+    bytes: packFigcapture(packageData)
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const success = posted.find((message) => message.type === "IMPORT_SUCCESS");
+  assert.ok(success, `expected IMPORT_SUCCESS, got ${JSON.stringify(posted)}`);
+
+  const accurateFrame = figma.currentPage.children[1];
+  const flattenRenderedNames = (node) => [node.name, ...(node.children ?? []).flatMap(flattenRenderedNames)];
+  const classicNames = (accurateFrame.children ?? []).flatMap(flattenRenderedNames);
+
+  assert.deepEqual(classicNames, moduleNames);
+  for (const expected of ["Header", "Navigation", "Button / 登入", "Card 1", "Card 2", "Footer"]) {
+    assert.ok(classicNames.includes(expected), `expected ${expected} in ${JSON.stringify(classicNames)}`);
+  }
+  assert.equal(moduleModels[0].children.some((child) => child.sourceNodeId === "dom-wrapper"), false);
+
+  assert.deepEqual(JSON.parse(JSON.stringify(success.report.semanticNamingSummary)), moduleSummary);
+  assert.equal(success.report.semanticNamingSummary.repeatedGroups, 1);
+  assert.equal(success.report.semanticNamingSummary.collapsedWrappers >= 1, true);
+});
+
+test("classic Figma runtime sizes full-page frames to the document dimensions", async () => {
+  const main = await readFile("apps/figma-plugin/dist/code.js", "utf8");
+  const posted = [];
+
+  function createNode(type) {
+    return {
+      type,
+      name: "",
+      children: [],
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0,
+      fills: [],
+      strokes: [],
+      pluginData: {},
+      resize(width, height) {
+        this.width = width;
+        this.height = height;
+      },
+      appendChild(child) {
+        this.children.push(child);
+      },
+      setPluginData(key, value) {
+        this.pluginData[key] = value;
+      }
+    };
+  }
+
+  const figma = {
+    currentPage: {
+      children: [],
+      appendChild(child) {
+        this.children.push(child);
+      }
+    },
+    ui: {
+      onmessage: null,
+      postMessage(message) {
+        posted.push(message);
+      }
+    },
+    showUI() {},
+    createFrame() {
+      return createNode("FRAME");
+    },
+    createRectangle() {
+      return createNode("RECTANGLE");
+    },
+    createText() {
+      return createNode("TEXT");
+    },
+    createImage(bytes) {
+      return {
+        hash: `hash-${bytes.length}`
+      };
+    },
+    async loadFontAsync() {}
+  };
+  const basePackage = createValidPackage();
+  const packageData = createValidPackage({
+    manifest: {
+      ...basePackage.manifest,
+      captureMode: "full-page",
+      documentWidth: 1440,
+      documentHeight: 5200
+    }
+  });
+
+  vm.runInNewContext(main, {
+    figma,
+    Uint8Array,
+    Uint32Array,
+    ArrayBuffer,
+    DataView,
+    Error,
+    JSON,
+    Math,
+    Number,
+    Object,
+    Promise,
+    String,
+    Boolean,
+    Array,
+    isFinite,
+    parseFloat
+  });
+  await figma.ui.onmessage({
+    type: "IMPORT_PACKAGE",
+    filename: "full-page.figcapture",
+    bytes: packFigcapture(packageData)
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const success = posted.find((message) => message.type === "IMPORT_SUCCESS");
+  assert.ok(success, `expected IMPORT_SUCCESS, got ${JSON.stringify(posted)}`);
+
+  const frames = figma.currentPage.children;
+  assert.equal(frames.length, 2);
+  for (const frame of frames) {
+    assert.equal(frame.width, 1440);
+    assert.equal(frame.height, 5200);
+    assert.match(frame.name, /1440x5200/);
+  }
+  const screenshotLayer = frames[0].children[0];
+  assert.equal(screenshotLayer.width, 1440);
+  assert.equal(screenshotLayer.height, 5200);
+});

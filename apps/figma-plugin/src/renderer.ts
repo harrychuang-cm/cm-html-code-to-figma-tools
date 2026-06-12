@@ -1,8 +1,10 @@
 import { createAutoLayoutNodeModels } from "./auto-layout.ts";
 import {
   createEditableLayoutNodeModels,
-  summarizeAutoLayoutModels
+  summarizeAutoLayoutModels,
+  summarizeSemanticNamingModels
 } from "./layout-tree.ts";
+import { createSemanticNameMap } from "./semantic-naming.ts";
 
 export const FRAME_ROLES = [
   "Source Screenshot",
@@ -10,8 +12,9 @@ export const FRAME_ROLES = [
 ];
 
 export function createFrameModels(packageData) {
-  const width = packageData.manifest.viewportWidth;
-  const height = packageData.manifest.viewportHeight;
+  const size = captureFrameSize(packageData.manifest);
+  const width = size.width;
+  const height = size.height;
   const title = packageData.capture.title || titleFromUrl(packageData.manifest.sourceUrl);
 
   return FRAME_ROLES.map((role, index) => ({
@@ -24,6 +27,13 @@ export function createFrameModels(packageData) {
   }));
 }
 
+export function captureFrameSize(manifest = {}) {
+  if (manifest.captureMode === "full-page" && manifest.documentWidth > 0 && manifest.documentHeight > 0) {
+    return { width: manifest.documentWidth, height: manifest.documentHeight };
+  }
+  return { width: manifest.viewportWidth, height: manifest.viewportHeight };
+}
+
 export function renderThreeFrames(adapter, packageData) {
   const models = createFrameModels(packageData);
   const frames = models.map((model) => adapter.createFrame(model));
@@ -31,8 +41,8 @@ export function renderThreeFrames(adapter, packageData) {
   const screenshotLayer = adapter.createImageLayer({
     name: "Source screenshot",
     bytes: packageData.screenshot,
-    width: packageData.manifest.viewportWidth,
-    height: packageData.manifest.viewportHeight,
+    width: captureFrameSize(packageData.manifest).width,
+    height: captureFrameSize(packageData.manifest).height,
     locked: true
   });
 
@@ -43,7 +53,8 @@ export function renderThreeFrames(adapter, packageData) {
     frames,
     sourceScreenshotLayer: screenshotLayer,
     autoLayoutFrameEnabled: false,
-    autoLayoutSummary: editableResult.autoLayoutSummary
+    autoLayoutSummary: editableResult.autoLayoutSummary,
+    semanticNamingSummary: editableResult.semanticNamingSummary
   };
 }
 
@@ -54,8 +65,8 @@ export async function renderThreeFramesAsync(adapter, packageData) {
   const screenshotLayer = await maybeAsync(adapter.createImageLayer({
     name: "Source screenshot",
     bytes: packageData.screenshot,
-    width: packageData.manifest.viewportWidth,
-    height: packageData.manifest.viewportHeight,
+    width: captureFrameSize(packageData.manifest).width,
+    height: captureFrameSize(packageData.manifest).height,
     locked: true
   }));
 
@@ -67,6 +78,7 @@ export async function renderThreeFramesAsync(adapter, packageData) {
     sourceScreenshotLayer: screenshotLayer,
     autoLayoutFrameEnabled: false,
     autoLayoutSummary: editableResult.autoLayoutSummary,
+    semanticNamingSummary: editableResult.semanticNamingSummary,
     fontSubstitutions: adapter.fontSubstitutions ?? []
   };
 }
@@ -104,7 +116,8 @@ export function renderEditableAccurate(adapter, frame, packageData) {
   return {
     nodes: createdNodes,
     models: nodeModels,
-    autoLayoutSummary: summarizeAutoLayoutModels(nodeModels)
+    autoLayoutSummary: summarizeAutoLayoutModels(nodeModels),
+    semanticNamingSummary: summarizeSemanticNamingModels(nodeModels)
   };
 }
 
@@ -123,7 +136,8 @@ export async function renderEditableAccurateAsync(adapter, frame, packageData) {
   return {
     nodes: createdNodes,
     models: nodeModels,
-    autoLayoutSummary: summarizeAutoLayoutModels(nodeModels)
+    autoLayoutSummary: summarizeAutoLayoutModels(nodeModels),
+    semanticNamingSummary: summarizeSemanticNamingModels(nodeModels)
   };
 }
 
@@ -131,6 +145,7 @@ export function createAccurateNodeModels(packageData) {
   const fallbackReasons = new Map(
     packageData.diagnostics.fallbackReasons.map((item) => [item.sourceNodeId, item.reason])
   );
+  const semanticNames = createSemanticNameMap(packageData.capture.root, packageData.capture.viewport).names;
   const models = [];
 
   traverse(packageData.capture.root, (node) => {
@@ -141,7 +156,7 @@ export function createAccurateNodeModels(packageData) {
     models.push({
       id: node.sourceNodeId,
       type: layerTypeForNode(node),
-      name: layerNameForNode(node),
+      name: semanticNames.get(node.sourceNodeId) ?? layerNameForNode(node),
       sourceNodeId: node.sourceNodeId,
       cssZIndex: numericZIndex(node.styles?.zIndex) !== null ? String(node.styles.zIndex).trim() : undefined,
       rect: node.rect,

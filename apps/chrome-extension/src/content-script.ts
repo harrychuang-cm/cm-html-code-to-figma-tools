@@ -85,30 +85,138 @@
     "left"
   ];
 
+  const PAGE_METRICS_MESSAGE = "FIGCAPTURE_PAGE_METRICS";
+  const SCROLL_TO_MESSAGE = "FIGCAPTURE_SCROLL_TO";
+  const SET_PINNED_HIDDEN_MESSAGE = "FIGCAPTURE_SET_PINNED_HIDDEN";
+  let pinnedHiddenRecords = [];
+
   chrome?.runtime?.onMessage?.addListener?.((message, _sender, sendResponse) => {
-    if (message?.type !== CAPTURE_DOM_MESSAGE) {
+    const handler = messageHandler(message?.type);
+    if (!handler) {
       return false;
     }
 
-    try {
-      sendResponse({
-        status: "success",
-        capture: captureVisibleViewportFromDocument()
-      });
-    } catch (error) {
-      sendResponse({
+    Promise.resolve()
+      .then(() => handler(message))
+      .then((payload) => sendResponse({ status: "success", ...payload }))
+      .catch((error) => sendResponse({
         status: "error",
         error: {
           category: "capture-failed",
           message: error?.message ?? "DOM capture failed"
         }
-      });
-    }
+      }));
 
     return true;
   });
 
-  function captureVisibleViewportFromDocument(documentRef = document, windowRef = window) {
+  function messageHandler(type) {
+    if (type === CAPTURE_DOM_MESSAGE) {
+      return collectDomMessage;
+    }
+    if (type === PAGE_METRICS_MESSAGE) {
+      return pageMetricsMessage;
+    }
+    if (type === SCROLL_TO_MESSAGE) {
+      return scrollToMessage;
+    }
+    if (type === SET_PINNED_HIDDEN_MESSAGE) {
+      return setPinnedHiddenMessage;
+    }
+    return null;
+  }
+
+  async function collectDomMessage(message) {
+    if (message?.mode !== "full-page") {
+      return { capture: captureVisibleViewportFromDocument() };
+    }
+    window.scrollTo(0, 0);
+    await waitForRenderSettle();
+    const metrics = pageMetrics();
+    return {
+      capture: captureVisibleViewportFromDocument(document, window, {
+        captureMode: "full-page",
+        captureBounds: {
+          width: message?.documentWidth ?? metrics.documentWidth,
+          height: message?.documentHeight ?? metrics.documentHeight
+        }
+      })
+    };
+  }
+
+  function pageMetricsMessage() {
+    return { metrics: pageMetrics() };
+  }
+
+  async function scrollToMessage(message) {
+    window.scrollTo(0, Number(message?.scrollY ?? 0));
+    await waitForRenderSettle();
+    return { scrollY: window.scrollY || 0, scrollX: window.scrollX || 0 };
+  }
+
+  function setPinnedHiddenMessage(message) {
+    if (message?.hidden) {
+      hidePinnedElements();
+    } else {
+      restorePinnedElements();
+    }
+    return { pinnedCount: pinnedHiddenRecords.length };
+  }
+
+  function pageMetrics() {
+    const documentElement = document.documentElement;
+    const body = document.body;
+    return {
+      documentWidth: Math.max(documentElement?.scrollWidth ?? 0, body?.scrollWidth ?? 0, window.innerWidth),
+      documentHeight: Math.max(documentElement?.scrollHeight ?? 0, body?.scrollHeight ?? 0, window.innerHeight),
+      viewport: {
+        width: window.innerWidth,
+        height: window.innerHeight,
+        devicePixelRatio: window.devicePixelRatio || 1,
+        scrollX: window.scrollX || 0,
+        scrollY: window.scrollY || 0
+      }
+    };
+  }
+
+  function hidePinnedElements() {
+    if (pinnedHiddenRecords.length > 0) {
+      return;
+    }
+    for (const element of Array.from(document.querySelectorAll("*"))) {
+      const position = window.getComputedStyle(element).position;
+      if (position === "fixed" || position === "sticky") {
+        pinnedHiddenRecords.push({
+          element,
+          visibility: element.style.visibility
+        });
+        element.style.visibility = "hidden";
+      }
+    }
+  }
+
+  function restorePinnedElements() {
+    for (const record of pinnedHiddenRecords) {
+      record.element.style.visibility = record.visibility;
+    }
+    pinnedHiddenRecords = [];
+  }
+
+  function waitForRenderSettle() {
+    return new Promise((resolve) => {
+      if (typeof requestAnimationFrame !== "function") {
+        setTimeout(resolve, 0);
+        return;
+      }
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          setTimeout(resolve, 250);
+        });
+      });
+    });
+  }
+
+  function captureVisibleViewportFromDocument(documentRef = document, windowRef = window, options = {}) {
     const viewport = {
       width: windowRef.innerWidth,
       height: windowRef.innerHeight,
@@ -122,11 +230,15 @@
     return captureElementTree(rawRoot, viewport, {
       sourceUrl: documentRef.location?.href ?? windowRef.location?.href ?? "about:blank",
       title: documentRef.title ?? "",
-      captureTimestamp: new Date().toISOString()
+      captureTimestamp: new Date().toISOString(),
+      captureMode: options.captureMode,
+      captureBounds: options.captureBounds
     });
   }
 
   function captureElementTree(inputRoot, viewport, options = {}) {
+    const captureBounds = options.captureBounds ?? { width: viewport.width, height: viewport.height };
+    const isFullPage = options.captureMode === "full-page";
     return {
       sourceUrl: options.sourceUrl ?? "about:blank",
       title: options.title ?? "",
@@ -138,7 +250,14 @@
         scrollX: viewport.scrollX ?? 0,
         scrollY: viewport.scrollY ?? 0
       },
-      root: normalizeElement(inputRoot, "dom-1", viewport, true, { clipToViewport: true })
+      ...(isFullPage
+        ? {
+          captureMode: "full-page",
+          documentWidth: captureBounds.width,
+          documentHeight: captureBounds.height
+        }
+        : {}),
+      root: normalizeElement(inputRoot, "dom-1", captureBounds, true, { clipToViewport: true })
     };
   }
 
@@ -196,6 +315,9 @@
         attributes.canvasDataUrl = canvasDataUrl;
       }
     }
+    if (isClosedShadowHost(element, tagName)) {
+      attributes["data-closed-shadow-root"] = "true";
+    }
 
     const styles = pickStyles(computed);
     addPlaceholderMetadata(element, tagName, attributes, styles, windowRef);
@@ -211,10 +333,119 @@
       styles,
       attributes,
       children: [
-        ...Array.from(element.children ?? []).map((child) => snapshotDomElement(child, windowRef, nextContainingBlockRect)),
+        ...renderedChildEntries(element)
+          .map((entry) => entry.slot
+            ? snapshotSlottedTextNode(entry.textNode, entry.slot, windowRef)
+            : snapshotDomElement(entry.element, windowRef, nextContainingBlockRect))
+          .filter(Boolean),
         ...snapshotPseudoElements(element, rect, nextContainingBlockRect, windowRef)
       ]
     };
+  }
+
+  function renderedChildEntries(element) {
+    const shadowRoot = accessibleShadowRoot(element);
+    const baseChildren = shadowRoot ? shadowRoot.children : element.children;
+    const entries = [];
+    for (const child of Array.from(baseChildren ?? [])) {
+      expandRenderedChild(child, entries);
+    }
+    return entries;
+  }
+
+  function expandRenderedChild(child, entries) {
+    if (String(child.tagName ?? "").toLowerCase() !== "slot") {
+      entries.push({ element: child });
+      return;
+    }
+
+    const assigned = assignedSlotNodes(child);
+    if (assigned.length > 0) {
+      for (const node of assigned) {
+        if (node.nodeType === 1 || (node.nodeType === undefined && node.tagName)) {
+          entries.push({ element: node });
+        } else if (node.nodeType === 3 && String(node.textContent ?? "").trim().length > 0) {
+          entries.push({ textNode: node, slot: child });
+        }
+      }
+      return;
+    }
+
+    for (const fallbackChild of Array.from(child.children ?? [])) {
+      expandRenderedChild(fallbackChild, entries);
+    }
+  }
+
+  function assignedSlotNodes(slot) {
+    try {
+      if (typeof slot.assignedNodes === "function") {
+        return Array.from(slot.assignedNodes({ flatten: true }) ?? []);
+      }
+      if (typeof slot.assignedElements === "function") {
+        return Array.from(slot.assignedElements({ flatten: true }) ?? []);
+      }
+    } catch {
+      return [];
+    }
+    return [];
+  }
+
+  function accessibleShadowRoot(element) {
+    if (element.shadowRoot) {
+      return element.shadowRoot;
+    }
+    if (typeof chrome?.dom?.openOrClosedShadowRoot === "function") {
+      try {
+        return chrome.dom.openOrClosedShadowRoot(element) ?? null;
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  function isClosedShadowHost(element, tagName) {
+    return tagName.includes("-") &&
+      !accessibleShadowRoot(element) &&
+      Array.from(element.children ?? []).length === 0;
+  }
+
+  function snapshotSlottedTextNode(textNode, slot, windowRef) {
+    const rect = slottedTextRect(textNode);
+    if (!rect || rect.width <= 0 || rect.height <= 0) {
+      return null;
+    }
+    const styles = slotComputedStyles(slot, windowRef);
+    return {
+      tagName: "#slotted-text",
+      nodeType: "text",
+      textContent: normalizeDirectTextContent(textNode.textContent ?? "", styles.whiteSpace),
+      rect,
+      styles,
+      attributes: { "data-slotted-text": "true" },
+      children: []
+    };
+  }
+
+  function slottedTextRect(textNode) {
+    try {
+      if (typeof document.createRange !== "function") {
+        return null;
+      }
+      const range = document.createRange();
+      range.selectNode(textNode);
+      return normalizeRect(range.getBoundingClientRect());
+    } catch {
+      return null;
+    }
+  }
+
+  function slotComputedStyles(slot, windowRef) {
+    try {
+      return pickStyles(windowRef.getComputedStyle(slot));
+    } catch {
+      return {};
+    }
   }
 
   function snapshotPseudoElements(element, ownerRect, containingBlockRect, windowRef) {

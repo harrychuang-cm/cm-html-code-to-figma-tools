@@ -5,8 +5,14 @@ export function createImportReport(packageData, renderResult) {
     averageConfidence: 0,
     skippedReasons: []
   };
+  const semanticNamingSummary = renderResult.semanticNamingSummary ?? {};
 
   return {
+    semanticNamingSummary: {
+      semanticNames: semanticNamingSummary.semanticNames ?? 0,
+      repeatedGroups: semanticNamingSummary.repeatedGroups ?? 0,
+      collapsedWrappers: semanticNamingSummary.collapsedWrappers ?? 0
+    },
     createdFrameCount: renderResult.frames.length,
     createdNodeCount: countCreatedNodes(renderResult.frames),
     fallbackCount: packageData.diagnostics.counts.fallbacks,
@@ -32,6 +38,8 @@ export function renderImportReport(documentRef, report) {
   setText(documentRef, "font-substitution-count", String(report.fontSubstitutions?.length ?? 0));
   setText(documentRef, "font-substitution-summary", report.fontSubstitutionSummary ?? summarizeFontSubstitutions(report.fontSubstitutions ?? []));
   setText(documentRef, "auto-layout-confidence-summary", `${report.autoLayoutConfidenceSummary.appliedCount} applied / ${report.autoLayoutConfidenceSummary.skippedCount} skipped / ${report.autoLayoutConfidenceSummary.averageConfidence}`);
+  const semanticNaming = report.semanticNamingSummary ?? {};
+  setText(documentRef, "semantic-naming-summary", `${semanticNaming.semanticNames ?? 0} named / ${semanticNaming.repeatedGroups ?? 0} groups / ${semanticNaming.collapsedWrappers ?? 0} collapsed`);
 
   const root = documentRef.getElementById("import-report");
   if (root) {

@@ -482,3 +482,79 @@ test("css image URL extraction ignores unsupported gradients", () => {
   assert.equal(firstCssImageUrl("linear-gradient(red, blue)"), null);
   assert.equal(firstCssImageUrl("url('data:image/svg+xml,%3Csvg%2F%3E')"), "data:image/svg+xml,%3Csvg%2F%3E");
 });
+
+test("closed shadow host becomes screenshot crop fallback with reason", async () => {
+  const capture = captureElementTree(
+    {
+      tagName: "main",
+      rect: { x: 0, y: 0, width: 800, height: 600 },
+      styles: {},
+      attributes: {},
+      children: [
+        {
+          tagName: "my-locked-widget",
+          sourceNodeId: "dom-closed-host",
+          rect: { x: 40, y: 40, width: 320, height: 160 },
+          styles: {},
+          attributes: { "data-closed-shadow-root": "true" },
+          children: []
+        }
+      ]
+    },
+    { width: 800, height: 600, devicePixelRatio: 1, scrollX: 0, scrollY: 0 },
+    {
+      sourceUrl: "https://app.example.com/components",
+      captureTimestamp: "2026-06-12T08:00:00.000Z"
+    }
+  );
+
+  const croppedBytes = Uint8Array.from([137, 80, 78, 71, 1, 2, 3, 4]);
+  const result = await captureVisualAssets(capture, {
+    fallbackRasterProvider: () => croppedBytes
+  });
+
+  const host = result.capture.root.children[0];
+  assert.equal(host.fallbackRef, "assets/fallback-1.png");
+  assert.deepEqual(Array.from(result.assets["assets/fallback-1.png"]), Array.from(croppedBytes));
+  assert.deepEqual(result.diagnostics.fallbackReasons, [
+    { sourceNodeId: "dom-closed-host", reason: "closed shadow root fallback" }
+  ]);
+  assert.equal(result.diagnostics.counts.missingAssets, 0);
+});
+
+test("closed shadow host crop failure records missing asset without blocking export", async () => {
+  const capture = captureElementTree(
+    {
+      tagName: "main",
+      rect: { x: 0, y: 0, width: 800, height: 600 },
+      styles: {},
+      attributes: {},
+      children: [
+        {
+          tagName: "my-locked-widget",
+          sourceNodeId: "dom-closed-host",
+          rect: { x: 40, y: 40, width: 320, height: 160 },
+          styles: {},
+          attributes: { "data-closed-shadow-root": "true" },
+          children: []
+        }
+      ]
+    },
+    { width: 800, height: 600, devicePixelRatio: 1, scrollX: 0, scrollY: 0 },
+    {
+      sourceUrl: "https://app.example.com/components",
+      captureTimestamp: "2026-06-12T08:00:00.000Z"
+    }
+  );
+
+  const result = await captureVisualAssets(capture);
+
+  const host = result.capture.root.children[0];
+  assert.equal(host.fallbackRef, "assets/fallback-1.png");
+  assert.deepEqual(Array.from(result.assets["assets/fallback-1.png"]), Array.from(TRANSPARENT_PNG));
+  assert.deepEqual(result.diagnostics.fallbackReasons, [
+    { sourceNodeId: "dom-closed-host", reason: "closed shadow root fallback" }
+  ]);
+  assert.equal(result.diagnostics.counts.missingAssets, 1);
+  assert.deepEqual(result.diagnostics.missingAssets, ["dom-closed-host"]);
+});

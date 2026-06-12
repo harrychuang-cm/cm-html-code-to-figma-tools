@@ -52,7 +52,7 @@ export function registerBackgroundRuntime(chromeApi = globalThis.chrome) {
       return false;
     }
 
-    handleCaptureActiveTab(chromeApi)
+    handleCaptureActiveTab(chromeApi, { captureMode: message?.captureMode })
       .then((response) => sendResponse(response))
       .catch((error) => sendResponse({
         status: "error",

@@ -90,13 +90,22 @@ export function createManifestFromCapture(capture, options = {}) {
     devicePixelRatio: capture.viewport.devicePixelRatio,
     scrollX: capture.viewport.scrollX,
     scrollY: capture.viewport.scrollY,
-    ...(options.deviceLabel ? { deviceLabel: options.deviceLabel } : {})
+    ...(options.deviceLabel ? { deviceLabel: options.deviceLabel } : {}),
+    ...(capture.captureMode === "full-page"
+      ? {
+        captureMode: "full-page",
+        documentWidth: capture.documentWidth,
+        documentHeight: capture.documentHeight
+      }
+      : {})
   };
 }
 
 export function captureElementTree(inputRoot, viewport, options = {}) {
   const timestamp = options.captureTimestamp ?? new Date().toISOString();
-  const root = normalizeElement(inputRoot, "dom-1", viewport, true, {
+  const captureBounds = options.captureBounds ?? { width: viewport.width, height: viewport.height };
+  const isFullPage = options.captureMode === "full-page";
+  const root = normalizeElement(inputRoot, "dom-1", captureBounds, true, {
     clipToViewport: options.clipToViewport !== false
   });
 
@@ -111,6 +120,13 @@ export function captureElementTree(inputRoot, viewport, options = {}) {
       scrollX: viewport.scrollX ?? 0,
       scrollY: viewport.scrollY ?? 0
     },
+    ...(isFullPage
+      ? {
+        captureMode: "full-page",
+        documentWidth: captureBounds.width,
+        documentHeight: captureBounds.height
+      }
+      : {}),
     root
   };
 }
@@ -124,13 +140,17 @@ export function captureVisibleViewportFromDocument(documentRef = globalThis.docu
     scrollY: windowRef.scrollY || 0
   };
   const rootElement = documentRef.body ?? documentRef.documentElement;
-  const rawRoot = snapshotDomElement(rootElement, documentRef, windowRef);
+  const rawRoot = snapshotDomElement(rootElement, documentRef, windowRef, null, {
+    openOrClosedShadowRoot: options.openOrClosedShadowRoot
+  });
 
   return captureElementTree(rawRoot, viewport, {
     sourceUrl: documentRef.location?.href ?? windowRef.location?.href ?? "about:blank",
     title: documentRef.title ?? "",
     captureTimestamp: options.captureTimestamp,
-    deviceLabel: options.deviceLabel
+    deviceLabel: options.deviceLabel,
+    captureMode: options.captureMode,
+    captureBounds: options.captureBounds
   });
 }
 
@@ -204,7 +224,7 @@ function normalizeElement(element, sourceNodeId, viewport, forceInclude = false,
   };
 }
 
-function snapshotDomElement(element, documentRef, windowRef, containingBlockRect = null) {
+function snapshotDomElement(element, documentRef, windowRef, containingBlockRect = null, options = {}) {
   const computed = windowRef.getComputedStyle(element);
   const rect = normalizeRect(element.getBoundingClientRect());
   const attributes = {};
@@ -227,6 +247,9 @@ function snapshotDomElement(element, documentRef, windowRef, containingBlockRect
       attributes.canvasDataUrl = canvasDataUrl;
     }
   }
+  if (isClosedShadowHost(element, tagName, options)) {
+    attributes["data-closed-shadow-root"] = "true";
+  }
 
   const styles = pickStyles(computed);
   addPlaceholderMetadata(element, tagName, attributes, styles, windowRef);
@@ -242,10 +265,119 @@ function snapshotDomElement(element, documentRef, windowRef, containingBlockRect
     styles,
     attributes,
     children: [
-      ...Array.from(element.children ?? []).map((child) => snapshotDomElement(child, documentRef, windowRef, nextContainingBlockRect)),
+      ...renderedChildEntries(element, options)
+        .map((entry) => entry.slot
+          ? snapshotSlottedTextNode(entry.textNode, entry.slot, documentRef, windowRef)
+          : snapshotDomElement(entry.element, documentRef, windowRef, nextContainingBlockRect, options))
+        .filter(Boolean),
       ...snapshotPseudoElements(element, rect, nextContainingBlockRect, windowRef)
     ]
   };
+}
+
+function renderedChildEntries(element, options = {}) {
+  const shadowRoot = accessibleShadowRoot(element, options);
+  const baseChildren = shadowRoot ? shadowRoot.children : element.children;
+  const entries = [];
+  for (const child of Array.from(baseChildren ?? [])) {
+    expandRenderedChild(child, entries);
+  }
+  return entries;
+}
+
+function expandRenderedChild(child, entries) {
+  if (String(child.tagName ?? "").toLowerCase() !== "slot") {
+    entries.push({ element: child });
+    return;
+  }
+
+  const assigned = assignedSlotNodes(child);
+  if (assigned.length > 0) {
+    for (const node of assigned) {
+      if (node.nodeType === 1 || (node.nodeType === undefined && node.tagName)) {
+        entries.push({ element: node });
+      } else if (node.nodeType === 3 && String(node.textContent ?? "").trim().length > 0) {
+        entries.push({ textNode: node, slot: child });
+      }
+    }
+    return;
+  }
+
+  for (const fallbackChild of Array.from(child.children ?? [])) {
+    expandRenderedChild(fallbackChild, entries);
+  }
+}
+
+function assignedSlotNodes(slot) {
+  try {
+    if (typeof slot.assignedNodes === "function") {
+      return Array.from(slot.assignedNodes({ flatten: true }) ?? []);
+    }
+    if (typeof slot.assignedElements === "function") {
+      return Array.from(slot.assignedElements({ flatten: true }) ?? []);
+    }
+  } catch {
+    return [];
+  }
+  return [];
+}
+
+function accessibleShadowRoot(element, options = {}) {
+  if (element.shadowRoot) {
+    return element.shadowRoot;
+  }
+  if (typeof options.openOrClosedShadowRoot === "function") {
+    try {
+      return options.openOrClosedShadowRoot(element) ?? null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function isClosedShadowHost(element, tagName, options) {
+  return tagName.includes("-") &&
+    !accessibleShadowRoot(element, options) &&
+    Array.from(element.children ?? []).length === 0;
+}
+
+function snapshotSlottedTextNode(textNode, slot, documentRef, windowRef) {
+  const rect = slottedTextRect(textNode, documentRef);
+  if (!rect || rect.width <= 0 || rect.height <= 0) {
+    return null;
+  }
+  const styles = slotComputedStyles(slot, windowRef);
+  return {
+    tagName: "#slotted-text",
+    nodeType: "text",
+    textContent: normalizeDirectTextContent(textNode.textContent ?? "", styles.whiteSpace),
+    rect,
+    styles,
+    attributes: { "data-slotted-text": "true" },
+    children: []
+  };
+}
+
+function slottedTextRect(textNode, documentRef) {
+  try {
+    if (typeof documentRef?.createRange !== "function") {
+      return null;
+    }
+    const range = documentRef.createRange();
+    range.selectNode(textNode);
+    return normalizeRect(range.getBoundingClientRect());
+  } catch {
+    return null;
+  }
+}
+
+function slotComputedStyles(slot, windowRef) {
+  try {
+    return pickStyles(windowRef.getComputedStyle(slot));
+  } catch {
+    return {};
+  }
 }
 
 function snapshotPseudoElements(element, ownerRect, containingBlockRect, windowRef) {

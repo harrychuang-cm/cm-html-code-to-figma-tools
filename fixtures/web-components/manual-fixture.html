@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Web Components Capture Fixture</title>
+    <style>
+      body {
+        margin: 0;
+        font-family: "Helvetica Neue", Arial, sans-serif;
+        background: rgb(245, 246, 248);
+        color: rgb(17, 24, 39);
+      }
+      main {
+        padding: 24px;
+        display: grid;
+        gap: 24px;
+        max-width: 720px;
+      }
+      h1 {
+        font-size: 20px;
+        margin: 0;
+      }
+      .light-note {
+        font-size: 13px;
+        color: rgb(107, 114, 128);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Web Components capture fixture</h1>
+      <p class="light-note">三個區塊依序為:open shadow root、slot 投影(具名/預設/文字)、closed shadow root。</p>
+
+      <open-widget></open-widget>
+
+      <slotted-card>
+        <h2 slot="title">投影的卡片標題</h2>
+        投影的純文字內容
+      </slotted-card>
+
+      <closed-widget></closed-widget>
+    </main>
+
+    <script>
+      class OpenWidget extends HTMLElement {
+        constructor() {
+          super();
+          const root = this.attachShadow({ mode: "open" });
+          root.innerHTML = `
+            <style>
+              .panel { background: rgb(255, 255, 255); border-radius: 8px; padding: 16px; box-shadow: 0 1px 4px rgba(0,0,0,0.12); }
+              .panel h2 { margin: 0 0 8px; font-size: 16px; }
+              .panel button { background: rgb(37, 99, 235); color: rgb(255, 255, 255); border: none; border-radius: 6px; padding: 8px 16px; font-size: 14px; }
+            </style>
+            <div class="panel">
+              <h2>Open shadow root 區塊</h2>
+              <p>這段文字位於 open shadow root 內,應出現在截取結果中。</p>
+              <button aria-label="開始">開始</button>
+            </div>
+          `;
+        }
+      }
+
+      class SlottedCard extends HTMLElement {
+        constructor() {
+          super();
+          const root = this.attachShadow({ mode: "open" });
+          root.innerHTML = `
+            <style>
+              .card { background: rgb(255, 255, 255); border-radius: 8px; padding: 16px; border: 1px solid rgb(229, 231, 235); }
+              header { border-bottom: 1px solid rgb(229, 231, 235); padding-bottom: 8px; margin-bottom: 8px; }
+              .body { font-size: 14px; line-height: 1.6; }
+            </style>
+            <div class="card">
+              <header><slot name="title"><span>預設標題</span></slot></header>
+              <div class="body"><slot>預設內文</slot></div>
+            </div>
+          `;
+        }
+      }
+
+      class ClosedWidget extends HTMLElement {
+        constructor() {
+          super();
+          const root = this.attachShadow({ mode: "closed" });
+          root.innerHTML = `
+            <style>
+              .secret { background: rgb(17, 24, 39); color: rgb(255, 255, 255); border-radius: 8px; padding: 16px; font-size: 14px; }
+            </style>
+            <div class="secret">Closed shadow root 區塊 — 無法直接存取時應以截圖裁圖 fallback 呈現。</div>
+          `;
+        }
+      }
+
+      customElements.define("open-widget", OpenWidget);
+      customElements.define("slotted-card", SlottedCard);
+      customElements.define("closed-widget", ClosedWidget);
+    </script>
+  </body>
+</html>

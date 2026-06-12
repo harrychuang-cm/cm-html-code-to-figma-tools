@@ -33,13 +33,17 @@ export function captureVisualAssets(capture, options = {}) {
   const pendingAssets = [];
   const missingAssetIds = new Set();
 
-  function recordMissingAsset(node, assetName, reason, extra = {}) {
+  function recordMissingAssetDiagnostic(node, reason) {
     if (!missingAssetIds.has(node.sourceNodeId)) {
       diagnostics.counts.missingAssets += 1;
       diagnostics.missingAssets.push(node.sourceNodeId);
       missingAssetIds.add(node.sourceNodeId);
     }
     diagnostics.warnings.push(`${node.sourceNodeId}: ${reason}`);
+  }
+
+  function recordMissingAsset(node, assetName, reason, extra = {}) {
+    recordMissingAssetDiagnostic(node, reason);
     assets[assetName] = encodeJsonBytes({
       kind: "missing-visual-asset",
       sourceNodeId: node.sourceNodeId,
@@ -148,9 +152,15 @@ export function captureVisualAssets(capture, options = {}) {
         pendingAssets.push(Promise.resolve(fallbackBytes)
           .then((bytes) => {
             assets[fallbackName] = normalizeFallbackBytes(bytes);
+            if (isClosedShadowHostNode(node) && isTransparentPlaceholder(assets[fallbackName])) {
+              recordMissingAssetDiagnostic(node, "closed shadow root crop unavailable");
+            }
           }));
       } else {
         assets[fallbackName] = normalizeFallbackBytes(fallbackBytes);
+        if (isClosedShadowHostNode(node) && isTransparentPlaceholder(assets[fallbackName])) {
+          recordMissingAssetDiagnostic(node, "closed shadow root crop unavailable");
+        }
       }
       diagnostics.counts.fallbacks += 1;
       diagnostics.fallbackReasons.push({ sourceNodeId: node.sourceNodeId, reason });
@@ -190,7 +200,14 @@ export function needsRasterFallback(node) {
   if (FALLBACK_TAGS.has(node.tagName)) {
     return true;
   }
+  if (isClosedShadowHostNode(node)) {
+    return true;
+  }
   return node.tagName === "svg" && isComplexSvg(node);
+}
+
+export function isClosedShadowHostNode(node) {
+  return node.attributes?.["data-closed-shadow-root"] === "true";
 }
 
 function fallbackAssetBytes(node, options) {
@@ -242,6 +259,9 @@ function isPromiseLike(value) {
 }
 
 export function fallbackReason(node) {
+  if (isClosedShadowHostNode(node)) {
+    return "closed shadow root fallback";
+  }
   if (node.tagName === "canvas") {
     return "canvas fallback";
   }

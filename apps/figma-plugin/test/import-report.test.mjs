@@ -149,3 +149,50 @@ test("plugin UI renders font substitution details for debugging", () => {
   assert.equal(elements.get("font-substitution-count").textContent, "1");
   assert.equal(elements.get("font-substitution-summary").textContent, "Missing Webfont Bold Italic -> Available Sans Regular");
 });
+
+test("import report includes semantic naming statistics from the renderer", () => {
+  const packageData = createReportPackage();
+  const report = createImportReport(packageData, {
+    frames: [],
+    autoLayoutSummary: { appliedCount: 0, skippedCount: 0, averageConfidence: 0, skippedReasons: [] },
+    semanticNamingSummary: { semanticNames: 12, repeatedGroups: 2, collapsedWrappers: 5 }
+  });
+
+  assert.equal(report.semanticNamingSummary.semanticNames, 12);
+  assert.equal(report.semanticNamingSummary.repeatedGroups, 2);
+  assert.equal(report.semanticNamingSummary.collapsedWrappers, 5);
+});
+
+test("import report defaults missing semantic naming statistics to zero", () => {
+  const packageData = createReportPackage();
+  const report = createImportReport(packageData, {
+    frames: [],
+    autoLayoutSummary: { appliedCount: 0, skippedCount: 0, averageConfidence: 0, skippedReasons: [] }
+  });
+
+  assert.equal(report.semanticNamingSummary.semanticNames, 0);
+  assert.equal(report.semanticNamingSummary.repeatedGroups, 0);
+  assert.equal(report.semanticNamingSummary.collapsedWrappers, 0);
+});
+
+test("plugin UI renders semantic naming summary text", () => {
+  const elements = new Map([
+    ["import-report", { hidden: true }],
+    ["semantic-naming-summary", { textContent: "" }]
+  ]);
+  const documentRef = {
+    getElementById(id) {
+      return elements.get(id);
+    }
+  };
+  const packageData = createReportPackage();
+  const renderResult = renderThreeFrames(createMemoryFigmaAdapter(), packageData);
+  const report = createImportReport(packageData, renderResult);
+
+  renderImportReport(documentRef, report);
+
+  assert.match(elements.get("semantic-naming-summary").textContent, /^\d+ named \/ \d+ groups \/ \d+ collapsed$/);
+
+  renderImportReport(documentRef, { ...report, semanticNamingSummary: undefined, autoLayoutConfidenceSummary: report.autoLayoutConfidenceSummary });
+  assert.equal(elements.get("semantic-naming-summary").textContent, "0 named / 0 groups / 0 collapsed");
+});

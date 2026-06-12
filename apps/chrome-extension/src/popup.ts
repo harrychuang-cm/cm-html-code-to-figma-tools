@@ -13,7 +13,10 @@ export function connectPopup(documentRef = globalThis.document, chromeApi = glob
     setStatus(status, "Capturing active tab...");
     setDownloadEnabled(downloadButton, false);
     try {
-      const response = await chromeApi.runtime.sendMessage({ type: CAPTURE_ACTIVE_TAB_MESSAGE });
+      const response = await chromeApi.runtime.sendMessage({
+        type: CAPTURE_ACTIVE_TAB_MESSAGE,
+        captureMode: selectedCaptureMode(documentRef)
+      });
       if (response?.status === "error") {
         renderRuntimeError(documentRef, response.error);
         return;
@@ -74,6 +77,14 @@ export function renderCapturePreview(documentRef, preview) {
 
   setText(documentRef, "source-url", preview.sourceUrl ?? "");
   setText(documentRef, "viewport-size", viewportLabel(preview.viewport));
+  setText(documentRef, "capture-mode-label", preview.captureMode ?? "viewport");
+  setText(
+    documentRef,
+    "document-size",
+    preview.captureMode === "full-page" && preview.documentWidth && preview.documentHeight
+      ? `${preview.documentWidth} x ${preview.documentHeight}`
+      : "-"
+  );
   setText(documentRef, "fallback-count", String(summary.fallbackCount));
   setText(documentRef, "missing-asset-count", String(summary.missingAssetCount));
   setText(documentRef, "unsupported-style-count", String(summary.unsupportedStyleCount));
@@ -108,6 +119,11 @@ function setDownloadEnabled(downloadButton, enabled) {
   if (downloadButton) {
     downloadButton.disabled = !enabled;
   }
+}
+
+export function selectedCaptureMode(documentRef) {
+  const fullPageRadio = documentRef?.getElementById?.("capture-mode-full-page");
+  return fullPageRadio?.checked ? "full-page" : "viewport";
 }
 
 function viewportLabel(viewport = {}) {

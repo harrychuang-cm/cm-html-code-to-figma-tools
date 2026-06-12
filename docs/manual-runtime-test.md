@@ -1,6 +1,6 @@
 # Manual Runtime Test
 
-This checklist verifies the V1 runtime path: Chrome Extension capture of the current visible viewport, local `.figcapture` download, and Figma Plugin import into editable frames.
+This checklist verifies the V1 runtime path: Chrome Extension capture of the current visible viewport or the full page, local `.figcapture` download, and Figma Plugin import into editable frames.
 
 ## Prerequisites
 
@@ -115,6 +115,37 @@ Expected Figma result:
 - Risky containers remain ordinary nested frames with absolute child positions. Current skipped reasons include `complex-grid`, `fixed-or-sticky-layout`, `overlapping-layout`, `missing-bounds`, `one-child-container`, `out-of-bounds-child`, and `non-uniform-spacing`.
 - Auto layout applied/skipped counts are summarized in the report and are not emitted as a separate default frame in V1.
 
+## Full Page Capture Check
+
+Open the dashboard fixture again (it includes below-fold content), select `Full page` in the popup mode chooser, and click capture.
+
+Expected capture result:
+
+- The page scrolls to the bottom and back automatically, then returns to its original scroll position.
+- The popup preview shows `full-page` as the capture mode plus the document width and height, and the screenshot preview shows the entire page, not just the first viewport.
+- The downloaded `.figcapture` manifest contains `captureMode: "full-page"` with `documentWidth` and `documentHeight`; `capture.json` includes below-fold nodes with document-coordinate geometry.
+- Fixed or sticky headers appear once at the top of the stitched screenshot instead of repeating per segment.
+- Importing into Figma creates two frames sized to the document dimensions, with below-fold content present in `Editable Accurate`.
+- Capturing with `Visible viewport` selected still behaves exactly as before.
+- Pages taller than 20000 CSS pixels (or beyond 25 segments) are truncated, and `diagnostics.json` records a `full-page capture truncated` warning.
+
+## Web Components Fixture Check
+
+Open this URL in Chrome (with the same local server running):
+
+```text
+http://127.0.0.1:4177/fixtures/web-components/manual-fixture.html
+```
+
+The page renders three blocks: an open shadow root widget, a slotted card (named slot, default slot, and slotted plain text), and a closed shadow root widget. Capture the viewport and import the `.figcapture` into Figma.
+
+Expected capture and import result:
+
+- The open shadow root panel imports as editable layers: heading text, paragraph text, and the blue button are visible and editable inside the host frame.
+- The slotted card shows the projected title `投影的卡片標題` at the named slot position and the projected plain text `投影的純文字內容` in the body. No layer named after the `slot` element itself appears.
+- Removing the `slot="title"` element from the fixture and re-capturing shows the default `預設標題` content instead.
+- The closed shadow root block imports as editable layers when Chrome exposes `chrome.dom.openOrClosedShadowRoot` to the content script (the normal case in Chrome). In browsers or contexts without that API, the block imports instead as a raster fallback layer cropped from the viewport screenshot, `diagnostics.json` records the reason `closed shadow root fallback`, and when the crop APIs are also unavailable the import still succeeds with a missing asset diagnostic.
+
 ## Error Checks
 
 - Capturing a restricted Chrome page reports a readable runtime category instead of downloading.
@@ -123,9 +154,10 @@ Expected Figma result:
 
 ## V1 Limits
 
-- Visible viewport only.
 - No backend or cloud capture link.
-- No full-page capture.
+- Full page capture is limited to 20000 CSS pixels of document height and 25 segments; longer pages truncate with a diagnostics warning.
+- Dynamic content that changes while scrolling (carousels, refreshing ads) can differ slightly between the stitched screenshot and the captured DOM.
+- No horizontal segmentation for ultra-wide pages.
 - No multi-viewport batch capture.
 - No Figma variables.
 - No Figma components.

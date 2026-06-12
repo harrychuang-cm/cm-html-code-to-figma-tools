@@ -129,15 +129,17 @@
     var accurateFrame = frames[1];
     var layoutModels = createEditableLayoutNodeModels(packageData);
     var autoLayoutSummary = summarizeAutoLayoutModels(layoutModels);
+    var semanticNamingSummary = summarizeSemanticNamingModels(layoutModels);
     var fontPromises = [];
     var fontSubstitutions = [];
     var index;
 
+    var frameSize = captureFrameSize(packageData.manifest);
     sourceFrame.appendChild(createImageNode("Source screenshot", packageData.screenshot, {
       x: 0,
       y: 0,
-      width: packageData.manifest.viewportWidth,
-      height: packageData.manifest.viewportHeight
+      width: frameSize.width,
+      height: frameSize.height
     }, true, null, null));
 
     for (index = 0; index < layoutModels.length; index += 1) {
@@ -149,17 +151,31 @@
         frames: frames,
         layoutModels: layoutModels,
         autoLayoutSummary: autoLayoutSummary,
+        semanticNamingSummary: semanticNamingSummary,
         autoLayoutFrameEnabled: false,
         fontSubstitutions: fontSubstitutions
       };
     });
   }
 
+  function captureFrameSize(manifest) {
+    var safeManifest = manifest || {};
+    if (
+      safeManifest.captureMode === "full-page" &&
+      safeManifest.documentWidth > 0 &&
+      safeManifest.documentHeight > 0
+    ) {
+      return { width: safeManifest.documentWidth, height: safeManifest.documentHeight };
+    }
+    return { width: safeManifest.viewportWidth, height: safeManifest.viewportHeight };
+  }
+
   function createFrames(packageData) {
     var roles = ["Source Screenshot", "Editable Accurate"];
     var title = packageData.capture.title || titleFromUrl(packageData.manifest.sourceUrl);
-    var width = packageData.manifest.viewportWidth;
-    var height = packageData.manifest.viewportHeight;
+    var frameSize = captureFrameSize(packageData.manifest);
+    var width = frameSize.width;
+    var height = frameSize.height;
     var frames = [];
     var index;
 
@@ -1163,7 +1179,568 @@
       backdropColor: null,
       clippedAncestor: false
     });
-    return rootModel ? [rootModel] : [];
+    var semanticNaming;
+    if (!rootModel) {
+      return [];
+    }
+    try {
+      semanticNaming = createSemanticNameMap(packageData.capture.root, packageData.capture.viewport);
+      rootModel.semanticNamingSummary = {
+        semanticNames: applySemanticNamesToModels(rootModel, semanticNaming.names),
+        repeatedGroups: semanticNaming.repeatedGroupCount,
+        collapsedWrappers: collapseNonVisualWrappers(rootModel, semanticNaming.names)
+      };
+    } catch (error) {
+      rootModel.semanticNamingSummary = { semanticNames: 0, repeatedGroups: 0, collapsedWrappers: 0 };
+    }
+    return [rootModel];
+  }
+
+  function summarizeSemanticNamingModels(models) {
+    var summary = models && models[0] && models[0].semanticNamingSummary || {};
+    return {
+      semanticNames: summary.semanticNames || 0,
+      repeatedGroups: summary.repeatedGroups || 0,
+      collapsedWrappers: summary.collapsedWrappers || 0
+    };
+  }
+
+  var SEMANTIC_TAG_NAMES = {
+    header: "Header",
+    footer: "Footer",
+    nav: "Navigation",
+    aside: "Sidebar",
+    main: "Main",
+    section: "Section",
+    article: "Article",
+    form: "Form",
+    button: "Button",
+    table: "Table",
+    thead: "Table Head",
+    tbody: "Table Body",
+    tr: "Table Row",
+    ul: "List",
+    ol: "List",
+    li: "List Item",
+    a: "Link",
+    input: "Input",
+    select: "Select",
+    textarea: "Text Area",
+    label: "Label",
+    h1: "Heading",
+    h2: "Heading",
+    h3: "Heading",
+    h4: "Heading",
+    h5: "Heading",
+    h6: "Heading",
+    dialog: "Modal",
+    figure: "Figure",
+    img: "Image",
+    video: "Video"
+  };
+
+  var SEMANTIC_ARIA_ROLE_NAMES = {
+    banner: "Header",
+    navigation: "Navigation",
+    contentinfo: "Footer",
+    complementary: "Sidebar",
+    main: "Main",
+    search: "Search",
+    form: "Form",
+    region: "Section",
+    button: "Button",
+    tab: "Tab",
+    tablist: "Tab List",
+    dialog: "Modal",
+    menu: "Menu",
+    menuitem: "Menu Item",
+    menubar: "Menu Bar",
+    listbox: "List",
+    list: "List",
+    listitem: "List Item",
+    checkbox: "Checkbox",
+    radio: "Radio",
+    switch: "Switch",
+    textbox: "Input",
+    toolbar: "Toolbar",
+    tooltip: "Tooltip",
+    alert: "Alert",
+    progressbar: "Progress Bar"
+  };
+
+  var SEMANTIC_CLASS_TOKEN_NAMES = {
+    btn: "Button",
+    button: "Button",
+    card: "Card",
+    nav: "Navigation",
+    navbar: "Navigation",
+    menu: "Navigation",
+    modal: "Modal",
+    dialog: "Modal",
+    popup: "Modal",
+    badge: "Badge",
+    tag: "Badge",
+    chip: "Badge",
+    avatar: "Avatar",
+    icon: "Icon",
+    header: "Header",
+    footer: "Footer",
+    sidebar: "Sidebar",
+    aside: "Sidebar",
+    tab: "Tab",
+    tooltip: "Tooltip",
+    banner: "Hero",
+    hero: "Hero",
+    form: "Form",
+    search: "Search",
+    list: "List",
+    item: "List Item",
+    title: "Heading",
+    heading: "Heading",
+    logo: "Logo"
+  };
+
+  var SEMANTIC_LABEL_SUFFIX_NAMES = {
+    Button: true,
+    Tab: true,
+    Link: true,
+    Heading: true,
+    "Menu Item": true
+  };
+
+  function createSemanticNameMap(root, viewport) {
+    var names = {};
+    var repeatedGroupCount = 0;
+    var context = { viewport: viewport || null };
+
+    try {
+      walkCaptureNodes(root, function (node) {
+        var overrides = annotateRepeatedSiblingGroups(node.children || [], context);
+        var sourceNodeId;
+        var name;
+        repeatedGroupCount += countDistinctSemanticGroups(overrides);
+        for (sourceNodeId in overrides) {
+          if (Object.prototype.hasOwnProperty.call(overrides, sourceNodeId)) {
+            names[sourceNodeId] = overrides[sourceNodeId];
+          }
+        }
+        if (!Object.prototype.hasOwnProperty.call(names, node.sourceNodeId)) {
+          name = semanticNameForNode(node, context);
+          if (name) {
+            names[node.sourceNodeId] = name;
+          }
+        }
+      });
+    } catch (error) {
+      return { names: {}, repeatedGroupCount: 0 };
+    }
+
+    return { names: names, repeatedGroupCount: repeatedGroupCount };
+  }
+
+  function semanticNameForNode(node, context) {
+    try {
+      return deriveSemanticName(node, context || {});
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function deriveSemanticName(node, context) {
+    var tagName;
+    var role;
+    var baseName;
+    var heuristicName;
+
+    if (!node || node.nodeType === "pseudo" || node.nodeType === "text") {
+      return null;
+    }
+
+    tagName = normalizeCssKeyword(node.tagName);
+    baseName = SEMANTIC_TAG_NAMES[tagName];
+    if (baseName) {
+      return withSemanticLabelSuffix(baseName, node);
+    }
+
+    role = normalizeCssKeyword(node.attributes && node.attributes.role);
+    baseName = SEMANTIC_ARIA_ROLE_NAMES[role];
+    if (baseName) {
+      return withSemanticLabelSuffix(baseName, node);
+    }
+
+    heuristicName = geometricHeuristicName(node, context.viewport);
+    if (heuristicName) {
+      return heuristicName;
+    }
+
+    baseName = semanticClassTokenName(node.attributes && node.attributes.class);
+    if (baseName) {
+      return withSemanticLabelSuffix(baseName, node);
+    }
+
+    return null;
+  }
+
+  function withSemanticLabelSuffix(baseName, node) {
+    var label;
+    if (baseName === "Image" || baseName === "Video") {
+      label = normalizeSemanticLabel(node.attributes && (node.attributes.alt || node.attributes["aria-label"]));
+      return label ? baseName + " / " + label : baseName;
+    }
+    if (baseName === "Input" || baseName === "Select" || baseName === "Text Area") {
+      label = normalizeSemanticLabel(node.attributes && node.attributes.placeholder);
+      return label ? baseName + " / " + label : baseName;
+    }
+    if (!SEMANTIC_LABEL_SUFFIX_NAMES[baseName]) {
+      return baseName;
+    }
+    label = normalizeSemanticLabel(node.attributes && node.attributes["aria-label"]) || singleLineSubtreeText(node, 0);
+    return label ? baseName + " / " + label : baseName;
+  }
+
+  function normalizeSemanticLabel(value) {
+    var label = String(value || "").replace(/\s+/g, " ").replace(/^\s+|\s+$/g, "");
+    if (!label || label.indexOf("\n") !== -1) {
+      return "";
+    }
+    return label.slice(0, 32);
+  }
+
+  function singleLineSubtreeText(node, depth) {
+    var direct;
+    var index;
+    var childText;
+    var children;
+    if (!node || depth > 4) {
+      return "";
+    }
+    direct = String(node.textContent || "").replace(/^\s+|\s+$/g, "");
+    if (direct) {
+      return direct.indexOf("\n") === -1 ? direct.slice(0, 32) : "";
+    }
+    children = node.children || [];
+    for (index = 0; index < children.length; index += 1) {
+      if (children[index].nodeType === "pseudo") {
+        continue;
+      }
+      childText = singleLineSubtreeText(children[index], depth + 1);
+      if (childText) {
+        return childText;
+      }
+    }
+    return "";
+  }
+
+  function geometricHeuristicName(node, viewport) {
+    var rect = node.rect;
+    var wideEnough;
+    var shortEnough;
+    if (!rect || (node.children || []).length === 0) {
+      return null;
+    }
+
+    if (viewport && viewport.width > 0 && viewport.height > 0) {
+      wideEnough = rect.width >= viewport.width * 0.9;
+      shortEnough = rect.height > 0 && rect.height <= viewport.height * 0.25;
+      if (wideEnough && shortEnough && rect.y <= 2) {
+        return "Header";
+      }
+      if (wideEnough && shortEnough && rect.y + rect.height >= viewport.height - 2) {
+        return "Footer";
+      }
+    }
+
+    if (
+      visibleColor(node.styles && node.styles.backgroundColor) &&
+      (semanticMaxCornerRadius(node.styles) >= 4 || visibleShadow(node.styles && node.styles.boxShadow)) &&
+      countSemanticRenderableChildren(node) >= 2
+    ) {
+      return "Card";
+    }
+
+    return null;
+  }
+
+  function semanticClassTokenName(className) {
+    var tokens = semanticClassTokens(className);
+    var index;
+    for (index = 0; index < tokens.length; index += 1) {
+      if (SEMANTIC_CLASS_TOKEN_NAMES[tokens[index]]) {
+        return SEMANTIC_CLASS_TOKEN_NAMES[tokens[index]];
+      }
+    }
+    return null;
+  }
+
+  function semanticClassTokens(className) {
+    return String(className || "")
+      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(function (token) {
+        return Boolean(token);
+      });
+  }
+
+  function annotateRepeatedSiblingGroups(children, context) {
+    var overrides = {};
+    try {
+      collectRepeatedGroupOverrides(children || [], context || {}, overrides);
+    } catch (error) {
+      return {};
+    }
+    return overrides;
+  }
+
+  function collectRepeatedGroupOverrides(children, context, overrides) {
+    var groups = {};
+    var index;
+    var child;
+    var signature;
+    var key;
+    var members;
+    var baseName;
+    var ordered;
+
+    for (index = 0; index < children.length; index += 1) {
+      child = children[index];
+      if (!child || child.nodeType !== "element" || !child.sourceNodeId) {
+        continue;
+      }
+      signature = semanticStructuralSignature(child);
+      if (!groups[signature]) {
+        groups[signature] = [];
+      }
+      groups[signature].push(child);
+    }
+
+    for (key in groups) {
+      if (!Object.prototype.hasOwnProperty.call(groups, key)) {
+        continue;
+      }
+      members = groups[key];
+      if (members.length < 2) {
+        continue;
+      }
+      baseName = semanticNameForNode(members[0], context);
+      if (!baseName) {
+        continue;
+      }
+      baseName = baseName.split(" / ")[0];
+      ordered = members.slice().sort(bySemanticVisualOrder);
+      for (index = 0; index < ordered.length; index += 1) {
+        overrides[ordered[index].sourceNodeId] = baseName + " " + (index + 1);
+      }
+    }
+  }
+
+  function semanticStructuralSignature(node) {
+    var tokens = semanticClassTokens(node.attributes && node.attributes.class);
+    var unique = {};
+    var deduped = [];
+    var childTags = [];
+    var children = node.children || [];
+    var index;
+    for (index = 0; index < tokens.length; index += 1) {
+      if (!unique[tokens[index]]) {
+        unique[tokens[index]] = true;
+        deduped.push(tokens[index]);
+      }
+    }
+    deduped.sort();
+    for (index = 0; index < children.length; index += 1) {
+      if (children[index].nodeType === "element") {
+        childTags.push(normalizeCssKeyword(children[index].tagName));
+      }
+    }
+    return normalizeCssKeyword(node.tagName) + "|" + deduped.join(".") + "|" + childTags.join(",");
+  }
+
+  function bySemanticVisualOrder(a, b) {
+    var ay = a.rect && a.rect.y || 0;
+    var by = b.rect && b.rect.y || 0;
+    if (Math.abs(ay - by) > 1) {
+      return ay - by;
+    }
+    return (a.rect && a.rect.x || 0) - (b.rect && b.rect.x || 0);
+  }
+
+  function countDistinctSemanticGroups(overrides) {
+    var baseNames = {};
+    var count = 0;
+    var key;
+    var base;
+    for (key in overrides) {
+      if (Object.prototype.hasOwnProperty.call(overrides, key)) {
+        base = overrides[key].replace(/ \d+$/, "");
+        if (!baseNames[base]) {
+          baseNames[base] = true;
+          count += 1;
+        }
+      }
+    }
+    return count;
+  }
+
+  function countSemanticRenderableChildren(node) {
+    var children = node.children || [];
+    var count = 0;
+    var index;
+    var child;
+    for (index = 0; index < children.length; index += 1) {
+      child = children[index];
+      if (
+        child.textContent ||
+        child.assetRef ||
+        child.fallbackRef ||
+        (child.children || []).length > 0 ||
+        visibleColor(child.styles && child.styles.backgroundColor)
+      ) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  function semanticMaxCornerRadius(styles) {
+    var safeStyles = styles || {};
+    return Math.max(
+      numberFromCss(safeStyles.borderTopLeftRadius),
+      numberFromCss(safeStyles.borderTopRightRadius),
+      numberFromCss(safeStyles.borderBottomRightRadius),
+      numberFromCss(safeStyles.borderBottomLeftRadius)
+    );
+  }
+
+  function walkCaptureNodes(node, visit) {
+    var children;
+    var index;
+    if (!node) {
+      return;
+    }
+    visit(node);
+    children = node.children || [];
+    for (index = 0; index < children.length; index += 1) {
+      walkCaptureNodes(children[index], visit);
+    }
+  }
+
+  function applySemanticNamesToModels(rootModel, names) {
+    var consumed = {};
+    var renamed = 0;
+
+    function visit(model) {
+      var children = model.children || [];
+      var index;
+      if (
+        model.sourceNodeId &&
+        Object.prototype.hasOwnProperty.call(names, model.sourceNodeId) &&
+        !consumed[model.sourceNodeId]
+      ) {
+        consumed[model.sourceNodeId] = true;
+        model.name = names[model.sourceNodeId];
+        renamed += 1;
+      }
+      for (index = 0; index < children.length; index += 1) {
+        visit(children[index]);
+      }
+    }
+
+    visit(rootModel);
+    return renamed;
+  }
+
+  function collapseNonVisualWrappers(rootModel, semanticNames) {
+    var collapsedCount = 0;
+
+    function collapseChildren(parent) {
+      var children = parent.children || [];
+      var index;
+      var child;
+      var grandchild;
+      var replacement;
+      for (index = 0; index < children.length; index += 1) {
+        child = children[index];
+        while (shouldCollapseWrapper(child, parent, semanticNames)) {
+          grandchild = child.children[0];
+          replacement = {};
+          for (var key in grandchild) {
+            if (Object.prototype.hasOwnProperty.call(grandchild, key)) {
+              replacement[key] = grandchild[key];
+            }
+          }
+          replacement.rect = {
+            x: round(child.rect.x + grandchild.rect.x),
+            y: round(child.rect.y + grandchild.rect.y),
+            width: grandchild.rect.width,
+            height: grandchild.rect.height
+          };
+          children[index] = replacement;
+          child = replacement;
+          collapsedCount += 1;
+        }
+        collapseChildren(child);
+      }
+    }
+
+    collapseChildren(rootModel);
+    return collapsedCount;
+  }
+
+  function shouldCollapseWrapper(model, parent, semanticNames) {
+    var child;
+    if (!model || model.type !== "FRAME" || (model.children || []).length !== 1) {
+      return false;
+    }
+    if (model.assetRef || model.fallbackReason || model.clipsContent) {
+      return false;
+    }
+    if ((model.autoLayout && model.autoLayout.applied) || (parent.autoLayout && parent.autoLayout.applied)) {
+      return false;
+    }
+    if (semanticNames && Object.prototype.hasOwnProperty.call(semanticNames, model.sourceNodeId)) {
+      return false;
+    }
+    if (hasModelVisualStyle(model.style) || hasCollapseBlockingStyles(model.styles)) {
+      return false;
+    }
+    child = model.children[0];
+    if (!child || sharesSourceIdentity(model, child)) {
+      return false;
+    }
+    return rectsMatchWithinTolerance(model.absoluteRect, child.absoluteRect, 1);
+  }
+
+  function sharesSourceIdentity(model, child) {
+    return Boolean(
+      child.sourceNodeId &&
+      model.sourceNodeId &&
+      (child.sourceNodeId === model.sourceNodeId ||
+        child.sourceNodeId.indexOf(model.sourceNodeId + "::") === 0)
+    );
+  }
+
+  function hasCollapseBlockingStyles(styles) {
+    var safeStyles = styles || {};
+    var opacity = safeStyles.opacity === undefined ? 1 : parseFloat(safeStyles.opacity);
+    var transform = String(safeStyles.transform || "").replace(/^\s+|\s+$/g, "");
+    if (isFinite(opacity) && opacity < 1) {
+      return true;
+    }
+    if (transform && transform !== "none") {
+      return true;
+    }
+    return /gradient\(/i.test(String(safeStyles.backgroundImage || ""));
+  }
+
+  function rectsMatchWithinTolerance(a, b, tolerance) {
+    if (!a || !b) {
+      return false;
+    }
+    return Math.abs(a.x - b.x) <= tolerance &&
+      Math.abs(a.y - b.y) <= tolerance &&
+      Math.abs(a.width - b.width) <= tolerance &&
+      Math.abs(a.height - b.height) <= tolerance;
   }
 
   function createFallbackReasonLookup(packageData) {
@@ -3836,6 +4413,7 @@
       averageConfidence: 0,
       skippedReasons: []
     };
+    var semanticNamingSummary = renderResult.semanticNamingSummary || {};
     return {
       createdFrameCount: renderResult.frames.length,
       createdNodeCount: countNodes(renderResult.frames),
@@ -3843,7 +4421,12 @@
       missingAssetCount: counts.missingAssets || 0,
       unsupportedStyleCount: counts.unsupportedStyles || 0,
       fontSubstitutions: renderResult.fontSubstitutions || [],
-      autoLayoutConfidenceSummary: autoLayoutSummary
+      autoLayoutConfidenceSummary: autoLayoutSummary,
+      semanticNamingSummary: {
+        semanticNames: semanticNamingSummary.semanticNames || 0,
+        repeatedGroups: semanticNamingSummary.repeatedGroups || 0,
+        collapsedWrappers: semanticNamingSummary.collapsedWrappers || 0
+      }
     };
   }
 

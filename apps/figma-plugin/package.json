@@ -1,6 +1,6 @@
 {
   "name": "@figma-capture/figma-plugin",
-  "version": "0.1.15",
+  "version": "0.1.30",
   "type": "module",
   "main": "dist/code.js",
   "scripts": {

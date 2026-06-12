@@ -3,7 +3,8 @@ import test from "node:test";
 import { createValidPackage } from "../../../packages/capture-schema/fixtures/valid-package.mjs";
 import {
   createEditableLayoutNodeModels,
-  summarizeAutoLayoutModels
+  summarizeAutoLayoutModels,
+  summarizeSemanticNamingModels
 } from "../dist/layout-tree.js";
 
 function node(sourceNodeId, tagName, rect, options = {}) {
@@ -264,15 +265,15 @@ test("transparent transformed carousel track uses visible child bounds", () => {
 
   const model = createEditableLayoutNodeModels(packageWithRoot(carousel))[0];
   const [track] = model.children;
-  const [slide] = track.children;
-  const [image] = slide.children;
+  const [image] = track.children;
 
   assert.equal(model.clipsContent, true);
   assert.deepEqual(track.rect, { x: 0, y: 0, width: 390, height: 93.75 });
   assert.deepEqual(track.absoluteRect, { x: 0, y: 159, width: 390, height: 93.75 });
-  assert.deepEqual(slide.rect, { x: 0, y: 0, width: 390, height: 93.75 });
   assert.equal(image.type, "IMAGE");
+  assert.equal(image.sourceNodeId, "dom-carousel-image");
   assert.deepEqual(image.rect, { x: 0, y: 0, width: 390, height: 93.75 });
+  assert.deepEqual(image.absoluteRect, { x: 0, y: 159, width: 390, height: 93.75 });
 });
 
 test("space-between flex column preserves inferred padding", () => {
@@ -2173,4 +2174,128 @@ test("max-height overflow text containers clip overflowing read-more lines", () 
   assert.equal(model.rect.height, 81);
   assert(model.children.some((child) => child.sourceNodeId === "dom-readmore-line-4"));
   assert(model.children.some((child) => child.rect.y >= 81));
+});
+
+test("semantic tags produce readable layer names in the layout tree", () => {
+  const root = node("dom-root", "body", { x: 0, y: 0, width: 1440, height: 900 }, {
+    children: [
+      node("dom-header", "header", { x: 0, y: 0, width: 1440, height: 64 }, {
+        styles: { backgroundColor: "rgb(255, 255, 255)" },
+        children: [
+          node("dom-nav", "nav", { x: 32, y: 12, width: 400, height: 40 }, {
+            styles: { backgroundColor: "rgb(247, 247, 247)" }
+          })
+        ]
+      }),
+      node("dom-login", "button", { x: 1300, y: 16, width: 80, height: 32 }, {
+        textContent: "登入",
+        styles: { fontSize: "14px", color: "rgb(17, 24, 39)" }
+      }),
+      node("dom-footer", "footer", { x: 0, y: 836, width: 1440, height: 64 }, {
+        styles: { backgroundColor: "rgb(17, 24, 39)" }
+      })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(root))[0];
+
+  const names = model.children.map((child) => child.name);
+  assert.ok(names.includes("Header"), `expected Header in ${JSON.stringify(names)}`);
+  assert.ok(names.includes("Button / 登入"), `expected Button / 登入 in ${JSON.stringify(names)}`);
+  assert.ok(names.includes("Footer"), `expected Footer in ${JSON.stringify(names)}`);
+  const header = model.children.find((child) => child.name === "Header");
+  assert.equal(header.children[0].name, "Navigation");
+});
+
+test("repeated sibling cards are numbered in visual order", () => {
+  const card = (id, x) => node(id, "div", { x, y: 200, width: 200, height: 180 }, {
+    attributes: { class: "card" },
+    styles: { backgroundColor: "rgb(255, 255, 255)" },
+    children: [
+      text(`${id}-title`, "標題", { x: x + 16, y: 216, width: 80, height: 20 })
+    ]
+  });
+  const root = node("dom-root", "body", { x: 0, y: 0, width: 1440, height: 900 }, {
+    children: [card("dom-card-a", 20), card("dom-card-b", 240)]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(root))[0];
+
+  assert.equal(model.children[0].name, "Card 1");
+  assert.equal(model.children[1].name, "Card 2");
+});
+
+test("transparent same-size wrapper collapses and keeps child absolute rect", () => {
+  const inner = node("dom-inner", "div", { x: 100, y: 100, width: 300, height: 200 }, {
+    styles: { backgroundColor: "rgb(255, 0, 0)" },
+    children: [text("dom-label", "內容", { x: 116, y: 116, width: 60, height: 20 })]
+  });
+  const wrapper = node("dom-wrapper", "div", { x: 100, y: 100, width: 300, height: 200 }, {
+    children: [inner]
+  });
+  const root = node("dom-root", "body", { x: 0, y: 0, width: 1440, height: 900 }, {
+    children: [
+      wrapper,
+      text("dom-other", "其他", { x: 500, y: 100, width: 60, height: 20 })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(root))[0];
+
+  const collapsed = model.children.find((child) => child.sourceNodeId === "dom-inner");
+  assert.ok(collapsed, "expected wrapper to collapse into dom-inner");
+  assert.equal(model.children.some((child) => child.sourceNodeId === "dom-wrapper"), false);
+  assert.deepEqual(collapsed.absoluteRect, { x: 100, y: 100, width: 300, height: 200 });
+  assert.deepEqual(collapsed.rect, { x: 100, y: 100, width: 300, height: 200 });
+  assert.deepEqual(summarizeSemanticNamingModels([model]).collapsedWrappers >= 1, true);
+});
+
+test("semantic nav wrapper is preserved instead of collapsed", () => {
+  const inner = node("dom-menu", "div", { x: 0, y: 0, width: 600, height: 40 }, {
+    styles: { backgroundColor: "rgb(247, 247, 247)" }
+  });
+  const navWrapper = node("dom-nav", "nav", { x: 0, y: 0, width: 600, height: 40 }, {
+    children: [inner]
+  });
+  const root = node("dom-root", "body", { x: 0, y: 0, width: 1440, height: 900 }, {
+    children: [
+      navWrapper,
+      text("dom-other", "其他", { x: 700, y: 10, width: 60, height: 20 })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(root))[0];
+
+  const nav = model.children.find((child) => child.sourceNodeId === "dom-nav");
+  assert.ok(nav, "expected nav wrapper to be preserved");
+  assert.equal(nav.name, "Navigation");
+  assert.equal(nav.children[0].sourceNodeId, "dom-menu");
+});
+
+test("direct children of applied auto layout frames are not collapsed", () => {
+  const wrapped = (id, x) => node(id, "div", { x, y: 10, width: 60, height: 20 }, {
+    children: [text(`${id}-text`, "項目", { x, y: 10, width: 60, height: 20 })]
+  });
+  const row = node("dom-row", "div", { x: 0, y: 0, width: 400, height: 40 }, {
+    styles: {
+      display: "flex",
+      flexDirection: "row",
+      gap: "20px",
+      alignItems: "center",
+      paddingTop: "10px",
+      paddingBottom: "10px"
+    },
+    children: [wrapped("dom-item-a", 0), wrapped("dom-item-b", 80), wrapped("dom-item-c", 160)]
+  });
+  const root = node("dom-root", "body", { x: 0, y: 0, width: 1440, height: 900 }, {
+    children: [
+      row,
+      text("dom-other", "其他", { x: 700, y: 100, width: 60, height: 20 })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(root))[0];
+
+  const rowModel = model.children.find((child) => child.sourceNodeId === "dom-row");
+  assert.equal(rowModel.autoLayout?.applied, true, "expected row to apply auto layout");
+  assert.equal(
+    rowModel.children.filter((child) => child.sourceNodeId.startsWith("dom-item-")).length,
+    3,
+    "expected wrappers inside applied auto layout to be preserved"
+  );
 });

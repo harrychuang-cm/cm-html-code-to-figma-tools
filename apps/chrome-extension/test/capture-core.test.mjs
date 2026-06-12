@@ -1392,3 +1392,329 @@ test("content runtime declares visible viewport metadata fields", async () => {
     "captureTimestamp"
   ]);
 });
+
+function shadowTestElement(tagName, options = {}) {
+  return {
+    tagName,
+    attributes: options.attributes ?? [],
+    childNodes: options.childNodes ?? [],
+    children: options.children ?? [],
+    ...(options.shadowRoot ? { shadowRoot: options.shadowRoot } : {}),
+    ...(options.assignedNodes ? { assignedNodes: options.assignedNodes } : {}),
+    getBoundingClientRect() {
+      return options.rect ?? { x: 0, y: 0, width: 100, height: 40 };
+    }
+  };
+}
+
+const shadowTestWindow = {
+  innerWidth: 800,
+  innerHeight: 600,
+  devicePixelRatio: 1,
+  scrollX: 0,
+  scrollY: 0,
+  location: { href: "https://app.example.com/components" },
+  getComputedStyle() {
+    return {
+      display: "block",
+      position: "static",
+      visibility: "visible",
+      opacity: "1",
+      fontSize: "14px",
+      whiteSpace: "normal",
+      color: "rgb(17, 24, 39)"
+    };
+  }
+};
+
+function shadowTestDocument(body, extra = {}) {
+  return {
+    body,
+    documentElement: body,
+    title: "Components",
+    location: { href: "https://app.example.com/components" },
+    ...extra
+  };
+}
+
+test("open shadow root subtree is captured instead of light DOM children", () => {
+  const shadowChild = shadowTestElement("div", {
+    rect: { x: 10, y: 10, width: 200, height: 30 },
+    childNodes: [{ nodeType: 3, textContent: "Shadow 內容" }]
+  });
+  const lightChild = shadowTestElement("p", {
+    rect: { x: 10, y: 10, width: 200, height: 30 },
+    childNodes: [{ nodeType: 3, textContent: "未投影的 light 內容" }]
+  });
+  const host = shadowTestElement("my-widget", {
+    rect: { x: 0, y: 0, width: 300, height: 50 },
+    shadowRoot: { children: [shadowChild] },
+    children: [lightChild]
+  });
+  const body = shadowTestElement("body", {
+    rect: { x: 0, y: 0, width: 800, height: 600 },
+    children: [host]
+  });
+
+  const capture = captureVisibleViewportFromDocument(shadowTestDocument(body), shadowTestWindow);
+  const hostNode = capture.root.children[0];
+
+  assert.equal(hostNode.tagName, "my-widget");
+  assert.equal(hostNode.children.length, 1);
+  assert.equal(hostNode.children[0].tagName, "div");
+  assert.equal(hostNode.children[0].textContent, "Shadow 內容");
+  assert.equal(hostNode.attributes["data-closed-shadow-root"], undefined);
+});
+
+test("named slot projection appears at slot position without a slot node", () => {
+  const assignedTitle = shadowTestElement("h2", {
+    rect: { x: 16, y: 8, width: 200, height: 24 },
+    attributes: [{ name: "slot", value: "title" }],
+    childNodes: [{ nodeType: 3, textContent: "卡片標題" }]
+  });
+  const slot = shadowTestElement("slot", {
+    rect: { x: 0, y: 0, width: 0, height: 0 },
+    assignedNodes: () => [assignedTitle]
+  });
+  const shadowWrapper = shadowTestElement("header", {
+    rect: { x: 8, y: 4, width: 280, height: 32 },
+    children: [slot]
+  });
+  const host = shadowTestElement("my-card", {
+    rect: { x: 0, y: 0, width: 300, height: 120 },
+    shadowRoot: { children: [shadowWrapper] },
+    children: [assignedTitle]
+  });
+  const body = shadowTestElement("body", {
+    rect: { x: 0, y: 0, width: 800, height: 600 },
+    children: [host]
+  });
+
+  const capture = captureVisibleViewportFromDocument(shadowTestDocument(body), shadowTestWindow);
+  const wrapper = capture.root.children[0].children[0];
+
+  assert.equal(wrapper.tagName, "header");
+  assert.equal(wrapper.children.length, 1);
+  assert.equal(wrapper.children[0].tagName, "h2");
+  assert.equal(wrapper.children[0].textContent, "卡片標題");
+  assert.equal(wrapper.children.some((child) => child.tagName === "slot"), false);
+  assert.equal(capture.root.children[0].children.some((child) => child.tagName === "slot"), false);
+});
+
+test("default slot content appears when nothing is assigned", () => {
+  const fallbackText = shadowTestElement("span", {
+    rect: { x: 16, y: 8, width: 120, height: 20 },
+    childNodes: [{ nodeType: 3, textContent: "預設內容" }]
+  });
+  const slot = shadowTestElement("slot", {
+    rect: { x: 0, y: 0, width: 0, height: 0 },
+    assignedNodes: () => [],
+    children: [fallbackText]
+  });
+  const host = shadowTestElement("my-banner", {
+    rect: { x: 0, y: 0, width: 300, height: 40 },
+    shadowRoot: { children: [slot] }
+  });
+  const body = shadowTestElement("body", {
+    rect: { x: 0, y: 0, width: 800, height: 600 },
+    children: [host]
+  });
+
+  const capture = captureVisibleViewportFromDocument(shadowTestDocument(body), shadowTestWindow);
+  const hostNode = capture.root.children[0];
+
+  assert.equal(hostNode.children.length, 1);
+  assert.equal(hostNode.children[0].tagName, "span");
+  assert.equal(hostNode.children[0].textContent, "預設內容");
+});
+
+test("nested slot projection is flattened to the final element", () => {
+  const projected = shadowTestElement("button", {
+    rect: { x: 20, y: 10, width: 80, height: 28 },
+    childNodes: [{ nodeType: 3, textContent: "送出" }]
+  });
+  const outerSlot = shadowTestElement("slot", {
+    rect: { x: 0, y: 0, width: 0, height: 0 },
+    assignedNodes: ({ flatten }) => (flatten ? [projected] : [])
+  });
+  const host = shadowTestElement("my-toolbar", {
+    rect: { x: 0, y: 0, width: 300, height: 48 },
+    shadowRoot: { children: [outerSlot] },
+    children: [projected]
+  });
+  const body = shadowTestElement("body", {
+    rect: { x: 0, y: 0, width: 800, height: 600 },
+    children: [host]
+  });
+
+  const capture = captureVisibleViewportFromDocument(shadowTestDocument(body), shadowTestWindow);
+  const hostNode = capture.root.children[0];
+
+  assert.equal(hostNode.children.length, 1);
+  assert.equal(hostNode.children[0].tagName, "button");
+  assert.equal(hostNode.children[0].textContent, "送出");
+});
+
+test("slotted text nodes are captured with Range rects and skipped without Range", () => {
+  const slottedText = { nodeType: 3, textContent: "投影文字", rect: { x: 24, y: 12, width: 96, height: 20 } };
+  const slot = shadowTestElement("slot", {
+    rect: { x: 0, y: 0, width: 0, height: 0 },
+    assignedNodes: () => [slottedText]
+  });
+  const host = shadowTestElement("my-label", {
+    rect: { x: 0, y: 0, width: 300, height: 40 },
+    shadowRoot: { children: [slot] }
+  });
+  const body = shadowTestElement("body", {
+    rect: { x: 0, y: 0, width: 800, height: 600 },
+    children: [host]
+  });
+  const documentWithRange = shadowTestDocument(body, {
+    createRange() {
+      let selected = null;
+      return {
+        selectNode(node) {
+          selected = node;
+        },
+        getBoundingClientRect() {
+          return selected?.rect ?? { x: 0, y: 0, width: 0, height: 0 };
+        }
+      };
+    }
+  });
+
+  const capture = captureVisibleViewportFromDocument(documentWithRange, shadowTestWindow);
+  const textNode = capture.root.children[0].children[0];
+
+  assert.equal(textNode.tagName, "#slotted-text");
+  assert.equal(textNode.nodeType, "text");
+  assert.equal(textNode.textContent, "投影文字");
+  assert.deepEqual(textNode.rect, { x: 24, y: 12, width: 96, height: 20 });
+
+  const captureWithoutRange = captureVisibleViewportFromDocument(shadowTestDocument(body), shadowTestWindow);
+  assert.equal(captureWithoutRange.root.children[0].children.length, 0);
+});
+
+test("injected accessor captures closed shadow root subtree like open", () => {
+  const closedContent = shadowTestElement("div", {
+    rect: { x: 10, y: 10, width: 200, height: 30 },
+    childNodes: [{ nodeType: 3, textContent: "Closed 內容" }]
+  });
+  const closedRoot = { children: [closedContent] };
+  const host = shadowTestElement("my-secure-widget", {
+    rect: { x: 0, y: 0, width: 300, height: 50 }
+  });
+  const body = shadowTestElement("body", {
+    rect: { x: 0, y: 0, width: 800, height: 600 },
+    children: [host]
+  });
+
+  const capture = captureVisibleViewportFromDocument(shadowTestDocument(body), shadowTestWindow, {
+    openOrClosedShadowRoot: (element) => (element === host ? closedRoot : null)
+  });
+  const hostNode = capture.root.children[0];
+
+  assert.equal(hostNode.children.length, 1);
+  assert.equal(hostNode.children[0].textContent, "Closed 內容");
+  assert.equal(hostNode.attributes["data-closed-shadow-root"], undefined);
+});
+
+test("inaccessible closed custom element host is marked for fallback", () => {
+  const host = shadowTestElement("my-locked-widget", {
+    rect: { x: 0, y: 0, width: 300, height: 50 },
+    attributes: [{ name: "class", value: "locked" }]
+  });
+  const plainDiv = shadowTestElement("div", {
+    rect: { x: 0, y: 60, width: 300, height: 50 }
+  });
+  const body = shadowTestElement("body", {
+    rect: { x: 0, y: 0, width: 800, height: 600 },
+    children: [host, plainDiv]
+  });
+
+  const capture = captureVisibleViewportFromDocument(shadowTestDocument(body), shadowTestWindow, {
+    openOrClosedShadowRoot: () => {
+      throw new Error("not available");
+    }
+  });
+
+  assert.equal(capture.root.children[0].attributes["data-closed-shadow-root"], "true");
+  assert.equal(capture.root.children[1].attributes["data-closed-shadow-root"], undefined);
+});
+
+test("captureBounds preserves below-fold content without viewport clamping", () => {
+  const capture = captureElementTree(
+    {
+      tagName: "body",
+      rect: { x: 0, y: 0, width: 1440, height: 5200 },
+      styles: { display: "block" },
+      attributes: {},
+      children: [
+        {
+          tagName: "section",
+          sourceNodeId: "dom-below-fold",
+          textContent: "頁底內容",
+          rect: { x: 100, y: 4800, width: 300, height: 200 },
+          styles: {},
+          attributes: {},
+          children: []
+        }
+      ]
+    },
+    { width: 1440, height: 900, devicePixelRatio: 2, scrollX: 0, scrollY: 0 },
+    {
+      sourceUrl: "https://app.example.com/landing",
+      captureTimestamp: "2026-06-12T08:00:00.000Z",
+      captureMode: "full-page",
+      captureBounds: { width: 1440, height: 5200 }
+    }
+  );
+
+  assert.equal(capture.captureMode, "full-page");
+  assert.equal(capture.documentWidth, 1440);
+  assert.equal(capture.documentHeight, 5200);
+  assert.equal(capture.viewport.height, 900);
+  assert.deepEqual(capture.root.rect, { x: 0, y: 0, width: 1440, height: 5200 });
+  const belowFold = capture.root.children[0];
+  assert.equal(belowFold.sourceNodeId, "dom-below-fold");
+  assert.deepEqual(belowFold.rect, { x: 100, y: 4800, width: 300, height: 200 });
+
+  const manifest = createManifestFromCapture(capture);
+  assert.equal(manifest.captureMode, "full-page");
+  assert.equal(manifest.documentWidth, 1440);
+  assert.equal(manifest.documentHeight, 5200);
+  assert.equal(manifest.viewportHeight, 900);
+});
+
+test("capture without captureBounds keeps existing viewport clipping behavior", () => {
+  const capture = captureElementTree(
+    {
+      tagName: "body",
+      rect: { x: 0, y: 0, width: 1440, height: 5200 },
+      styles: { display: "block" },
+      attributes: {},
+      children: [
+        {
+          tagName: "section",
+          sourceNodeId: "dom-below-fold",
+          rect: { x: 100, y: 4800, width: 300, height: 200 },
+          styles: {},
+          attributes: {},
+          children: []
+        }
+      ]
+    },
+    { width: 1440, height: 900, devicePixelRatio: 2, scrollX: 0, scrollY: 0 },
+    {
+      sourceUrl: "https://app.example.com/landing",
+      captureTimestamp: "2026-06-12T08:00:00.000Z"
+    }
+  );
+
+  assert.equal(capture.captureMode, undefined);
+  assert.equal(capture.root.rect.height, 900);
+  assert.equal(capture.root.children.length, 0);
+  const manifest = createManifestFromCapture(capture);
+  assert.equal(manifest.captureMode, undefined);
+  assert.equal(manifest.documentHeight, undefined);
+});

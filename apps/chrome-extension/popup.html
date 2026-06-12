@@ -8,6 +8,17 @@
   <body>
     <main>
       <h1>Capture</h1>
+      <fieldset id="capture-mode">
+        <legend>Mode</legend>
+        <label>
+          <input type="radio" name="capture-mode" id="capture-mode-viewport" value="viewport" checked>
+          Visible viewport
+        </label>
+        <label>
+          <input type="radio" name="capture-mode" id="capture-mode-full-page" value="full-page">
+          Full page
+        </label>
+      </fieldset>
       <button id="capture-button" type="button">Capture viewport</button>
       <section id="capture-status" aria-live="polite">Ready</section>
       <section id="capture-preview" hidden>
@@ -20,6 +31,14 @@
           <div>
             <dt>Viewport</dt>
             <dd id="viewport-size">-</dd>
+          </div>
+          <div>
+            <dt>Capture</dt>
+            <dd id="capture-mode-label">viewport</dd>
+          </div>
+          <div>
+            <dt>Document</dt>
+            <dd id="document-size">-</dd>
           </div>
           <div>
             <dt>Fallbacks</dt>
