@@ -1,5 +1,9 @@
 export const CURRENT_SCHEMA_VERSION = "1.0.0";
 
+export const MULTI_CAPTURE_BUNDLE_VERSION = "1.0.0";
+export const MULTI_CAPTURE_INDEX_FILE = "captures.json";
+export const MULTI_CAPTURE_BUNDLE_TYPE = "multi-capture";
+
 export const REQUIRED_FIGCAPTURE_FILES = [
   "manifest.json",
   "capture.json",
@@ -284,6 +288,148 @@ export function unpackFigcapture(bytes) {
 
 export function readFigcaptureFiles(bytes) {
   return readZip(toUint8Array(bytes));
+}
+
+export function packMultiCaptureFigcapture(bundle) {
+  const captures = normalizeBundleInput(bundle);
+  if (captures.length === 0) {
+    throw new FigcaptureValidationError("Invalid multi-capture bundle", [
+      error(ERROR_CODES.MISSING_FIELD, "bundle must contain at least one capture", "captures")
+    ]);
+  }
+
+  const files = {};
+  const indexEntries = [];
+
+  captures.forEach((entry, index) => {
+    assertValidCapturePackage(entry.packageData);
+    const dir = `captures/${index}/`;
+    const fileMap = createFigcaptureFileMap(entry.packageData);
+    for (const [name, value] of Object.entries(fileMap)) {
+      files[`${dir}${name}`] = value;
+    }
+    indexEntries.push({
+      index,
+      width: entry.width,
+      label: entry.label ?? `${entry.width}`,
+      dir
+    });
+  });
+
+  files[MULTI_CAPTURE_INDEX_FILE] = encodeJson({
+    bundleVersion: MULTI_CAPTURE_BUNDLE_VERSION,
+    bundleType: MULTI_CAPTURE_BUNDLE_TYPE,
+    captures: indexEntries
+  });
+
+  return packFigcaptureFiles(files);
+}
+
+export function unpackMultiCaptureFigcapture(bytes) {
+  const files = readFigcaptureFiles(toUint8Array(bytes));
+
+  if (!(MULTI_CAPTURE_INDEX_FILE in files)) {
+    const packageData = unpackFigcapture(bytes);
+    return {
+      bundleVersion: MULTI_CAPTURE_BUNDLE_VERSION,
+      captures: [
+        {
+          index: 0,
+          width: packageData.manifest.viewportWidth,
+          label: `${packageData.manifest.viewportWidth}`,
+          packageData
+        }
+      ]
+    };
+  }
+
+  const index = decodeJsonFile(files, MULTI_CAPTURE_INDEX_FILE);
+  if (!isRecord(index) || index.bundleType !== MULTI_CAPTURE_BUNDLE_TYPE || !Array.isArray(index.captures)) {
+    throw new FigcaptureValidationError("Invalid .figcapture bundle", [
+      error(ERROR_CODES.INVALID_FIELD, "captures.json must describe a multi-capture bundle", MULTI_CAPTURE_INDEX_FILE)
+    ]);
+  }
+
+  const captures = index.captures.map((entry, position) => {
+    const path = `captures[${position}]`;
+    if (!isRecord(entry) || typeof entry.dir !== "string" || entry.dir.length === 0) {
+      throw new FigcaptureValidationError("Invalid .figcapture bundle", [
+        error(ERROR_CODES.MISSING_FIELD, "capture entry must reference a directory", path)
+      ]);
+    }
+    if (!Number.isFinite(entry.width) || entry.width <= 0) {
+      throw new FigcaptureValidationError("Invalid .figcapture bundle", [
+        error(ERROR_CODES.INVALID_FIELD, "capture entry width must be a positive number", `${path}.width`)
+      ]);
+    }
+
+    const subFiles = collectPrefixedFiles(files, entry.dir);
+    const missing = REQUIRED_FIGCAPTURE_FILES
+      .filter((fileName) => !(fileName in subFiles))
+      .map((fileName) => error(ERROR_CODES.MISSING_FILE, `${entry.dir}${fileName} is required`, `${path}.${fileName}`));
+    if (missing.length > 0) {
+      throw new FigcaptureValidationError("Invalid .figcapture bundle", missing);
+    }
+
+    const packageData = assertValidCapturePackage({
+      manifest: decodeJsonFile(subFiles, "manifest.json"),
+      capture: decodeJsonFile(subFiles, "capture.json"),
+      figmaPlan: decodeJsonFile(subFiles, "figma-plan.json"),
+      diagnostics: decodeJsonFile(subFiles, "diagnostics.json"),
+      screenshot: subFiles["screenshot.png"],
+      assets: Object.fromEntries(Object.entries(subFiles).filter(([name]) => name.startsWith("assets/")))
+    });
+
+    return {
+      index: Number.isInteger(entry.index) ? entry.index : position,
+      width: entry.width,
+      label: typeof entry.label === "string" && entry.label.length > 0 ? entry.label : `${entry.width}`,
+      packageData
+    };
+  });
+
+  return {
+    bundleVersion: typeof index.bundleVersion === "string" ? index.bundleVersion : MULTI_CAPTURE_BUNDLE_VERSION,
+    captures
+  };
+}
+
+function normalizeBundleInput(bundle) {
+  const captures = Array.isArray(bundle) ? bundle : bundle?.captures;
+  if (!Array.isArray(captures)) {
+    throw new FigcaptureValidationError("Invalid multi-capture bundle", [
+      error(ERROR_CODES.INVALID_FIELD, "bundle.captures must be an array", "captures")
+    ]);
+  }
+
+  return captures.map((entry, position) => {
+    if (!isRecord(entry) || !isRecord(entry.packageData)) {
+      throw new FigcaptureValidationError("Invalid multi-capture bundle", [
+        error(ERROR_CODES.MISSING_FIELD, "capture entry must include packageData", `captures[${position}]`)
+      ]);
+    }
+    const width = Number(entry.width ?? entry.packageData.manifest?.viewportWidth);
+    if (!Number.isFinite(width) || width <= 0) {
+      throw new FigcaptureValidationError("Invalid multi-capture bundle", [
+        error(ERROR_CODES.INVALID_FIELD, "capture entry width must be a positive number", `captures[${position}].width`)
+      ]);
+    }
+    return {
+      width,
+      label: typeof entry.label === "string" && entry.label.length > 0 ? entry.label : `${width}`,
+      packageData: entry.packageData
+    };
+  });
+}
+
+function collectPrefixedFiles(files, prefix) {
+  const result = {};
+  for (const [name, value] of Object.entries(files)) {
+    if (name.startsWith(prefix)) {
+      result[name.slice(prefix.length)] = value;
+    }
+  }
+  return result;
 }
 
 export function summarizeDiagnostics(diagnostics) {

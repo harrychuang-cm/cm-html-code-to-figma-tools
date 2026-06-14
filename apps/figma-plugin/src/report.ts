@@ -40,11 +40,19 @@ export function renderImportReport(documentRef, report) {
   setText(documentRef, "auto-layout-confidence-summary", `${report.autoLayoutConfidenceSummary.appliedCount} applied / ${report.autoLayoutConfidenceSummary.skippedCount} skipped / ${report.autoLayoutConfidenceSummary.averageConfidence}`);
   const semanticNaming = report.semanticNamingSummary ?? {};
   setText(documentRef, "semantic-naming-summary", `${semanticNaming.semanticNames ?? 0} named / ${semanticNaming.repeatedGroups ?? 0} groups / ${semanticNaming.collapsedWrappers ?? 0} collapsed`);
+  setText(documentRef, "variable-binding-summary", variableBindingLabel(report.variableBindings));
 
   const root = documentRef.getElementById("import-report");
   if (root) {
     root.hidden = false;
   }
+}
+
+function variableBindingLabel(bindings) {
+  if (!bindings || bindings.available !== true) {
+    return "No local variables";
+  }
+  return `${bindings.colors ?? 0} colors / ${bindings.numbers ?? 0} numbers`;
 }
 
 function summarizeFontSubstitutions(substitutions) {

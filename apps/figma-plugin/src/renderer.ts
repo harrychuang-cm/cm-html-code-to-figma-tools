@@ -11,10 +11,13 @@ export const FRAME_ROLES = [
   "Editable Accurate"
 ];
 
-export function createFrameModels(packageData) {
+export const FRAME_GAP = 80;
+
+export function createFrameModels(packageData, options = {}) {
   const size = captureFrameSize(packageData.manifest);
   const width = size.width;
   const height = size.height;
+  const originX = options.originX ?? 0;
   const title = packageData.capture.title || titleFromUrl(packageData.manifest.sourceUrl);
 
   return FRAME_ROLES.map((role, index) => ({
@@ -22,7 +25,7 @@ export function createFrameModels(packageData) {
     name: `${title} / ${width}x${height} / ${role}`,
     width,
     height,
-    x: index * (width + 80),
+    x: originX + index * (width + FRAME_GAP),
     y: 0
   }));
 }
@@ -34,8 +37,8 @@ export function captureFrameSize(manifest = {}) {
   return { width: manifest.viewportWidth, height: manifest.viewportHeight };
 }
 
-export function renderThreeFrames(adapter, packageData) {
-  const models = createFrameModels(packageData);
+export function renderThreeFrames(adapter, packageData, options = {}) {
+  const models = createFrameModels(packageData, options);
   const frames = models.map((model) => adapter.createFrame(model));
   const sourceFrame = frames[0];
   const screenshotLayer = adapter.createImageLayer({
@@ -58,8 +61,8 @@ export function renderThreeFrames(adapter, packageData) {
   };
 }
 
-export async function renderThreeFramesAsync(adapter, packageData) {
-  const models = createFrameModels(packageData);
+export async function renderThreeFramesAsync(adapter, packageData, options = {}) {
+  const models = createFrameModels(packageData, options);
   const frames = await Promise.all(models.map((model) => maybeAsync(adapter.createFrame(model))));
   const sourceFrame = frames[0];
   const screenshotLayer = await maybeAsync(adapter.createImageLayer({

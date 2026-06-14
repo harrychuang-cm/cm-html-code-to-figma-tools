@@ -18,7 +18,7 @@ export function describeBackgroundRuntime() {
   return {
     localFirst: true,
     uploadEndpoints: [],
-    requiredPermissions: ["activeTab", "scripting", "downloads"],
+    requiredPermissions: ["activeTab", "scripting", "downloads", "debugger"],
     hostPermissions: ["<all_urls>"],
     credentialFields: [],
     captureTarget: "active-current-window-tab"
@@ -52,7 +52,10 @@ export function registerBackgroundRuntime(chromeApi = globalThis.chrome) {
       return false;
     }
 
-    handleCaptureActiveTab(chromeApi, { captureMode: message?.captureMode })
+    handleCaptureActiveTab(chromeApi, {
+      captureMode: message?.captureMode,
+      breakpointWidths: message?.breakpointWidths
+    })
       .then((response) => sendResponse(response))
       .catch((error) => sendResponse({
         status: "error",

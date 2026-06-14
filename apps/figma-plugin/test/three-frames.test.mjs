@@ -63,3 +63,11 @@ test("viewport manifests keep viewport-sized frames", () => {
   const models = createFrameModels(createValidPackage());
   assert(models.every((model) => model.width === 1440 && model.height === 900));
 });
+
+test("frame models offset every frame by originX so breakpoint groups do not overlap", () => {
+  const baseModels = createFrameModels(createValidPackage());
+  assert.deepEqual(baseModels.map((model) => model.x), [0, 1440 + 80]);
+
+  const offsetModels = createFrameModels(createValidPackage(), { originX: 3040 });
+  assert.deepEqual(offsetModels.map((model) => model.x), [3040, 3040 + 1440 + 80]);
+});

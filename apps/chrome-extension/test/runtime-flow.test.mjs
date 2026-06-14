@@ -481,6 +481,299 @@ test("full-page capture truncates overlong pages and records a diagnostics warni
   assert.equal(pending.truncationWarning, "full-page capture truncated to 20000px of 50000px");
 });
 
+function fakeMultiPackageBuilder(breakpoints) {
+  return {
+    filename: `dashboard-${breakpoints.map((bp) => bp.width).join("-")}.figcapture`,
+    bytes: new Uint8Array([1]),
+    packageData: {
+      captures: breakpoints.map((bp) => ({
+        width: bp.width,
+        label: bp.label,
+        packageData: {
+          capture: bp.capture,
+          diagnostics: createEmptyDiagnostics()
+        }
+      }))
+    }
+  };
+}
+
+test("runtime captures breakpoint screenshots through the emulation session with a clipped CDP shot", async () => {
+  const cdpShots = [];
+  let visibleTabCalls = 0;
+  let pending = null;
+  const runtime = createChromeCaptureRuntime({
+    chromeApi: {
+      tabs: {
+        async query() {
+          return [{ id: 42, url: "https://app.example.com/dashboard", title: "Dashboard" }];
+        }
+      }
+    },
+    contentMessage: async () => createRuntimeCapture(),
+    // captureVisibleTab must NOT be used while emulation is active.
+    screenshotAdapter: async () => {
+      visibleTabCalls += 1;
+      return SCREENSHOT_DATA_URL;
+    },
+    emulationFactory: () => {
+      let width = 0;
+      return {
+        async attach() {},
+        async setWidth(value) {
+          width = value;
+        },
+        async captureScreenshot(params) {
+          cdpShots.push({ width, params });
+          return `data:image/png;base64,cdp-${width}`;
+        },
+        async clear() {},
+        async detach() {}
+      };
+    },
+    multiPackageBuilder: fakeMultiPackageBuilder,
+    getPending: () => pending,
+    setPending: (value) => {
+      pending = value;
+    }
+  });
+
+  const response = await runtime.captureActiveTab({ breakpointWidths: [1440, 375] });
+
+  assert.equal(visibleTabCalls, 0, "must not fall back to captureVisibleTab during emulation");
+  assert.deepEqual(cdpShots.map((shot) => shot.width), [1440, 375]);
+  // The viewport screenshot is clipped to the reflowed viewport and rendered with
+  // captureBeyondViewport so mobile/zero-height surfaces still produce pixels.
+  for (const shot of cdpShots) {
+    assert.equal(shot.params.captureBeyondViewport, true);
+    assert.deepEqual(shot.params.clip, { x: 0, y: 0, width: 1280, height: 720, scale: 1 });
+  }
+  assert.deepEqual(
+    response.preview.breakpoints.map((entry) => entry.screenshotDataUrl),
+    ["data:image/png;base64,cdp-1440", "data:image/png;base64,cdp-375"]
+  );
+});
+
+test("runtime captures emulated full-page breakpoints as a single clipped CDP shot", async () => {
+  const shots = [];
+  let stitchCalls = 0;
+  let pending = null;
+  const runtime = createChromeCaptureRuntime({
+    chromeApi: {
+      tabs: {
+        async query() {
+          return [{ id: 7, url: "https://app.example.com/dashboard", title: "Dashboard" }];
+        }
+      }
+    },
+    contentRequest: async (_api, _tabId, message) => {
+      if (message.type === "FIGCAPTURE_PAGE_METRICS") {
+        return {
+          status: "success",
+          metrics: {
+            documentWidth: 375,
+            documentHeight: 2400,
+            viewport: { width: 375, height: 800, devicePixelRatio: 2, scrollX: 0, scrollY: 0 }
+          }
+        };
+      }
+      if (message.type === "FIGCAPTURE_COLLECT_DOM") {
+        return { status: "success", capture: createRuntimeCapture() };
+      }
+      return { status: "success", scrollY: message.scrollY ?? 0 };
+    },
+    stitcher: async () => {
+      stitchCalls += 1;
+      return "data:image/png;base64,stitched";
+    },
+    emulationFactory: () => ({
+      async attach() {},
+      async setWidth() {},
+      async captureScreenshot(params) {
+        shots.push(params);
+        return "data:image/png;base64,cdp-fullpage";
+      },
+      async clear() {},
+      async detach() {}
+    }),
+    multiPackageBuilder: fakeMultiPackageBuilder,
+    getPending: () => pending,
+    setPending: (value) => {
+      pending = value;
+    }
+  });
+
+  const response = await runtime.captureActiveTab({
+    breakpointWidths: [375],
+    captureMode: "full-page"
+  });
+
+  assert.equal(stitchCalls, 0, "emulated full-page must not scroll-stitch");
+  assert.equal(shots.length, 1, "one CDP shot covers the whole emulated page");
+  assert.equal(shots[0].captureBeyondViewport, true);
+  assert.deepEqual(shots[0].clip, { x: 0, y: 0, width: 375, height: 2400, scale: 1 });
+  assert.equal(response.preview.breakpoints[0].screenshotDataUrl, "data:image/png;base64,cdp-fullpage");
+});
+
+test("runtime captures multiple breakpoints sequentially with device emulation and stores a multi-capture preview", async () => {
+  const emulationCalls = [];
+  let pending = null;
+  const runtime = createChromeCaptureRuntime({
+    chromeApi: {
+      tabs: {
+        async query() {
+          return [{ id: 42, url: "https://app.example.com/dashboard", title: "Dashboard" }];
+        }
+      }
+    },
+    contentMessage: async () => createRuntimeCapture(),
+    screenshotAdapter: async () => SCREENSHOT_DATA_URL,
+    emulationFactory: (_api, tabId) => ({
+      async attach() {
+        emulationCalls.push(["attach", tabId]);
+      },
+      async setWidth(width) {
+        emulationCalls.push(["setWidth", width]);
+      },
+      async clear() {
+        emulationCalls.push(["clear"]);
+      },
+      async detach() {
+        emulationCalls.push(["detach"]);
+      }
+    }),
+    multiPackageBuilder: fakeMultiPackageBuilder,
+    getPending: () => pending,
+    setPending: (value) => {
+      pending = value;
+    }
+  });
+
+  const response = await runtime.captureActiveTab({ breakpointWidths: [375, 1440] });
+
+  assert.equal(response.status, "ready");
+  assert.equal(response.preview.multiCapture, true);
+  assert.deepEqual(response.preview.breakpoints.map((entry) => entry.width), [1440, 375]);
+  assert.deepEqual(emulationCalls, [
+    ["attach", 42],
+    ["setWidth", 1440],
+    ["clear"],
+    ["setWidth", 375],
+    ["clear"],
+    ["detach"]
+  ]);
+  assert.equal(pending.multiCapture, true);
+  assert.equal(pending.breakpoints.length, 2);
+});
+
+test("runtime records a failed breakpoint and continues with the remaining breakpoints", async () => {
+  const emulationCalls = [];
+  const runtime = createChromeCaptureRuntime({
+    chromeApi: {
+      tabs: {
+        async query() {
+          return [{ id: 42, url: "https://app.example.com/dashboard", title: "Dashboard" }];
+        }
+      }
+    },
+    contentMessage: async () => createRuntimeCapture(),
+    screenshotAdapter: async () => SCREENSHOT_DATA_URL,
+    emulationFactory: () => ({
+      async attach() {
+        emulationCalls.push("attach");
+      },
+      async setWidth(width) {
+        emulationCalls.push(`setWidth-${width}`);
+        if (width === 1440) {
+          throw new Error("emulate failed");
+        }
+      },
+      async clear() {
+        emulationCalls.push("clear");
+      },
+      async detach() {
+        emulationCalls.push("detach");
+      }
+    }),
+    multiPackageBuilder: fakeMultiPackageBuilder,
+    getPending: () => null,
+    setPending: () => {}
+  });
+
+  const response = await runtime.captureActiveTab({ breakpointWidths: [1440, 375] });
+
+  assert.equal(response.preview.breakpoints.length, 1);
+  assert.equal(response.preview.breakpoints[0].width, 375);
+  assert.deepEqual(response.preview.failures, [{ width: 1440, message: "emulate failed" }]);
+  assert.equal(emulationCalls.includes("detach"), true);
+});
+
+test("runtime reports all-breakpoints-failed when every breakpoint capture fails", async () => {
+  const runtime = createChromeCaptureRuntime({
+    chromeApi: {
+      tabs: {
+        async query() {
+          return [{ id: 42, url: "https://app.example.com/dashboard", title: "Dashboard" }];
+        }
+      }
+    },
+    contentMessage: async () => {
+      throw new Error("dom capture failed");
+    },
+    screenshotAdapter: async () => SCREENSHOT_DATA_URL,
+    emulationFactory: () => ({
+      async attach() {},
+      async setWidth() {},
+      async clear() {},
+      async detach() {}
+    }),
+    multiPackageBuilder: fakeMultiPackageBuilder,
+    getPending: () => null,
+    setPending: () => {}
+  });
+
+  await assert.rejects(
+    () => runtime.captureActiveTab({ breakpointWidths: [1440] }),
+    (error) => error.category === RUNTIME_ERROR_CATEGORIES.ALL_BREAKPOINTS_FAILED
+  );
+});
+
+test("confirmed export builds and downloads a single multi-capture package", async () => {
+  const downloads = [];
+  let built = 0;
+  const runtime = createChromeCaptureRuntime({
+    chromeApi: {},
+    getPending: () => ({
+      multiCapture: true,
+      breakpoints: [
+        { width: 1440, label: "1440", capture: createRuntimeCapture(), screenshotDataUrl: SCREENSHOT_DATA_URL },
+        { width: 375, label: "375", capture: createRuntimeCapture(), screenshotDataUrl: SCREENSHOT_DATA_URL }
+      ]
+    }),
+    setPending: () => {},
+    multiPackageBuilder: (breakpoints) => {
+      built += 1;
+      assert.equal(breakpoints.length, 2);
+      return {
+        filename: "dashboard-1440-375.figcapture",
+        bytes: new Uint8Array([1]),
+        packageData: { captures: [] }
+      };
+    },
+    async downloader(_api, exportPackage) {
+      downloads.push(exportPackage);
+      return 5;
+    }
+  });
+
+  const response = await runtime.confirmExport();
+
+  assert.equal(response.status, "downloaded");
+  assert.equal(response.filename, "dashboard-1440-375.figcapture");
+  assert.equal(built, 1);
+  assert.equal(downloads.length, 1);
+});
+
 test("viewport capture mode keeps existing behavior without full-page messages", async () => {
   const capture = createRuntimeCapture();
   const calls = [];

@@ -1,12 +1,25 @@
 export const IMPORT_PACKAGE = "IMPORT_PACKAGE";
 export const IMPORT_SUCCESS = "IMPORT_SUCCESS";
 export const IMPORT_ERROR = "IMPORT_ERROR";
+export const IMPORT_PROGRESS = "IMPORT_PROGRESS";
 
-export function createImportPackageMessage(filename, bytes) {
+export function createImportProgressMessage(progress = {}) {
+  return {
+    type: IMPORT_PROGRESS,
+    phase: progress.phase ?? "importing",
+    processed: progress.processed ?? 0,
+    total: progress.total ?? 0,
+    label: progress.label ?? "",
+    message: progress.message ?? ""
+  };
+}
+
+export function createImportPackageMessage(filename, bytes, options = {}) {
   return {
     type: IMPORT_PACKAGE,
     filename,
-    bytes: toUint8Array(bytes)
+    bytes: toUint8Array(bytes),
+    matchVariables: options.matchVariables !== false
   };
 }
 
@@ -43,7 +56,7 @@ export function postPluginMessage(target, message) {
   target?.postMessage?.({ pluginMessage: message }, "*");
 }
 
-export async function readFileAsImportPackageMessage(file) {
+export async function readFileAsImportPackageMessage(file, options = {}) {
   if (!file) {
     throw bridgeError("missing-file", "Select a .figcapture file");
   }
@@ -53,7 +66,7 @@ export async function readFileAsImportPackageMessage(file) {
 
   try {
     const bytes = new Uint8Array(await file.arrayBuffer());
-    return createImportPackageMessage(file.name, bytes);
+    return createImportPackageMessage(file.name, bytes, options);
   } catch (error) {
     throw bridgeError("file-transfer-failed", error?.message ?? "Could not read .figcapture file", error);
   }

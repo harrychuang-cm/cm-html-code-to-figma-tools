@@ -120,7 +120,30 @@ export interface CapturePackageData {
   assets: Record<string, Uint8Array | ArrayBuffer>;
 }
 
+export interface MultiCaptureEntry {
+  index: number;
+  width: number;
+  label: string;
+  packageData: CapturePackageData;
+}
+
+export interface MultiCaptureBundle {
+  bundleVersion: string;
+  captures: MultiCaptureEntry[];
+}
+
+export interface MultiCaptureBundleInput {
+  captures: Array<{
+    width?: number;
+    label?: string;
+    packageData: CapturePackageData;
+  }>;
+}
+
 export declare const CURRENT_SCHEMA_VERSION: string;
+export declare const MULTI_CAPTURE_BUNDLE_VERSION: string;
+export declare const MULTI_CAPTURE_INDEX_FILE: string;
+export declare const MULTI_CAPTURE_BUNDLE_TYPE: string;
 export declare const REQUIRED_FIGCAPTURE_FILES: string[];
 export declare const ERROR_CODES: Record<string, ValidationErrorCode>;
 
@@ -142,6 +165,8 @@ export declare function packFigcapture(packageData: CapturePackageData): Uint8Ar
 export declare function packFigcaptureFiles(files: Record<string, Uint8Array | ArrayBuffer | string>): Uint8Array;
 export declare function unpackFigcapture(bytes: Uint8Array | ArrayBuffer): CapturePackageData;
 export declare function readFigcaptureFiles(bytes: Uint8Array | ArrayBuffer): Record<string, Uint8Array>;
+export declare function packMultiCaptureFigcapture(bundle: MultiCaptureBundleInput): Uint8Array;
+export declare function unpackMultiCaptureFigcapture(bytes: Uint8Array | ArrayBuffer): MultiCaptureBundle;
 export declare function summarizeDiagnostics(diagnostics: Diagnostics): {
   fallbackCount: number;
   missingAssetCount: number;

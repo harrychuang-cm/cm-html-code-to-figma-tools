@@ -3,7 +3,11 @@
   var IMPORT_PACKAGE = "IMPORT_PACKAGE";
   var IMPORT_SUCCESS = "IMPORT_SUCCESS";
   var IMPORT_ERROR = "IMPORT_ERROR";
+  var IMPORT_PROGRESS = "IMPORT_PROGRESS";
   var FALLBACK_FONT = { family: "Inter", style: "Regular" };
+  // Active during a single import; maps captured colors/numbers to local Figma
+  // Variables so matching values bind to the variable instead of a raw literal.
+  var VARIABLE_INDEX = null;
   var SUPPORTED_ZIP_FLAGS = 0x0800;
   var MAX_ARCHIVE_FILE_NAME_LENGTH = 240;
 
@@ -24,13 +28,280 @@
     });
   }
 
+  function postProgress(payload) {
+    if (typeof figma === "undefined" || !figma.ui || typeof figma.ui.postMessage !== "function") {
+      return;
+    }
+    figma.ui.postMessage({
+      type: IMPORT_PROGRESS,
+      phase: (payload && payload.phase) || "importing",
+      processed: (payload && payload.processed) || 0,
+      total: (payload && payload.total) || 0,
+      label: (payload && payload.label) || "",
+      message: (payload && payload.message) || ""
+    });
+  }
+
+  function countModelNodes(models) {
+    var list = models || [];
+    var count = 0;
+    var index;
+    for (index = 0; index < list.length; index += 1) {
+      count += 1 + countModelNodes(list[index].children);
+    }
+    return count;
+  }
+
+  function tickProgress(progress) {
+    var pct;
+    if (!progress || !progress.total) {
+      return;
+    }
+    progress.processed += 1;
+    pct = Math.floor((progress.processed / progress.total) * 100);
+    if (pct === progress.lastPct && progress.processed < progress.total) {
+      return;
+    }
+    progress.lastPct = pct;
+    postProgress({
+      phase: "rendering",
+      processed: progress.processed,
+      total: progress.total,
+      label: progress.captureDesc ? "Rendering " + progress.captureDesc : "Rendering layers",
+      message: progress.captureDesc ? "Building layers — " + progress.captureDesc : "Building layers"
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Figma Variables matching
+  //
+  // Before rendering we snapshot every local COLOR and FLOAT variable keyed by
+  // its concrete value. While building layers, colors and design-token numbers
+  // that match a variable bind to it (setBoundVariableForPaint / setBoundVariable)
+  // so the imported design stays linked to the file's variables.
+  // ---------------------------------------------------------------------------
+  function loadVariableIndex(matchVariables) {
+    if (matchVariables === false || typeof figma === "undefined" || !figma.variables) {
+      return Promise.resolve(null);
+    }
+    return Promise.all([
+      readLocalVariables("COLOR"),
+      readLocalVariables("FLOAT")
+    ]).then(function (lists) {
+      return buildVariableIndex(lists[0], lists[1]);
+    }).catch(function () {
+      return null;
+    });
+  }
+
+  function readLocalVariables(type) {
+    try {
+      if (typeof figma.variables.getLocalVariablesAsync === "function") {
+        return figma.variables.getLocalVariablesAsync(type);
+      }
+      if (typeof figma.variables.getLocalVariables === "function") {
+        return Promise.resolve(figma.variables.getLocalVariables(type));
+      }
+    } catch (error) {
+      return Promise.resolve([]);
+    }
+    return Promise.resolve([]);
+  }
+
+  function buildVariableIndex(colorVars, floatVars) {
+    var colorByKey = {};
+    var floatByKey = {};
+    var hasColors = false;
+    var hasFloats = false;
+
+    (colorVars || []).forEach(function (variable) {
+      var value = firstConcreteVariableValue(variable);
+      var key;
+      if (value && typeof value === "object" && typeof value.r === "number") {
+        key = colorKeyFromRgba(value.r, value.g, value.b, typeof value.a === "number" ? value.a : 1);
+        if (!Object.prototype.hasOwnProperty.call(colorByKey, key)) {
+          colorByKey[key] = variable;
+          hasColors = true;
+        }
+      }
+    });
+
+    (floatVars || []).forEach(function (variable) {
+      var value = firstConcreteVariableValue(variable);
+      var key;
+      if (typeof value === "number" && isFinite(value)) {
+        key = floatKey(value);
+        if (!Object.prototype.hasOwnProperty.call(floatByKey, key)) {
+          floatByKey[key] = variable;
+          hasFloats = true;
+        }
+      }
+    });
+
+    return {
+      colorByKey: colorByKey,
+      floatByKey: floatByKey,
+      hasColors: hasColors,
+      hasFloats: hasFloats,
+      boundColors: 0,
+      boundNumbers: 0
+    };
+  }
+
+  function firstConcreteVariableValue(variable) {
+    var values = variable && variable.valuesByMode;
+    var modeId;
+    var value;
+    if (!values) {
+      return null;
+    }
+    for (modeId in values) {
+      if (Object.prototype.hasOwnProperty.call(values, modeId)) {
+        value = values[modeId];
+        if (value && typeof value === "object" && value.type === "VARIABLE_ALIAS") {
+          continue;
+        }
+        return value;
+      }
+    }
+    return null;
+  }
+
+  function colorKeyFromRgba(r, g, b, a) {
+    return channel255(r) + "," + channel255(g) + "," + channel255(b) + "," + alphaKey(a);
+  }
+
+  function channel255(value) {
+    return Math.round(clamp(Number(value) || 0, 0, 1) * 255);
+  }
+
+  function alphaKey(value) {
+    var alpha = typeof value === "number" ? value : 1;
+    return Math.round(clamp(alpha, 0, 1) * 100) / 100;
+  }
+
+  function floatKey(value) {
+    return String(Math.round(Number(value) * 1000) / 1000);
+  }
+
+  function canBindPaints() {
+    return typeof figma !== "undefined" &&
+      figma.variables &&
+      typeof figma.variables.setBoundVariableForPaint === "function";
+  }
+
+  function withBoundColors(paints) {
+    var result;
+    var index;
+    if (!VARIABLE_INDEX || !VARIABLE_INDEX.hasColors || !canBindPaints()) {
+      return paints;
+    }
+    if (!Array.isArray(paints) || paints.length === 0) {
+      return paints;
+    }
+    result = [];
+    for (index = 0; index < paints.length; index += 1) {
+      result.push(bindPaintColor(paints[index]));
+    }
+    return result;
+  }
+
+  function bindPaintColor(paint) {
+    var variable;
+    var bound;
+    if (!paint || paint.type !== "SOLID" || !paint.color) {
+      return paint;
+    }
+    variable = lookupColorVariable(paint.color, paint.opacity);
+    if (!variable) {
+      return paint;
+    }
+    try {
+      bound = figma.variables.setBoundVariableForPaint(paint, "color", variable);
+      VARIABLE_INDEX.boundColors += 1;
+      return bound || paint;
+    } catch (error) {
+      return paint;
+    }
+  }
+
+  function lookupColorVariable(color, opacity) {
+    var key = colorKeyFromRgba(color.r, color.g, color.b, typeof opacity === "number" ? opacity : 1);
+    return Object.prototype.hasOwnProperty.call(VARIABLE_INDEX.colorByKey, key)
+      ? VARIABLE_INDEX.colorByKey[key]
+      : null;
+  }
+
+  function lookupFloatVariable(value) {
+    var key = floatKey(value);
+    return Object.prototype.hasOwnProperty.call(VARIABLE_INDEX.floatByKey, key)
+      ? VARIABLE_INDEX.floatByKey[key]
+      : null;
+  }
+
+  function bindNodeNumber(node, field, value) {
+    var variable;
+    if (!VARIABLE_INDEX || !VARIABLE_INDEX.hasFloats || !node || typeof node.setBoundVariable !== "function") {
+      return false;
+    }
+    if (typeof value !== "number" || !isFinite(value) || value <= 0) {
+      return false;
+    }
+    variable = lookupFloatVariable(value);
+    if (!variable) {
+      return false;
+    }
+    try {
+      node.setBoundVariable(field, variable);
+      VARIABLE_INDEX.boundNumbers += 1;
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function bindCornerRadius(node, value) {
+    var fields = ["topLeftRadius", "topRightRadius", "bottomLeftRadius", "bottomRightRadius"];
+    var variable;
+    var bound = false;
+    var index;
+    if (!VARIABLE_INDEX || !VARIABLE_INDEX.hasFloats || !node || typeof node.setBoundVariable !== "function") {
+      return;
+    }
+    if (typeof value !== "number" || !isFinite(value) || value <= 0) {
+      return;
+    }
+    variable = lookupFloatVariable(value);
+    if (!variable) {
+      return;
+    }
+    for (index = 0; index < fields.length; index += 1) {
+      try {
+        node.setBoundVariable(fields[index], variable);
+        bound = true;
+      } catch (error) {
+        // Some node types reject individual corner fields; keep trying the rest.
+      }
+    }
+    if (bound) {
+      VARIABLE_INDEX.boundNumbers += 1;
+    }
+  }
+
+  function summarizeVariableBindings(index) {
+    if (!index) {
+      return { available: false, colors: 0, numbers: 0 };
+    }
+    return { available: true, colors: index.boundColors, numbers: index.boundNumbers };
+  }
+
   function runImport(message) {
     Promise.resolve()
       .then(function () {
         if (!message || message.type !== IMPORT_PACKAGE) {
           return null;
         }
-        return importBytes(toUint8Array(message.bytes));
+        return importBytes(toUint8Array(message.bytes), message.matchVariables !== false);
       })
       .then(function (result) {
         if (!result) {
@@ -43,17 +314,124 @@
       });
   }
 
-  function importBytes(bytes) {
-    var packageData = unpackFigcapture(bytes);
-    return renderPackage(packageData).then(function (renderResult) {
+  function importBytes(bytes, matchVariables) {
+    var captures = readCaptureBundle(bytes);
+    captures.sort(function (a, b) {
+      return b.width - a.width;
+    });
+
+    var prepared = captures.map(function (entry) {
+      return { entry: entry, models: createEditableLayoutNodeModels(entry.packageData) };
+    });
+    var total = prepared.reduce(function (sum, item) {
+      return sum + countModelNodes(item.models);
+    }, 0);
+    var progress = {
+      processed: 0,
+      total: total,
+      lastPct: -1,
+      captureCount: prepared.length,
+      captureDesc: ""
+    };
+
+    postProgress({
+      phase: "preparing",
+      processed: 0,
+      total: total,
+      label: "Matching variables",
+      message: "Matching variables…"
+    });
+
+    return loadVariableIndex(matchVariables).then(function (variableIndex) {
+      VARIABLE_INDEX = variableIndex;
+
+      var reports = [];
+      var state = { originX: 0 };
+      var chain = Promise.resolve();
+
+      prepared.forEach(function (item, index) {
+        chain = chain.then(function () {
+          var capLabel = item.entry.label || String(item.entry.width);
+          progress.captureDesc = progress.captureCount > 1
+            ? capLabel + "px (" + (index + 1) + "/" + progress.captureCount + ")"
+            : capLabel + "px";
+          postProgress({
+            phase: "rendering",
+            processed: progress.processed,
+            total: progress.total,
+            label: "Rendering " + progress.captureDesc,
+            message: "Building layers — " + progress.captureDesc
+          });
+          return renderPackage(item.entry.packageData, state.originX, item.models, progress).then(function (renderResult) {
+            reports.push(createReport(item.entry.packageData, renderResult));
+            state.originX += 2 * (captureFrameSize(item.entry.packageData.manifest).width + 80);
+          });
+        });
+      });
+
+      return chain.then(function () {
+        postProgress({
+          phase: "done",
+          processed: progress.total,
+          total: progress.total,
+          label: "Done",
+          message: "Import complete"
+        });
+        var aggregated = aggregateReports(reports);
+        if (aggregated) {
+          aggregated.variableBindings = summarizeVariableBindings(variableIndex);
+        }
+        return { report: aggregated };
+      });
+    }).then(function (result) {
+      VARIABLE_INDEX = null;
+      return result;
+    }, function (error) {
+      VARIABLE_INDEX = null;
+      throw error;
+    });
+  }
+
+  function readCaptureBundle(bytes) {
+    var files = readZip(bytes);
+
+    if (!files["captures.json"]) {
+      var single = buildPackageDataFromFiles(files);
+      return [{
+        width: single.manifest.viewportWidth,
+        label: String(single.manifest.viewportWidth),
+        packageData: single
+      }];
+    }
+
+    var index = decodeJson(files["captures.json"], "captures.json");
+    if (!index || index.bundleType !== "multi-capture" || !Array.isArray(index.captures)) {
+      throw importError("invalid-package", "captures.json must describe a multi-capture bundle");
+    }
+
+    return index.captures.map(function (entry) {
+      if (!entry || typeof entry.dir !== "string" || !entry.dir) {
+        throw importError("invalid-package", "capture entry must reference a directory");
+      }
+      var subFiles = {};
+      Object.keys(files).forEach(function (name) {
+        if (name.indexOf(entry.dir) === 0) {
+          subFiles[name.slice(entry.dir.length)] = files[name];
+        }
+      });
       return {
-        report: createReport(packageData, renderResult)
+        width: entry.width,
+        label: entry.label || String(entry.width),
+        packageData: buildPackageDataFromFiles(subFiles)
       };
     });
   }
 
   function unpackFigcapture(bytes) {
-    var files = readZip(bytes);
+    return buildPackageDataFromFiles(readZip(bytes));
+  }
+
+  function buildPackageDataFromFiles(files) {
     var index;
     for (index = 0; index < REQUIRED_FILES.length; index += 1) {
       if (!files[REQUIRED_FILES[index]]) {
@@ -78,6 +456,27 @@
 
     validatePackage(packageData);
     return packageData;
+  }
+
+  function aggregateReports(reports) {
+    if (reports.length <= 1) {
+      return reports[0];
+    }
+    var sumKey = function (key) {
+      return reports.reduce(function (total, report) {
+        return total + (report[key] || 0);
+      }, 0);
+    };
+    var aggregated = Object.assign({}, reports[0]);
+    aggregated.createdFrameCount = sumKey("createdFrameCount");
+    aggregated.createdNodeCount = sumKey("createdNodeCount");
+    aggregated.fallbackCount = sumKey("fallbackCount");
+    aggregated.missingAssetCount = sumKey("missingAssetCount");
+    aggregated.unsupportedStyleCount = sumKey("unsupportedStyleCount");
+    aggregated.fontSubstitutions = reports.reduce(function (all, report) {
+      return all.concat(report.fontSubstitutions || []);
+    }, []);
+    return aggregated;
   }
 
   function validatePackage(packageData) {
@@ -123,11 +522,11 @@
     }
   }
 
-  function renderPackage(packageData) {
-    var frames = createFrames(packageData);
+  function renderPackage(packageData, originX, providedModels, progress) {
+    var frames = createFrames(packageData, originX || 0);
     var sourceFrame = frames[0];
     var accurateFrame = frames[1];
-    var layoutModels = createEditableLayoutNodeModels(packageData);
+    var layoutModels = providedModels || createEditableLayoutNodeModels(packageData);
     var autoLayoutSummary = summarizeAutoLayoutModels(layoutModels);
     var semanticNamingSummary = summarizeSemanticNamingModels(layoutModels);
     var fontPromises = [];
@@ -143,7 +542,17 @@
     }, true, null, null));
 
     for (index = 0; index < layoutModels.length; index += 1) {
-      accurateFrame.appendChild(createLayerTreeForModel(layoutModels[index], packageData, fontPromises, fontSubstitutions));
+      accurateFrame.appendChild(createLayerTreeForModel(layoutModels[index], packageData, fontPromises, fontSubstitutions, progress));
+    }
+
+    if (progress) {
+      postProgress({
+        phase: "fonts",
+        processed: progress.processed,
+        total: progress.total,
+        label: progress.captureDesc ? "Loading fonts — " + progress.captureDesc : "Loading fonts",
+        message: "Loading fonts…"
+      });
     }
 
     return Promise.all(fontPromises).then(function () {
@@ -170,19 +579,20 @@
     return { width: safeManifest.viewportWidth, height: safeManifest.viewportHeight };
   }
 
-  function createFrames(packageData) {
+  function createFrames(packageData, originX) {
     var roles = ["Source Screenshot", "Editable Accurate"];
     var title = packageData.capture.title || titleFromUrl(packageData.manifest.sourceUrl);
     var frameSize = captureFrameSize(packageData.manifest);
     var width = frameSize.width;
     var height = frameSize.height;
+    var baseX = originX || 0;
     var frames = [];
     var index;
 
     for (index = 0; index < roles.length; index += 1) {
       var frame = figma.createFrame();
       frame.name = title + " / " + width + "x" + height + " / " + roles[index];
-      frame.x = index * (width + 80);
+      frame.x = baseX + index * (width + 80);
       frame.y = 0;
       frame.resize(width, height);
       frame.clipsContent = true;
@@ -196,17 +606,19 @@
     return frames;
   }
 
-  function createLayerTreeForModel(model, packageData, fontPromises, fontSubstitutions) {
+  function createLayerTreeForModel(model, packageData, fontPromises, fontSubstitutions, progress) {
     var layer;
     var assetRef;
     var index;
+
+    tickProgress(progress);
 
     if (model.type === "FRAME") {
       layer = createFrameLayer(model);
       for (index = 0; index < model.children.length; index += 1) {
         appendModelChild(
           layer,
-          createLayerTreeForModel(model.children[index], packageData, fontPromises, fontSubstitutions),
+          createLayerTreeForModel(model.children[index], packageData, fontPromises, fontSubstitutions, progress),
           model.children[index]
         );
       }
@@ -308,6 +720,11 @@
       frame.paddingRight = Number(autoLayout.paddingRight) || 0;
       frame.paddingTop = Number(autoLayout.paddingTop) || 0;
       frame.paddingBottom = Number(autoLayout.paddingBottom) || 0;
+      bindNodeNumber(frame, "itemSpacing", Number(autoLayout.itemSpacing) || 0);
+      bindNodeNumber(frame, "paddingLeft", Number(autoLayout.paddingLeft) || 0);
+      bindNodeNumber(frame, "paddingRight", Number(autoLayout.paddingRight) || 0);
+      bindNodeNumber(frame, "paddingTop", Number(autoLayout.paddingTop) || 0);
+      bindNodeNumber(frame, "paddingBottom", Number(autoLayout.paddingBottom) || 0);
     } catch (error) {
       writeNodeMetadata(frame, "autoLayoutSkippedReason", "figma-property-rejected");
       return;
@@ -715,12 +1132,13 @@
     var stroke = Array.isArray(styles && styles.strokes) && styles.strokes.length > 0
       ? styles.strokes[0]
       : cssStrokeFromStyles(styles);
-    node.fills = fillPaintArray(styles);
+    node.fills = withBoundColors(fillPaintArray(styles));
     if (borderSides.length > 0) {
       applyBorderSideStrokes(node, borderSides);
     } else if (stroke) {
-      node.strokes = paintArray(stroke.color);
+      node.strokes = withBoundColors(paintArray(stroke.color));
       node.strokeWeight = stroke.width;
+      bindNodeNumber(node, "strokeWeight", stroke.width);
     } else {
       node.strokes = [];
       node.strokeWeight = 0;
@@ -728,6 +1146,7 @@
     node.cornerRadius = Number(styles && styles.cornerRadius) > 0
       ? Number(styles.cornerRadius)
       : cornerRadiusFromStyles(styles);
+    bindCornerRadius(node, node.cornerRadius);
     node.effects = shadowEffectsFromStyle(styles);
   }
 
@@ -815,7 +1234,7 @@
     var first = borderSides[0];
     var weights = { top: 0, right: 0, bottom: 0, left: 0 };
     var index;
-    node.strokes = paintArray(first && first.color);
+    node.strokes = withBoundColors(paintArray(first && first.color));
     node.strokeWeight = 0;
     for (index = 0; index < borderSides.length; index += 1) {
       weights[borderSides[index].side] = borderSides[index].width;
@@ -847,6 +1266,7 @@
         layer.characters = captureNode.textContent || "";
         if (numberFromCss(styles.fontSize) > 0) {
           layer.fontSize = numberFromCss(styles.fontSize);
+          bindNodeNumber(layer, "fontSize", numberFromCss(styles.fontSize));
         }
         if (numberFromCss(styles.lineHeight) > 0) {
           try {
@@ -859,7 +1279,7 @@
           }
         }
         var textFills = textFillPaintArray(styles);
-        layer.fills = textFills.length > 0 ? textFills : paintArray(textColorFromStyles(styles));
+        layer.fills = withBoundColors(textFills.length > 0 ? textFills : paintArray(textColorFromStyles(styles)));
         applyTextAlignment(layer, styles.textAlign);
         applyTextResizeAndLayoutSizing(layer, captureNode);
       });
@@ -5033,8 +5453,8 @@
   if (typeof figma !== "undefined" && figma.ui) {
     if (typeof figma.showUI === "function") {
       figma.showUI(typeof __html__ === "undefined" ? "" : __html__, {
-        width: 360,
-        height: 520
+        width: 380,
+        height: 600
       });
     }
     figma.ui.onmessage = runImport;

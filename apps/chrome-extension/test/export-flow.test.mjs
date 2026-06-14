@@ -1,13 +1,32 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { unpackFigcapture } from "../../../packages/capture-schema/dist/index.js";
+import { unpackFigcapture, unpackMultiCaptureFigcapture } from "../../../packages/capture-schema/dist/index.js";
 import { captureElementTree } from "../dist/capture-core.js";
 import {
   buildConfirmedExportPackage,
+  buildMultiCaptureExportPackage,
   createScreenshotCropFallbackProvider,
   downloadFigcaptureArchive,
   inspectArchiveFileNames
 } from "../dist/capture-package.js";
+
+function createBreakpointCapture(width) {
+  return captureElementTree(
+    {
+      tagName: "main",
+      rect: { x: 0, y: 0, width, height: 900 },
+      styles: {},
+      attributes: {},
+      children: []
+    },
+    { width, height: 900, devicePixelRatio: 2, scrollX: 0, scrollY: 0 },
+    {
+      sourceUrl: "https://app.example.com/dashboard",
+      title: "Dashboard",
+      captureTimestamp: "2026-06-08T08:00:00.000Z"
+    }
+  );
+}
 
 function createExportFixtureCapture() {
   return captureElementTree(
@@ -93,6 +112,35 @@ test("confirmed export creates one .figcapture archive with required files and a
     "Source Screenshot",
     "Editable Accurate"
   ]);
+});
+
+test("multi-capture export bundles every breakpoint into a single .figcapture", async () => {
+  const exportPackage = await buildMultiCaptureExportPackage([
+    {
+      width: 1440,
+      label: "1440",
+      capture: createBreakpointCapture(1440),
+      screenshotDataUrl: "data:image/png;base64,iVBORw0KGgo="
+    },
+    {
+      width: 375,
+      label: "375",
+      capture: createBreakpointCapture(375),
+      screenshotDataUrl: "data:image/png;base64,iVBORw0KGgo="
+    }
+  ]);
+
+  const bundle = unpackMultiCaptureFigcapture(exportPackage.bytes);
+
+  assert.equal(exportPackage.filename, "dashboard-1440-375.figcapture");
+  assert.equal(exportPackage.packageData.captures.length, 2);
+  assert.deepEqual(bundle.captures.map((entry) => entry.width), [1440, 375]);
+  assert.equal(bundle.captures[0].packageData.manifest.viewportWidth, 1440);
+  assert.equal(bundle.captures[1].packageData.manifest.viewportWidth, 375);
+});
+
+test("multi-capture export requires at least one breakpoint", async () => {
+  await assert.rejects(() => buildMultiCaptureExportPackage([]));
 });
 
 test("confirmed export packages screenshot-cropped fallback bytes when direct canvas bytes are unavailable", async () => {

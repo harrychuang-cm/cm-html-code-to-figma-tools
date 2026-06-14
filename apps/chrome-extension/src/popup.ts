@@ -3,35 +3,63 @@ import {
   EXPORT_CONFIRMED_MESSAGE
 } from "./runtime.ts";
 import { summarizeDiagnostics } from "@figma-capture/capture-schema";
+import {
+  normalizeBreakpointWidths,
+  parseCustomBreakpointWidth
+} from "./breakpoints.ts";
 
 export function connectPopup(documentRef = globalThis.document, chromeApi = globalThis.chrome) {
   const button = documentRef?.getElementById("capture-button");
   const status = documentRef?.getElementById("capture-status");
   const downloadButton = documentRef?.getElementById("download-button");
+  const addBreakpointButton = documentRef?.getElementById("add-breakpoint-button");
+
+  addBreakpointButton?.addEventListener("click", () => {
+    const input = documentRef.getElementById("custom-breakpoint-input");
+    const result = addCustomBreakpoint(documentRef, input?.value);
+    if (result.ok && input) {
+      input.value = "";
+    }
+  });
 
   button?.addEventListener("click", async () => {
-    setStatus(status, "Capturing active tab...");
+    const breakpointWidths = selectedBreakpointWidths(documentRef);
+    if (breakpointWidths.length === 0) {
+      setCaptureState(documentRef, "error", "Select at least one breakpoint before capturing");
+      return;
+    }
+
+    setCaptureState(
+      documentRef,
+      "working",
+      `Capturing ${breakpointWidths.length} breakpoint(s): ${breakpointWidths.join(", ")}px…`
+    );
+    setCaptureProgressVisible(documentRef, true);
     setDownloadEnabled(downloadButton, false);
     try {
       const response = await chromeApi.runtime.sendMessage({
         type: CAPTURE_ACTIVE_TAB_MESSAGE,
-        captureMode: selectedCaptureMode(documentRef)
+        captureMode: selectedCaptureMode(documentRef),
+        breakpointWidths
       });
       if (response?.status === "error") {
         renderRuntimeError(documentRef, response.error);
         return;
       }
-      setStatus(status, `Ready to capture ${response.tab.title || response.tab.url}`);
+      setCaptureProgressVisible(documentRef, false);
+      setCaptureState(documentRef, "success", `Captured ${response.tab.title || response.tab.url}`);
       if (response.preview) {
         renderCapturePreview(documentRef, response.preview);
       }
     } catch (error) {
-      setStatus(status, error.message);
+      setCaptureProgressVisible(documentRef, false);
+      setCaptureState(documentRef, "error", error.message);
     }
   });
 
   downloadButton?.addEventListener("click", async () => {
-    setStatus(status, "Preparing .figcapture...");
+    setCaptureState(documentRef, "working", "Preparing .figcapture…");
+    setCaptureProgressVisible(documentRef, true);
     setDownloadEnabled(downloadButton, false);
     try {
       const response = await chromeApi.runtime.sendMessage({ type: EXPORT_CONFIRMED_MESSAGE });
@@ -39,16 +67,28 @@ export function connectPopup(documentRef = globalThis.document, chromeApi = glob
         renderRuntimeError(documentRef, response.error);
         return;
       }
-      setStatus(status, `Downloaded ${response.filename}`);
+      setCaptureProgressVisible(documentRef, false);
+      setCaptureState(documentRef, "success", `Downloaded ${response.filename}`);
+      setDownloadEnabled(downloadButton, true);
     } catch (error) {
-      setStatus(status, error.message);
+      setCaptureProgressVisible(documentRef, false);
+      setCaptureState(documentRef, "error", error.message);
     }
   });
 }
 
-function setStatus(status, message) {
-  if (status) {
-    status.textContent = message;
+function setCaptureState(documentRef, state, message) {
+  const row = documentRef?.getElementById?.("capture-status-row");
+  if (row?.setAttribute) {
+    row.setAttribute("data-state", state);
+  }
+  setText(documentRef, "capture-status", message);
+}
+
+function setCaptureProgressVisible(documentRef, visible) {
+  const progress = documentRef?.getElementById?.("capture-progress");
+  if (progress) {
+    progress.hidden = !visible;
   }
 }
 
@@ -77,6 +117,7 @@ export function renderCapturePreview(documentRef, preview) {
 
   setText(documentRef, "source-url", preview.sourceUrl ?? "");
   setText(documentRef, "viewport-size", viewportLabel(preview.viewport));
+  setText(documentRef, "preview-breakpoints", breakpointPreviewLabel(preview));
   setText(documentRef, "capture-mode-label", preview.captureMode ?? "viewport");
   setText(
     documentRef,
@@ -103,6 +144,14 @@ export function renderCapturePreview(documentRef, preview) {
 }
 
 export function renderRuntimeError(documentRef, error) {
+  const row = documentRef?.getElementById?.("capture-status-row");
+  if (row?.setAttribute) {
+    row.setAttribute("data-state", "error");
+  }
+  const progress = documentRef?.getElementById?.("capture-progress");
+  if (progress) {
+    progress.hidden = true;
+  }
   setText(documentRef, "capture-status", error?.message ?? "Capture failed");
   setText(documentRef, "runtime-error-category", error?.category ?? "runtime-error");
   setDownloadEnabled(documentRef.getElementById("download-button"), false);
@@ -124,6 +173,64 @@ function setDownloadEnabled(downloadButton, enabled) {
 export function selectedCaptureMode(documentRef) {
   const fullPageRadio = documentRef?.getElementById?.("capture-mode-full-page");
   return fullPageRadio?.checked ? "full-page" : "viewport";
+}
+
+export function selectedBreakpointWidths(documentRef) {
+  const widths = [];
+
+  const presets = documentRef?.querySelectorAll?.(".breakpoint-preset") ?? [];
+  for (const input of Array.from(presets)) {
+    if (input.checked) {
+      widths.push(Number(input.value));
+    }
+  }
+
+  const customItems = documentRef?.querySelectorAll?.("#breakpoint-list [data-width]") ?? [];
+  for (const item of Array.from(customItems)) {
+    const value = item.getAttribute?.("data-width") ?? item.dataset?.width;
+    widths.push(Number(value));
+  }
+
+  return normalizeBreakpointWidths(widths);
+}
+
+export function addCustomBreakpoint(documentRef, rawValue) {
+  const errorElement = documentRef.getElementById("breakpoint-error");
+  const parsed = parseCustomBreakpointWidth(rawValue);
+  if (!parsed.ok) {
+    if (errorElement) {
+      errorElement.textContent = parsed.error;
+    }
+    return { ok: false, error: parsed.error };
+  }
+
+  if (errorElement) {
+    errorElement.textContent = "";
+  }
+
+  if (selectedBreakpointWidths(documentRef).includes(parsed.width)) {
+    return { ok: true, width: parsed.width, duplicate: true };
+  }
+
+  const list = documentRef.getElementById("breakpoint-list");
+  if (list?.appendChild && typeof documentRef.createElement === "function") {
+    const item = documentRef.createElement("li");
+    item.setAttribute?.("data-width", String(parsed.width));
+    item.textContent = `${parsed.width} px`;
+    list.appendChild(item);
+  }
+
+  return { ok: true, width: parsed.width };
+}
+
+function breakpointPreviewLabel(preview) {
+  if (Array.isArray(preview.breakpoints) && preview.breakpoints.length > 0) {
+    return preview.breakpoints.map((entry) => entry.label ?? `${entry.width}`).join(", ");
+  }
+  if (preview.viewport?.width) {
+    return `${preview.viewport.width}`;
+  }
+  return "-";
 }
 
 function viewportLabel(viewport = {}) {

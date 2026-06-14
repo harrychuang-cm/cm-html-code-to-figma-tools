@@ -48,6 +48,8 @@ function rewriteImports(source, workspace) {
     .replaceAll("./background.ts", "./background.js")
     .replaceAll("./runtime.ts", "./runtime.js")
     .replaceAll("./screenshot.ts", "./screenshot.js")
+    .replaceAll("./breakpoints.ts", "./breakpoints.js")
+    .replaceAll("./device-emulation.ts", "./device-emulation.js")
     .replaceAll("./content.ts", "./content.js")
     .replaceAll("./capture-package.ts", "./capture-package.js")
     .replaceAll("./stitch-screenshot.ts", "./stitch-screenshot.js")

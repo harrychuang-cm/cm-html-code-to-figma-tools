@@ -7,27 +7,84 @@
   </head>
   <body>
     <main>
-      <div class="plugin-title-row">
-        <h1>Import .figcapture</h1>
+      <header class="app-header">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect x="1" y="1" width="6" height="6" rx="1.5" fill="currentColor" opacity="0.9"/>
+              <rect x="9" y="1" width="6" height="6" rx="1.5" fill="currentColor" opacity="0.5"/>
+              <rect x="1" y="9" width="6" height="6" rx="1.5" fill="currentColor" opacity="0.5"/>
+              <rect x="9" y="9" width="6" height="6" rx="1.5" fill="currentColor" opacity="0.9"/>
+            </svg>
+          </span>
+          <div class="brand-text">
+            <h1>Production UI Import</h1>
+            <p class="brand-subtitle">Rebuild captured screens as editable Figma layers</p>
+          </div>
+        </div>
         <span id="plugin-version" class="plugin-version">v__PLUGIN_VERSION__</span>
-      </div>
-      <input id="capture-file" type="file" accept=".figcapture">
-      <section id="import-status" aria-live="polite">Ready</section>
-      <section id="import-error" aria-live="polite">
-        <span id="import-error-category"></span>
+      </header>
+
+      <label id="drop-zone" class="drop-zone" for="capture-file">
+        <input id="capture-file" type="file" accept=".figcapture" class="visually-hidden">
+        <span class="drop-zone-icon" aria-hidden="true">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12 15V4M12 4L8 8M12 4l4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M4 14v3a2 2 0 002 2h12a2 2 0 002-2v-3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </span>
+        <span class="drop-zone-title">Drop a <code>.figcapture</code> file</span>
+        <span class="drop-zone-hint">or click to browse</span>
+        <span id="selected-file" class="selected-file" hidden></span>
+      </label>
+
+      <label class="option-row" for="match-variables">
+        <input id="match-variables" type="checkbox" checked>
+        <span class="option-text">
+          <span class="option-title">Match Figma variables</span>
+          <span class="option-hint">Bind colors &amp; numbers to existing variables when they match</span>
+        </span>
+      </label>
+
+      <section id="import-status-row" class="status-row" data-state="idle">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span id="import-status" class="status-text" aria-live="polite">Ready to import</span>
       </section>
-      <section id="import-report" hidden>
-        <h2>Import report</h2>
-        <dl>
-          <div><dt>Frames</dt><dd id="created-frame-count">0</dd></div>
-          <div><dt>Nodes</dt><dd id="created-node-count">0</dd></div>
-          <div><dt>Fallbacks</dt><dd id="import-fallback-count">0</dd></div>
-          <div><dt>Missing assets</dt><dd id="import-missing-asset-count">0</dd></div>
-          <div><dt>Unsupported styles</dt><dd id="import-unsupported-style-count">0</dd></div>
-          <div><dt>Font substitutions</dt><dd id="font-substitution-count">0</dd></div>
-          <div><dt>Font details</dt><dd id="font-substitution-summary"></dd></div>
-          <div><dt>Auto layout</dt><dd id="auto-layout-confidence-summary">0 applied / 0 skipped / 0</dd></div>
-          <div><dt>Semantic naming</dt><dd id="semantic-naming-summary">0 named / 0 groups / 0 collapsed</dd></div>
+
+      <section id="import-progress" class="progress" hidden aria-live="polite">
+        <div class="progress-head">
+          <span id="progress-label" class="progress-label">Preparing…</span>
+          <span id="progress-count" class="progress-count"></span>
+        </div>
+        <div class="progress-track" role="progressbar" aria-label="Import progress">
+          <div id="progress-bar-fill" class="progress-bar-fill"></div>
+        </div>
+      </section>
+
+      <section id="import-error" class="error-banner" hidden aria-live="polite">
+        <span class="error-icon" aria-hidden="true">!</span>
+        <div class="error-body">
+          <span class="error-message" id="import-error-message"></span>
+          <span id="import-error-category" class="error-category"></span>
+        </div>
+      </section>
+
+      <section id="import-report" class="report card" hidden>
+        <div class="report-head">
+          <h2>Import report</h2>
+          <span class="report-badge" id="report-badge">Complete</span>
+        </div>
+        <dl class="report-grid">
+          <div class="report-row"><dt>Frames</dt><dd id="created-frame-count">0</dd></div>
+          <div class="report-row"><dt>Nodes</dt><dd id="created-node-count">0</dd></div>
+          <div class="report-row"><dt>Fallbacks</dt><dd id="import-fallback-count">0</dd></div>
+          <div class="report-row"><dt>Missing assets</dt><dd id="import-missing-asset-count">0</dd></div>
+          <div class="report-row"><dt>Unsupported styles</dt><dd id="import-unsupported-style-count">0</dd></div>
+          <div class="report-row"><dt>Font substitutions</dt><dd id="font-substitution-count">0</dd></div>
+          <div class="report-row report-row--wide"><dt>Font details</dt><dd id="font-substitution-summary">—</dd></div>
+          <div class="report-row report-row--wide"><dt>Auto layout</dt><dd id="auto-layout-confidence-summary">0 applied / 0 skipped / 0</dd></div>
+          <div class="report-row report-row--wide"><dt>Semantic naming</dt><dd id="semantic-naming-summary">0 named / 0 groups / 0 collapsed</dd></div>
+          <div class="report-row report-row--wide"><dt>Variables bound</dt><dd id="variable-binding-summary">—</dd></div>
         </dl>
       </section>
     </main>

@@ -1,11 +1,12 @@
 import {
   packFigcapture,
+  packMultiCaptureFigcapture,
   readFigcaptureFiles
 } from "@figma-capture/capture-schema";
 import { captureVisualAssets } from "./asset-capture.ts";
 import { createManifestFromCapture } from "./capture-core.ts";
 
-export async function buildConfirmedExportPackage(capture, screenshotDataUrl, options = {}) {
+export async function buildCapturePackageData(capture, screenshotDataUrl, options = {}) {
   const fallbackRasterProvider = options.fallbackRasterProvider ??
     createScreenshotCropFallbackProvider(screenshotDataUrl, capture.viewport);
   const assetResult = await captureVisualAssets(capture, {
@@ -13,7 +14,7 @@ export async function buildConfirmedExportPackage(capture, screenshotDataUrl, op
     fallbackRasterProvider
   });
   const figmaPlan = createInitialFigmaPlan(assetResult.capture, assetResult.sourceNodeMap);
-  const packageData = {
+  return {
     manifest: createManifestFromCapture(assetResult.capture, {
       generatorVersion: options.generatorVersion ?? "0.1.0",
       deviceLabel: options.deviceLabel
@@ -24,12 +25,49 @@ export async function buildConfirmedExportPackage(capture, screenshotDataUrl, op
     screenshot: dataUrlToBytes(screenshotDataUrl),
     assets: assetResult.assets
   };
+}
+
+export async function buildConfirmedExportPackage(capture, screenshotDataUrl, options = {}) {
+  const packageData = await buildCapturePackageData(capture, screenshotDataUrl, options);
   const bytes = packFigcapture(packageData);
 
   return {
-    filename: `${safeName(assetResult.capture.title || "capture")}-${packageData.manifest.viewportWidth}x${packageData.manifest.viewportHeight}.figcapture`,
+    filename: `${safeName(packageData.capture.title || "capture")}-${packageData.manifest.viewportWidth}x${packageData.manifest.viewportHeight}.figcapture`,
     bytes,
     packageData
+  };
+}
+
+export async function buildMultiCaptureExportPackage(breakpoints, options = {}) {
+  if (!Array.isArray(breakpoints) || breakpoints.length === 0) {
+    throw new Error("At least one breakpoint capture is required to build an export package");
+  }
+
+  const captures = [];
+  for (const breakpoint of breakpoints) {
+    const packageData = await buildCapturePackageData(breakpoint.capture, breakpoint.screenshotDataUrl, {
+      ...options,
+      deviceLabel: breakpoint.label ?? options.deviceLabel
+    });
+    if (breakpoint.truncationWarning) {
+      packageData.diagnostics.warnings.push(breakpoint.truncationWarning);
+    }
+    const width = breakpoint.width ?? packageData.manifest.viewportWidth;
+    captures.push({
+      width,
+      label: breakpoint.label ?? `${width}`,
+      packageData
+    });
+  }
+
+  const bytes = packMultiCaptureFigcapture({ captures });
+  const title = captures[0].packageData.capture.title || "capture";
+  const widthsLabel = captures.map((entry) => entry.width).join("-");
+
+  return {
+    filename: `${safeName(title)}-${widthsLabel}.figcapture`,
+    bytes,
+    packageData: { captures }
   };
 }
 

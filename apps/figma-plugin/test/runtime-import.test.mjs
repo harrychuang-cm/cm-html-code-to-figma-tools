@@ -3,7 +3,8 @@ import test from "node:test";
 import {
   createFigcaptureFileMap,
   packFigcapture,
-  packFigcaptureFiles
+  packFigcaptureFiles,
+  packMultiCaptureFigcapture
 } from "../../../packages/capture-schema/dist/index.js";
 import { createValidPackage } from "../../../packages/capture-schema/fixtures/valid-package.mjs";
 import {
@@ -975,3 +976,57 @@ test("plugin UI reports file transfer error and renders success without raw JSON
 function flattenNodes(nodes) {
   return nodes.flatMap((node) => [node, ...flattenNodes(node.children ?? [])]);
 }
+
+function narrowPackage(width) {
+  const base = createRuntimePackage();
+  return {
+    ...base,
+    manifest: { ...base.manifest, viewportWidth: width },
+    capture: { ...base.capture, viewport: { ...base.capture.viewport, width } }
+  };
+}
+
+test("import lays out multiple breakpoints side by side and aggregates the report", async () => {
+  const figmaApi = createMockFigmaApi();
+  const bytes = packMultiCaptureFigcapture({
+    captures: [
+      { width: 1440, label: "1440", packageData: narrowPackage(1440) },
+      { width: 375, label: "375", packageData: narrowPackage(375) }
+    ]
+  });
+
+  const result = await importPackageBytes(bytes, { figmaApi });
+
+  assert.equal(result.status, "success");
+  assert.equal(result.captures.length, 2);
+  assert.deepEqual(result.captures.map((entry) => entry.width), [1440, 375]);
+  assert.equal(result.captures[0].renderResult.frames[0].x, 0);
+  assert.equal(result.captures[1].renderResult.frames[0].x, 2 * (1440 + 80));
+  assert.equal(result.captures[1].renderResult.frames[1].x, 2 * (1440 + 80) + (375 + 80));
+  assert.equal(result.report.createdFrameCount, 4);
+});
+
+test("import sorts breakpoints widest-first regardless of bundle order", async () => {
+  const figmaApi = createMockFigmaApi();
+  const bytes = packMultiCaptureFigcapture({
+    captures: [
+      { width: 375, label: "375", packageData: narrowPackage(375) },
+      { width: 1440, label: "1440", packageData: narrowPackage(1440) }
+    ]
+  });
+
+  const result = await importPackageBytes(bytes, { figmaApi });
+
+  assert.deepEqual(result.captures.map((entry) => entry.width), [1440, 375]);
+  assert.equal(result.captures[0].renderResult.frames[0].x, 0);
+});
+
+test("import reads a legacy single-capture package as one breakpoint", async () => {
+  const figmaApi = createMockFigmaApi();
+  const result = await importPackageBytes(packFigcapture(createRuntimePackage()), { figmaApi });
+
+  assert.equal(result.status, "success");
+  assert.equal(result.captures.length, 1);
+  assert.equal(result.captures[0].renderResult.frames[0].x, 0);
+  assert.equal(result.report.createdFrameCount, 2);
+});

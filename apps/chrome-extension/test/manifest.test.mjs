@@ -14,7 +14,7 @@ test("extension shell is local-first and uses the expected permissions", async (
   const manifest = JSON.parse(await readFile("apps/chrome-extension/manifest.json", "utf8"));
   const runtime = describeBackgroundRuntime();
 
-  assert.deepEqual(manifest.permissions, ["activeTab", "scripting", "downloads"]);
+  assert.deepEqual(manifest.permissions, ["activeTab", "scripting", "downloads", "debugger"]);
   assert.deepEqual(manifest.host_permissions, ["<all_urls>"]);
   assert.deepEqual(runtime.uploadEndpoints, []);
   assert.deepEqual(runtime.hostPermissions, ["<all_urls>"]);

@@ -7,62 +7,103 @@
   </head>
   <body>
     <main>
-      <h1>Capture</h1>
-      <fieldset id="capture-mode">
-        <legend>Mode</legend>
-        <label>
-          <input type="radio" name="capture-mode" id="capture-mode-viewport" value="viewport" checked>
-          Visible viewport
-        </label>
-        <label>
-          <input type="radio" name="capture-mode" id="capture-mode-full-page" value="full-page">
-          Full page
-        </label>
-      </fieldset>
-      <button id="capture-button" type="button">Capture viewport</button>
-      <section id="capture-status" aria-live="polite">Ready</section>
-      <section id="capture-preview" hidden>
-        <img id="screenshot-preview" alt="Source screenshot preview">
-        <dl>
-          <div>
-            <dt>Source</dt>
-            <dd id="source-url">-</dd>
+      <header class="app-header">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect x="1" y="1" width="6" height="6" rx="1.5" fill="currentColor" opacity="0.9"/>
+              <rect x="9" y="1" width="6" height="6" rx="1.5" fill="currentColor" opacity="0.5"/>
+              <rect x="1" y="9" width="6" height="6" rx="1.5" fill="currentColor" opacity="0.5"/>
+              <rect x="9" y="9" width="6" height="6" rx="1.5" fill="currentColor" opacity="0.9"/>
+            </svg>
+          </span>
+          <div class="brand-text">
+            <h1>Production UI Capture</h1>
+            <p class="brand-subtitle">Capture the live page for Figma</p>
           </div>
-          <div>
-            <dt>Viewport</dt>
-            <dd id="viewport-size">-</dd>
-          </div>
-          <div>
-            <dt>Capture</dt>
-            <dd id="capture-mode-label">viewport</dd>
-          </div>
-          <div>
-            <dt>Document</dt>
-            <dd id="document-size">-</dd>
-          </div>
-          <div>
-            <dt>Fallbacks</dt>
-            <dd id="fallback-count">0</dd>
-          </div>
-          <div>
-            <dt>Missing assets</dt>
-            <dd id="missing-asset-count">0</dd>
-          </div>
-          <div>
-            <dt>Unsupported styles</dt>
-            <dd id="unsupported-style-count">0</dd>
-          </div>
-          <div>
-            <dt>Package</dt>
-            <dd id="package-generation-status">idle</dd>
-          </div>
-          <div>
-            <dt>Error</dt>
-            <dd id="runtime-error-category"></dd>
-          </div>
+        </div>
+      </header>
+
+      <section class="field">
+        <span class="field-label">Capture mode</span>
+        <div class="segmented" id="capture-mode" role="radiogroup" aria-label="Capture mode">
+          <label class="segment">
+            <input type="radio" name="capture-mode" id="capture-mode-viewport" value="viewport" checked>
+            <span>Viewport</span>
+          </label>
+          <label class="segment">
+            <input type="radio" name="capture-mode" id="capture-mode-full-page" value="full-page">
+            <span>Full page</span>
+          </label>
+        </div>
+      </section>
+
+      <section class="field" id="breakpoint-select">
+        <span class="field-label">Breakpoints</span>
+        <div class="pill-group">
+          <label class="pill">
+            <input type="checkbox" class="breakpoint-preset" name="breakpoint" value="1440" checked>
+            <span>1440</span>
+          </label>
+          <label class="pill">
+            <input type="checkbox" class="breakpoint-preset" name="breakpoint" value="1024">
+            <span>1024</span>
+          </label>
+          <label class="pill">
+            <input type="checkbox" class="breakpoint-preset" name="breakpoint" value="768">
+            <span>768</span>
+          </label>
+          <label class="pill">
+            <input type="checkbox" class="breakpoint-preset" name="breakpoint" value="375">
+            <span>375</span>
+          </label>
+        </div>
+        <div id="custom-breakpoint" class="custom-breakpoint">
+          <input
+            type="number"
+            id="custom-breakpoint-input"
+            min="200"
+            max="3840"
+            step="1"
+            inputmode="numeric"
+            placeholder="Custom width (px)"
+            aria-label="Custom breakpoint width in pixels">
+          <button id="add-breakpoint-button" type="button" class="btn btn-ghost">Add</button>
+        </div>
+        <p id="breakpoint-error" class="field-error" aria-live="polite"></p>
+        <ul id="breakpoint-list" class="chip-list" aria-label="Selected breakpoints"></ul>
+      </section>
+
+      <button id="capture-button" type="button" class="btn btn-primary">Capture viewport</button>
+
+      <section id="capture-status-row" class="status-row" data-state="idle">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span id="capture-status" class="status-text" aria-live="polite">Ready</span>
+      </section>
+
+      <section id="capture-progress" class="progress is-indeterminate" hidden aria-hidden="true">
+        <div class="progress-track">
+          <div class="progress-bar-fill"></div>
+        </div>
+      </section>
+
+      <section id="capture-preview" class="preview card" hidden>
+        <img id="screenshot-preview" class="preview-image" alt="Source screenshot preview">
+        <dl class="report-grid">
+          <div class="report-row"><dt>Source</dt><dd id="source-url" class="dd-url">-</dd></div>
+          <div class="report-row"><dt>Viewport</dt><dd id="viewport-size">-</dd></div>
+          <div class="report-row"><dt>Breakpoints</dt><dd id="preview-breakpoints">-</dd></div>
+          <div class="report-row"><dt>Capture</dt><dd id="capture-mode-label">viewport</dd></div>
+          <div class="report-row"><dt>Document</dt><dd id="document-size">-</dd></div>
+          <div class="report-row"><dt>Fallbacks</dt><dd id="fallback-count">0</dd></div>
+          <div class="report-row"><dt>Missing assets</dt><dd id="missing-asset-count">0</dd></div>
+          <div class="report-row"><dt>Unsupported styles</dt><dd id="unsupported-style-count">0</dd></div>
+          <div class="report-row"><dt>Package</dt><dd id="package-generation-status">idle</dd></div>
+          <div class="report-row"><dt>Error</dt><dd id="runtime-error-category" class="dd-error"></dd></div>
         </dl>
       </section>
-      <button id="download-button" type="button" disabled>Download .figcapture</button>
+
+      <button id="download-button" type="button" class="btn btn-secondary" disabled>Download .figcapture</button>
     </main>
     <script type="module" src="popup.js"></script>
   </body>

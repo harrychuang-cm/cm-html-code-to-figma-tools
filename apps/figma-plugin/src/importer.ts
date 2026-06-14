@@ -1,7 +1,8 @@
 import {
   ERROR_CODES,
   FigcaptureValidationError,
-  unpackFigcapture
+  unpackFigcapture,
+  unpackMultiCaptureFigcapture
 } from "@figma-capture/capture-schema";
 
 export function validatePackageBytes(bytes) {
@@ -15,6 +16,22 @@ export function validatePackageBytes(bytes) {
     return {
       ok: false,
       packageData: null,
+      error: mapImportError(error)
+    };
+  }
+}
+
+export function validateMultiCapturePackageBytes(bytes) {
+  try {
+    return {
+      ok: true,
+      bundle: unpackMultiCaptureFigcapture(bytes),
+      error: null
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      bundle: null,
       error: mapImportError(error)
     };
   }

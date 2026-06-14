@@ -6,6 +6,14 @@ import { packFigcapture } from "../../../packages/capture-schema/dist/index.js";
 import { createValidPackage } from "../../../packages/capture-schema/fixtures/valid-package.mjs";
 import { describePluginRuntime } from "../dist/code-module.js";
 
+// The classic runtime streams IMPORT_PROGRESS messages while rendering, so the
+// terminal result (IMPORT_SUCCESS / IMPORT_ERROR) is not necessarily posted[0].
+function resultMessage(posted) {
+  return posted.find(
+    (message) => message.type === "IMPORT_SUCCESS" || message.type === "IMPORT_ERROR"
+  );
+}
+
 function replaceAsciiAll(bytes, from, to) {
   assert.equal(from.length, to.length);
   const result = new Uint8Array(bytes);
@@ -349,8 +357,7 @@ test("classic Figma runtime omits transparent viewport-clipped table spacers", a
   const rowFrame = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-row");
   const returnHeading = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-return-heading");
 
-  assert.equal(posted.length, 1);
-  assert.equal(posted[0].type, "IMPORT_SUCCESS");
+  assert.equal(resultMessage(posted).type, "IMPORT_SUCCESS");
   assert.equal(hiddenSpacer, undefined);
   assert(rowFrame);
   assert.deepEqual(rowFrame.children.map((node) => node.pluginData.sourceNodeId), [
@@ -502,8 +509,7 @@ test("classic Figma runtime keeps rounded partial borders as side strokes", asyn
   const nestedNodes = flattenNodes(figma.currentPage.children);
   const button = nestedNodes.find((node) => node.type === "FRAME" && node.pluginData.sourceNodeId === "dom-more-button");
 
-  assert.equal(posted.length, 1);
-  assert.equal(posted[0].type, "IMPORT_SUCCESS");
+  assert.equal(resultMessage(posted).type, "IMPORT_SUCCESS");
   assert(button);
   assert.equal(button.cornerRadius, 100);
   assert.equal(button.strokeAlign, "INSIDE");
@@ -636,7 +642,7 @@ test("classic Figma runtime maps browser-ordered CSS box-shadow values to effect
   const panel = flattenNodes(figma.currentPage.children)
     .find((node) => node.pluginData.sourceNodeId === "dom-chat-panel");
 
-  assert.equal(posted[0].type, "IMPORT_SUCCESS");
+  assert.equal(resultMessage(posted).type, "IMPORT_SUCCESS");
   assert(panel);
   assert.deepEqual(JSON.parse(JSON.stringify(panel.effects)), [{
     type: "DROP_SHADOW",
@@ -824,7 +830,7 @@ test("classic Figma runtime places transparent padded emoji text in the content 
   const emoji = flattenNodes(accurateFrame.children)
     .find((node) => node.pluginData.sourceNodeId === "dom-chat-emoji");
 
-  assert.equal(posted[0].type, "IMPORT_SUCCESS");
+  assert.equal(resultMessage(posted).type, "IMPORT_SUCCESS");
   assert(emoji);
   assert.equal(emoji.x, 19);
   assert.equal(emoji.y, 9);
@@ -1038,7 +1044,7 @@ test("classic Figma runtime preserves transparent padded interactive tab wrapper
   const hotTab = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-etf-subtab-hot");
   const hotLabel = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-etf-subtab-hot::text");
 
-  assert.equal(posted[0].type, "IMPORT_SUCCESS");
+  assert.equal(resultMessage(posted).type, "IMPORT_SUCCESS");
   assert(nav);
   assert(hotTab);
   assert(hotLabel);
@@ -1221,8 +1227,7 @@ test("classic Figma runtime gives absolute read-more overlays a backdrop fill", 
   const readMore = flattenNodes(figma.currentPage.children)
     .find((node) => node.type === "FRAME" && node.pluginData.sourceNodeId === "dom-read-more");
 
-  assert.equal(posted.length, 1);
-  assert.equal(posted[0].type, "IMPORT_SUCCESS");
+  assert.equal(resultMessage(posted).type, "IMPORT_SUCCESS");
   assert(readMore);
   assert.equal(readMore.fills.length, 1);
   assert.equal(readMore.fills[0].type, "SOLID");
@@ -1353,8 +1358,7 @@ test("classic Figma runtime renders clipped background gradients as text fills",
   });
   await new Promise((resolve) => setTimeout(resolve, 0));
 
-  assert.equal(posted.length, 1);
-  assert.equal(posted[0].type, "IMPORT_SUCCESS");
+  assert.equal(resultMessage(posted).type, "IMPORT_SUCCESS");
   assert.equal(createdNodes.some((node) => node.name === "Text Background / 1"), false);
 
   const accurateFrame = figma.currentPage.children.find((frame) => frame.name.includes("Editable Accurate"));
@@ -2339,10 +2343,21 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
   });
   await new Promise((resolve) => setTimeout(resolve, 0));
 
-  assert.equal(posted.length, 1);
-  assert.equal(posted[0].type, "IMPORT_SUCCESS", JSON.stringify(posted[0]));
-  assert.equal(posted[0].report.createdFrameCount, 2);
-  assert(posted[0].report.autoLayoutConfidenceSummary.appliedCount >= 1);
+  const successMessage = resultMessage(posted);
+  assert.equal(successMessage.type, "IMPORT_SUCCESS", JSON.stringify(successMessage));
+  assert.equal(successMessage.report.createdFrameCount, 2);
+  assert(successMessage.report.autoLayoutConfidenceSummary.appliedCount >= 1);
+
+  // Importing streams progress: at least one IMPORT_PROGRESS message reaches the
+  // UI, it carries a real total, and the percentage never moves backwards.
+  const progressMessages = posted.filter((message) => message.type === "IMPORT_PROGRESS");
+  assert(progressMessages.length >= 1, "expected IMPORT_PROGRESS messages");
+  assert(progressMessages.some((message) => message.total > 0), "expected a determinate total");
+  const rendering = progressMessages.filter((message) => message.phase === "rendering" && message.total > 0);
+  for (let index = 1; index < rendering.length; index += 1) {
+    assert(rendering[index].processed >= rendering[index - 1].processed, "progress must not regress");
+  }
+  assert.equal(posted.indexOf(successMessage), posted.length - 1, "success must be the final message");
 
   const accurateFrame = figma.currentPage.children.find((frame) => frame.name.includes("Editable Accurate"));
   const nestedNodes = flattenNodes(accurateFrame.children);
@@ -2394,12 +2409,12 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
   assert(classicFontText);
   assert.equal(classicFontText.fontName.family, "Classic Sans");
   assert.equal(classicFontText.fontName.style, "Regular");
-  const classicFontSubstitution = posted[0].report.fontSubstitutions
+  const classicFontSubstitution = successMessage.report.fontSubstitutions
     .find((item) => item.sourceNodeId === "dom-classic-font");
   assert(classicFontSubstitution);
   assert.equal(classicFontSubstitution.used.family, "Classic Sans");
   assert.equal(classicFontSubstitution.used.style, "Regular");
-  const classicMediumSubstitution = posted[0].report.fontSubstitutions
+  const classicMediumSubstitution = successMessage.report.fontSubstitutions
     .find((item) => item.sourceNodeId === "dom-classic-medium");
   assert(classicMediumSubstitution);
   assert.equal(classicMediumSubstitution.used.family, "Pingfang TC");
@@ -2825,4 +2840,227 @@ test("classic Figma runtime sizes full-page frames to the document dimensions", 
   const screenshotLayer = frames[0].children[0];
   assert.equal(screenshotLayer.width, 1440);
   assert.equal(screenshotLayer.height, 5200);
+});
+
+test("classic Figma runtime binds matching colors and numbers to local variables", async () => {
+  const main = await readFile("apps/figma-plugin/dist/code.js", "utf8");
+  const posted = [];
+  const createdNodes = [];
+
+  function createNode(type) {
+    const node = {
+      type,
+      name: "",
+      children: [],
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0,
+      fills: [],
+      strokes: [],
+      cornerRadius: 0,
+      pluginData: {},
+      boundFields: {},
+      resize(width, height) {
+        this.width = width;
+        this.height = height;
+      },
+      appendChild(child) {
+        this.children.push(child);
+      },
+      setPluginData(key, value) {
+        this.pluginData[key] = value;
+      },
+      setBoundVariable(field, variable) {
+        this.boundFields[field] = variable.id;
+      }
+    };
+    createdNodes.push(node);
+    return node;
+  }
+
+  const redVariable = { id: "var-red", valuesByMode: { mode: { r: 1, g: 0, b: 0, a: 1 } } };
+  const radiusVariable = { id: "var-radius-8", valuesByMode: { mode: 8 } };
+
+  const figma = {
+    currentPage: {
+      children: [],
+      appendChild(child) {
+        this.children.push(child);
+      }
+    },
+    ui: {
+      onmessage: null,
+      postMessage(message) {
+        posted.push(message);
+      }
+    },
+    showUI() {},
+    createFrame() {
+      return createNode("FRAME");
+    },
+    createRectangle() {
+      return createNode("RECTANGLE");
+    },
+    createText() {
+      return createNode("TEXT");
+    },
+    createImage(bytes) {
+      return { hash: `hash-${bytes.length}` };
+    },
+    async loadFontAsync() {},
+    variables: {
+      async getLocalVariablesAsync(type) {
+        if (type === "COLOR") return [redVariable];
+        if (type === "FLOAT") return [radiusVariable];
+        return [];
+      },
+      setBoundVariableForPaint(paint, field, variable) {
+        return {
+          ...paint,
+          boundVariables: { [field]: { type: "VARIABLE_ALIAS", id: variable.id } }
+        };
+      }
+    }
+  };
+
+  const basePackage = createValidPackage();
+  const packageData = createValidPackage({
+    capture: {
+      ...basePackage.capture,
+      root: {
+        id: "node-root",
+        sourceNodeId: "dom-root",
+        nodeType: "element",
+        tagName: "main",
+        rect: { x: 0, y: 0, width: 390, height: 200 },
+        styles: {},
+        attributes: {},
+        children: [
+          {
+            id: "node-card",
+            sourceNodeId: "dom-card",
+            nodeType: "element",
+            tagName: "div",
+            rect: { x: 16, y: 16, width: 200, height: 120 },
+            styles: {
+              backgroundColor: "rgb(255, 0, 0)",
+              borderTopLeftRadius: "8px",
+              borderTopRightRadius: "8px",
+              borderBottomLeftRadius: "8px",
+              borderBottomRightRadius: "8px"
+            },
+            attributes: {},
+            children: []
+          }
+        ]
+      }
+    }
+  });
+
+  vm.runInNewContext(main, {
+    figma,
+    Uint8Array,
+    Uint32Array,
+    ArrayBuffer,
+    DataView,
+    Error,
+    JSON,
+    Math,
+    Number,
+    Object,
+    Promise,
+    String,
+    Boolean,
+    Array,
+    isFinite,
+    parseFloat
+  });
+  await figma.ui.onmessage({
+    type: "IMPORT_PACKAGE",
+    filename: "card.figcapture",
+    bytes: packFigcapture(packageData),
+    matchVariables: true
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const card = flattenNodes(figma.currentPage.children).find(
+    (node) => node.pluginData.sourceNodeId === "dom-card"
+  );
+  assert(card, "card node should be created");
+  assert.equal(card.fills[0].boundVariables.color.id, "var-red", "red fill should bind to the color variable");
+  assert.equal(card.boundFields.topLeftRadius, "var-radius-8", "corner radius should bind to the float variable");
+
+  const success = resultMessage(posted);
+  assert.equal(success.type, "IMPORT_SUCCESS");
+  assert.equal(success.report.variableBindings.available, true);
+  assert.equal(success.report.variableBindings.colors, 1);
+  assert.equal(success.report.variableBindings.numbers, 1);
+});
+
+test("classic Figma runtime skips variable binding when matchVariables is false", async () => {
+  const main = await readFile("apps/figma-plugin/dist/code.js", "utf8");
+  const posted = [];
+  let variablesQueried = 0;
+
+  function createNode(type) {
+    return {
+      type,
+      name: "",
+      children: [],
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0,
+      fills: [],
+      strokes: [],
+      cornerRadius: 0,
+      pluginData: {},
+      resize(width, height) {
+        this.width = width;
+        this.height = height;
+      },
+      appendChild(child) {
+        this.children.push(child);
+      },
+      setPluginData(key, value) {
+        this.pluginData[key] = value;
+      }
+    };
+  }
+
+  const figma = {
+    currentPage: { children: [], appendChild(child) { this.children.push(child); } },
+    ui: { onmessage: null, postMessage(message) { posted.push(message); } },
+    showUI() {},
+    createFrame() { return createNode("FRAME"); },
+    createRectangle() { return createNode("RECTANGLE"); },
+    createText() { return createNode("TEXT"); },
+    createImage(bytes) { return { hash: `hash-${bytes.length}` }; },
+    async loadFontAsync() {},
+    variables: {
+      async getLocalVariablesAsync() {
+        variablesQueried += 1;
+        return [];
+      },
+      setBoundVariableForPaint(paint) { return paint; }
+    }
+  };
+
+  vm.runInNewContext(main, {
+    figma, Uint8Array, Uint32Array, ArrayBuffer, DataView, Error, JSON, Math,
+    Number, Object, Promise, String, Boolean, Array, isFinite, parseFloat
+  });
+  await figma.ui.onmessage({
+    type: "IMPORT_PACKAGE",
+    filename: "card.figcapture",
+    bytes: packFigcapture(createValidPackage()),
+    matchVariables: false
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(variablesQueried, 0, "must not query variables when matching is disabled");
+  const success = resultMessage(posted);
+  assert.equal(success.type, "IMPORT_SUCCESS");
+  assert.equal(success.report.variableBindings.available, false);
 });

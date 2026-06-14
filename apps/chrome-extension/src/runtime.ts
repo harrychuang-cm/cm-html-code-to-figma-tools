@@ -1,6 +1,12 @@
 import { summarizeDiagnostics } from "@figma-capture/capture-schema";
-import { buildConfirmedExportPackage, downloadFigcaptureArchive } from "./capture-package.ts";
+import {
+  buildConfirmedExportPackage,
+  buildMultiCaptureExportPackage,
+  downloadFigcaptureArchive
+} from "./capture-package.ts";
 import { stitchScreenshotSegments } from "./stitch-screenshot.ts";
+import { normalizeBreakpointWidths, breakpointLabel } from "./breakpoints.ts";
+import { createDeviceEmulationSession } from "./device-emulation.ts";
 import {
   captureVisibleScreenshot,
   callChromeApi,
@@ -24,7 +30,8 @@ export const RUNTIME_ERROR_CATEGORIES = {
   SCREENSHOT_FAILED: "screenshot-failed",
   PACKAGE_GENERATION_FAILED: "package-generation-failed",
   DOWNLOAD_FAILED: "download-failed",
-  MISSING_PENDING_CAPTURE: "missing-pending-capture"
+  MISSING_PENDING_CAPTURE: "missing-pending-capture",
+  ALL_BREAKPOINTS_FAILED: "all-breakpoints-failed"
 };
 
 let pendingCapture = null;
@@ -33,11 +40,13 @@ export function createChromeCaptureRuntime(options = {}) {
   const chromeApi = options.chromeApi ?? globalThis.chrome;
   const screenshotAdapter = options.screenshotAdapter ?? captureVisibleScreenshot;
   const packageBuilder = options.packageBuilder ?? buildConfirmedExportPackage;
+  const multiPackageBuilder = options.multiPackageBuilder ?? buildMultiCaptureExportPackage;
   const assetResolver = options.assetResolver ?? createFetchAssetResolver();
   const downloader = options.downloader ?? downloadFigcaptureArchive;
   const contentMessage = options.contentMessage ?? sendContentCaptureMessage;
   const contentRequest = options.contentRequest ?? sendContentRequest;
   const stitcher = options.stitcher ?? stitchScreenshotSegments;
+  const emulationFactory = options.emulationFactory ?? createDeviceEmulationSession;
   const getPending = options.getPending ?? (() => pendingCapture);
   const setPending = options.setPending ?? ((value) => {
     pendingCapture = value;
@@ -75,15 +84,53 @@ export function createChromeCaptureRuntime(options = {}) {
     };
   }
 
-  async function captureSegmentScreenshot(tab) {
+  function visibleScreenshot(tab) {
+    return screenshotAdapter(chromeApi, { tab });
+  }
+
+  function clipFor(width, height) {
+    const w = Number(width);
+    const h = Number(height);
+    if (!(w > 0) || !(h > 0)) {
+      return null;
+    }
+    return { x: 0, y: 0, width: w, height: h, scale: 1 };
+  }
+
+  // When a device-emulation override is active, the real viewport pixels live in
+  // the debugger surface, not in the browser window that captureVisibleTab reads.
+  // Capturing through the same CDP session with captureBeyondViewport + an explicit
+  // clip renders exactly the reflowed region, so the screenshot matches the emulated
+  // width and stays correct even when the emulated surface is mobile/zero-height
+  // (which otherwise yields a blank image). Sessions without CDP screenshot support
+  // (e.g. the single, non-emulated capture) fall back to the window grab.
+  function screenshotFor(session) {
+    if (session && typeof session.captureScreenshot === "function") {
+      const fn = (_tab, clip) => session.captureScreenshot(
+        clip ? { clip, captureBeyondViewport: true } : { captureBeyondViewport: false }
+      );
+      fn.supportsClip = true;
+      return fn;
+    }
+    return visibleScreenshot;
+  }
+
+  async function captureSegmentScreenshot(tab, screenshot) {
     try {
-      return await screenshotAdapter(chromeApi, { tab });
+      return await screenshot(tab);
     } catch {
-      return await screenshotAdapter(chromeApi, { tab });
+      return await screenshot(tab);
     }
   }
 
-  async function captureFullPage(tab) {
+  async function captureViewportOnce(tab, screenshot = visibleScreenshot) {
+    const capture = await contentMessage(chromeApi, tab.id);
+    const clip = clipFor(capture?.viewport?.width, capture?.viewport?.height);
+    const screenshotDataUrl = await screenshot(tab, clip);
+    return { capture, screenshotDataUrl, truncationWarning: null };
+  }
+
+  async function captureFullPageOnce(tab, screenshot = visibleScreenshot) {
     const metricsResponse = await contentRequest(chromeApi, tab.id, { type: PAGE_METRICS_MESSAGE });
     const metrics = metricsResponse?.metrics;
     if (!metrics?.viewport?.width || !metrics?.viewport?.height) {
@@ -94,10 +141,14 @@ export function createChromeCaptureRuntime(options = {}) {
     }
 
     const plan = computeFullPageCapturePlan(metrics);
+    const truncationWarning = plan.truncated
+      ? `full-page capture truncated to ${plan.documentHeight}px of ${plan.rawDocumentHeight}px`
+      : null;
     let capture;
-    const segments = [];
 
     try {
+      // Pre-scroll through the page to trigger lazy-loaded content, then collect
+      // the full-page DOM tree.
       for (const offset of plan.segmentOffsets) {
         await contentRequest(chromeApi, tab.id, { type: SCROLL_TO_MESSAGE, scrollY: offset });
       }
@@ -116,12 +167,21 @@ export function createChromeCaptureRuntime(options = {}) {
       }
       capture = domResponse.capture;
 
+      if (screenshot.supportsClip) {
+        // CDP renders the whole emulated page in a single shot — no scroll-stitch,
+        // and no blank segments from mobile/zero-height emulation surfaces.
+        await contentRequest(chromeApi, tab.id, { type: SCROLL_TO_MESSAGE, scrollY: 0 });
+        const screenshotDataUrl = await screenshot(tab, clipFor(plan.documentWidth, plan.documentHeight));
+        return { capture, screenshotDataUrl, truncationWarning };
+      }
+
+      const segments = [];
       for (let index = 0; index < plan.segmentOffsets.length; index += 1) {
         const scrollResponse = await contentRequest(chromeApi, tab.id, {
           type: SCROLL_TO_MESSAGE,
           scrollY: plan.segmentOffsets[index]
         });
-        const dataUrl = await captureSegmentScreenshot(tab);
+        const dataUrl = await captureSegmentScreenshot(tab, screenshot);
         segments.push({
           dataUrl,
           scrollY: scrollResponse?.scrollY ?? plan.segmentOffsets[index]
@@ -130,35 +190,129 @@ export function createChromeCaptureRuntime(options = {}) {
           await contentRequest(chromeApi, tab.id, { type: SET_PINNED_HIDDEN_MESSAGE, hidden: true });
         }
       }
+
+      const screenshotDataUrl = await stitcher(segments, {
+        documentWidth: plan.documentWidth,
+        documentHeight: plan.documentHeight,
+        devicePixelRatio: metrics.viewport.devicePixelRatio ?? 1
+      });
+      return { capture, screenshotDataUrl, truncationWarning };
     } finally {
       await contentRequest(chromeApi, tab.id, { type: SET_PINNED_HIDDEN_MESSAGE, hidden: false })
         .catch(() => null);
       await contentRequest(chromeApi, tab.id, { type: SCROLL_TO_MESSAGE, scrollY: metrics.viewport.scrollY ?? 0 })
         .catch(() => null);
     }
+  }
 
-    const screenshotDataUrl = await stitcher(segments, {
-      documentWidth: plan.documentWidth,
-      documentHeight: plan.documentHeight,
-      devicePixelRatio: metrics.viewport.devicePixelRatio ?? 1
+  function captureOnce(tab, captureMode, screenshot = visibleScreenshot) {
+    return captureMode === "full-page"
+      ? captureFullPageOnce(tab, screenshot)
+      : captureViewportOnce(tab, screenshot);
+  }
+
+  async function captureBreakpoints(tab, widths, captureMode) {
+    const session = emulationFactory(chromeApi, tab.id);
+    const screenshot = screenshotFor(session);
+    const breakpoints = [];
+    const failures = [];
+
+    try {
+      await session.attach();
+      for (const width of widths) {
+        try {
+          await session.setWidth(width);
+          const single = await captureOnce(tab, captureMode, screenshot);
+          breakpoints.push({
+            width,
+            label: breakpointLabel(width),
+            capture: single.capture,
+            screenshotDataUrl: single.screenshotDataUrl,
+            truncationWarning: single.truncationWarning
+          });
+        } catch (error) {
+          failures.push({ width, message: error?.message ?? "Breakpoint capture failed" });
+        } finally {
+          await session.clear();
+        }
+      }
+    } finally {
+      await session.detach();
+    }
+
+    if (breakpoints.length === 0) {
+      throw runtimeError(
+        RUNTIME_ERROR_CATEGORIES.ALL_BREAKPOINTS_FAILED,
+        failures[0]?.message ?? "No breakpoint could be captured"
+      );
+    }
+
+    return buildMultiPreviewResult(tab, breakpoints, failures);
+  }
+
+  async function buildMultiPreviewResult(tab, breakpoints, failures) {
+    let previewPackage;
+    try {
+      previewPackage = await multiPackageBuilder(breakpoints, { assetResolver });
+    } catch (error) {
+      throw runtimeError(
+        RUNTIME_ERROR_CATEGORIES.PACKAGE_GENERATION_FAILED,
+        error?.message ?? "Capture package could not be generated",
+        error
+      );
+    }
+
+    const captureEntries = previewPackage.packageData.captures;
+    const primary = captureEntries[0];
+    const preview = {
+      ...createPreviewPayload(
+        primary.packageData.capture,
+        breakpoints[0].screenshotDataUrl,
+        primary.packageData.diagnostics,
+        tab
+      ),
+      multiCapture: true,
+      breakpoints: captureEntries.map((entry, index) => ({
+        width: entry.width,
+        label: entry.label,
+        viewport: {
+          width: entry.packageData.capture.viewport.width,
+          height: entry.packageData.capture.viewport.height
+        },
+        captureMode: entry.packageData.capture.captureMode ?? "viewport",
+        diagnostics: entry.packageData.diagnostics,
+        diagnosticsSummary: summarizeDiagnostics(entry.packageData.diagnostics),
+        screenshotDataUrl: breakpoints[index].screenshotDataUrl
+      })),
+      failures
+    };
+
+    setPending({
+      tab,
+      multiCapture: true,
+      breakpoints,
+      preview
     });
 
-    const truncationWarning = plan.truncated
-      ? `full-page capture truncated to ${plan.documentHeight}px of ${plan.rawDocumentHeight}px`
-      : null;
-    return buildPreviewResult(tab, capture, screenshotDataUrl, truncationWarning);
+    return {
+      status: "ready",
+      localFirst: true,
+      tab,
+      preview
+    };
   }
 
   return {
     async captureActiveTab(captureOptions = {}) {
       const tab = await resolveActiveTab(chromeApi);
-      if (captureOptions.captureMode === "full-page") {
-        return captureFullPage(tab);
+
+      const widths = normalizeBreakpointWidths(captureOptions.breakpointWidths ?? []);
+      if (widths.length > 0) {
+        return captureBreakpoints(tab, widths, captureOptions.captureMode);
       }
 
-      const capture = await contentMessage(chromeApi, tab.id);
-      const screenshotDataUrl = await screenshotAdapter(chromeApi, { tab });
-      return buildPreviewResult(tab, capture, screenshotDataUrl);
+      const single = await captureOnce(tab, captureOptions.captureMode);
+      return buildPreviewResult(tab, single.capture, single.screenshotDataUrl, single.truncationWarning);
     },
 
     async confirmExport() {
@@ -172,7 +326,9 @@ export function createChromeCaptureRuntime(options = {}) {
 
       let exportPackage;
       try {
-        exportPackage = await packageBuilder(pending.capture, pending.screenshotDataUrl, { assetResolver });
+        exportPackage = pending.multiCapture
+          ? await multiPackageBuilder(pending.breakpoints, { assetResolver })
+          : await packageBuilder(pending.capture, pending.screenshotDataUrl, { assetResolver });
       } catch (error) {
         throw runtimeError(
           RUNTIME_ERROR_CATEGORIES.PACKAGE_GENERATION_FAILED,
@@ -180,7 +336,7 @@ export function createChromeCaptureRuntime(options = {}) {
           error
         );
       }
-      if (pending.truncationWarning) {
+      if (!pending.multiCapture && pending.truncationWarning) {
         exportPackage.packageData.diagnostics.warnings.push(pending.truncationWarning);
       }
 
@@ -320,7 +476,10 @@ export async function sendContentRequest(chromeApi, tabId, message) {
 export async function handleCaptureActiveTab(chromeApi = globalThis.chrome, options = {}) {
   try {
     return await createChromeCaptureRuntime({ chromeApi, ...options })
-      .captureActiveTab({ captureMode: options.captureMode });
+      .captureActiveTab({
+        captureMode: options.captureMode,
+        breakpointWidths: options.breakpointWidths
+      });
   } catch (error) {
     return {
       status: "error",
