@@ -2054,7 +2054,9 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
                 nodeType: "element",
                 tagName: "svg",
                 rect: { x: 620, y: 0, width: 16, height: 16 },
-                styles: {},
+                styles: {
+                  color: "rgb(255, 255, 255)"
+                },
                 attributes: { assetKind: "svg" },
                 assetRef: "assets/vector-1.svg",
                 children: []
@@ -2151,7 +2153,9 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
             nodeType: "element",
             tagName: "svg",
             rect: { x: 288, y: 96, width: 12, height: 12 },
-            styles: {},
+            styles: {
+              color: "color(srgb 0.85098 0.866667 0.894118)"
+            },
             attributes: {
               assetKind: "svg"
             },
@@ -2227,6 +2231,19 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
               backgroundImage: "linear-gradient(to right, rgba(255, 255, 255, 0), rgb(255, 255, 255))"
             },
             attributes: { class: "carousel__fade" },
+            children: []
+          },
+          {
+            id: "node-card-bottom-fade",
+            sourceNodeId: "dom-card-bottom-fade",
+            nodeType: "element",
+            tagName: "div",
+            rect: { x: 900, y: 141, width: 280, height: 360 },
+            styles: {
+              backgroundColor: "rgba(0, 0, 0, 0)",
+              backgroundImage: "linear-gradient(rgba(0, 0, 0, 0), rgb(0, 0, 0))"
+            },
+            attributes: { class: "masterCreatorCard__fade" },
             children: []
           },
           {
@@ -2331,7 +2348,7 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
       })),
       "assets/banner.webp": new Uint8Array([0x52, 0x49, 0x46, 0x46, 0x08, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50]),
       "assets/fallback-1.png": new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
-      "assets/vector-1.svg": new TextEncoder().encode("<svg viewBox=\"0 0 12 12\"><path d=\"M4 2l4 4-4 4\"/></svg>"),
+      "assets/vector-1.svg": new TextEncoder().encode("<svg viewBox=\"0 0 12 12\"><path d=\"M4 2l4 4-4 4\" fill=\"currentColor\"/></svg>"),
       "assets/arrow.svg": new TextEncoder().encode("<svg width=\"10\" height=\"17\" viewBox=\"0 0 10 17\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\"><path d=\"M0 0L10 8.5L0 17Z\" fill=\"#676767\"/></svg>")
     }
   });
@@ -2391,9 +2408,11 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
   const readMoreEllipsisText = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-readmore-button-before");
   const readMoreLabelText = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-readmore-button::text");
   const carouselFade = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-carousel-fade");
+  const cardBottomFade = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-card-bottom-fade");
   const placeholder = nestedNodes.find((node) => node.pluginData.assetRef === "assets/image-1.png");
   const webpBannerFallback = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-webp-banner");
   const vectorNode = nestedNodes.find((node) => node.type === "VECTOR" && node.pluginData.assetRef === "assets/vector-1.svg");
+  const currentColorVector = nestedNodes.find((node) => node.type === "VECTOR" && node.pluginData.sourceNodeId === "dom-svg");
   const arrowWrapper = nestedNodes.find((node) => node.pluginData.sourceNodeId === "dom-arrow-img");
   const arrowVector = arrowWrapper ? arrowWrapper.children.find((node) => node.type === "VECTOR") : null;
 
@@ -2485,6 +2504,7 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
   assert(memberPointsFrame);
   assert.equal(memberPointsFrame.layoutMode, "HORIZONTAL");
   assert.equal(memberPointsChildren[0].type, "VECTOR");
+  assert.match(memberPointsChildren[0].svg, /fill="rgb\(255, 255, 255\)"/);
   assert.equal(memberPointsChildren[1].characters, "P點:");
   assert.equal(memberPointsChildren[1].pluginData.sourceNodeId, "dom-member-points-link::text");
   assert.equal(memberPointsChildren[2].characters, "4");
@@ -2521,19 +2541,30 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
   assert.deepEqual(readMoreButtonFrame.children.map((node) => node.characters), ["...", "閱讀更多"]);
   assert(carouselFade);
   assert.equal(carouselFade.fills[0].type, "GRADIENT_LINEAR");
+  assert(cardBottomFade);
+  assert.equal(cardBottomFade.fills[0].type, "GRADIENT_LINEAR");
+  assert.deepEqual(Array.from(cardBottomFade.fills[0].gradientTransform, (row) => Array.from(row)), [
+    [0, 1, 0],
+    [-1, 0, 1]
+  ]);
   assert(placeholder);
   assert.equal(placeholder.type, "FRAME");
   assert.match(placeholder.name, /Screenshot Crop$/);
   assert.match(placeholder.pluginData.fallbackReason, /screenshot crop fallback/);
   assert.equal(placeholder.children[0].x, -32);
   assert.equal(placeholder.children[0].y, -96);
+  assert.equal(placeholder.children[0].locked, true);
   assert(webpBannerFallback);
   assert.equal(webpBannerFallback.type, "FRAME");
   assert.match(webpBannerFallback.pluginData.fallbackReason, /screenshot crop fallback/);
   assert.equal(webpBannerFallback.children[0].x, 0);
   assert.equal(webpBannerFallback.children[0].y, -159);
+  assert.equal(webpBannerFallback.children[0].locked, true);
   assert(vectorNode);
   assert.match(vectorNode.svg, /<path/);
+  assert(currentColorVector);
+  assert.equal(currentColorVector.svg.includes("currentColor"), false);
+  assert.match(currentColorVector.svg, /fill="rgb\(217, 221, 228\)"/);
   assert(arrowWrapper);
   assert.equal(arrowWrapper.type, "FRAME");
   assert.equal(arrowWrapper.width, 16);
@@ -2556,6 +2587,22 @@ function isPng(bytes) {
     && bytes[1] === 0x50
     && bytes[2] === 0x4e
     && bytes[3] === 0x47;
+}
+
+function pngHeaderBytes(width, height) {
+  const bytes = new Uint8Array(24);
+  bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+  bytes.set([0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52], 8);
+  writeUint32(bytes, 16, width);
+  writeUint32(bytes, 20, height);
+  return bytes;
+}
+
+function writeUint32(bytes, offset, value) {
+  bytes[offset] = (value >>> 24) & 0xff;
+  bytes[offset + 1] = (value >>> 16) & 0xff;
+  bytes[offset + 2] = (value >>> 8) & 0xff;
+  bytes[offset + 3] = value & 0xff;
 }
 
 test("classic Figma runtime matches module runtime semantic names, collapsed tree, and statistics", async () => {
@@ -2737,6 +2784,136 @@ test("classic Figma runtime matches module runtime semantic names, collapsed tre
   assert.equal(success.report.semanticNamingSummary.collapsedWrappers >= 1, true);
 });
 
+test("classic Figma runtime centers margin-auto children in vertical auto layout", async () => {
+  const main = await readFile("apps/figma-plugin/dist/code.js", "utf8");
+  const posted = [];
+
+  function captureNode(sourceNodeId, tagName, rect, extra = {}) {
+    return {
+      id: `node-${sourceNodeId}`,
+      sourceNodeId,
+      nodeType: "element",
+      tagName,
+      textContent: extra.textContent ?? "",
+      rect,
+      styles: extra.styles ?? {},
+      attributes: extra.attributes ?? {},
+      children: extra.children ?? []
+    };
+  }
+
+  function createNode(type) {
+    return {
+      type,
+      name: "",
+      children: [],
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0,
+      fills: [],
+      strokes: [],
+      pluginData: {},
+      resize(width, height) {
+        this.width = width;
+        this.height = height;
+      },
+      appendChild(child) {
+        this.children.push(child);
+      },
+      setPluginData(key, value) {
+        this.pluginData[key] = value;
+      }
+    };
+  }
+
+  const root = captureNode("dom-root", "body", { x: 0, y: 0, width: 1434, height: 1131.25 }, {
+    children: [
+      captureNode("dom-section", "div", { x: 0, y: 0, width: 1434, height: 1131.25 }, {
+        styles: {
+          display: "flex",
+          flexDirection: "column",
+          paddingTop: "100px",
+          paddingBottom: "100px"
+        },
+        children: [
+          captureNode("dom-section-a", "div", { x: 117, y: 100, width: 1200, height: 455.63 }, {
+            styles: {
+              backgroundColor: "rgb(255, 255, 255)",
+              marginLeft: "117px",
+              marginRight: "117px",
+              width: "1200px",
+              maxWidth: "1200px"
+            }
+          }),
+          captureNode("dom-section-b", "div", { x: 117, y: 675.62, width: 1200, height: 455.63 }, {
+            styles: {
+              backgroundColor: "rgb(255, 255, 255)",
+              marginLeft: "117px",
+              marginRight: "117px",
+              width: "1200px",
+              maxWidth: "1200px"
+            }
+          })
+        ]
+      })
+    ]
+  });
+  const basePackage = createValidPackage();
+  const packageData = createValidPackage({
+    capture: {
+      ...basePackage.capture,
+      root
+    }
+  });
+  const figma = {
+    currentPage: { children: [], appendChild(child) { this.children.push(child); } },
+    ui: { onmessage: null, postMessage(message) { posted.push(message); } },
+    showUI() {},
+    createFrame() { return createNode("FRAME"); },
+    createRectangle() { return createNode("RECTANGLE"); },
+    createText() { return createNode("TEXT"); },
+    createImage(bytes) { return { hash: `hash-${bytes.length}` }; },
+    async loadFontAsync() {}
+  };
+
+  vm.runInNewContext(main, {
+    figma,
+    Uint8Array,
+    Uint32Array,
+    ArrayBuffer,
+    DataView,
+    Error,
+    JSON,
+    Math,
+    Number,
+    Object,
+    Promise,
+    String,
+    Boolean,
+    Array,
+    isFinite,
+    parseFloat
+  });
+  await figma.ui.onmessage({
+    type: "IMPORT_PACKAGE",
+    filename: "centered.figcapture",
+    bytes: packFigcapture(packageData)
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const success = posted.find((message) => message.type === "IMPORT_SUCCESS");
+  assert.ok(success, `expected IMPORT_SUCCESS, got ${JSON.stringify(posted)}`);
+
+  const accurateFrame = figma.currentPage.children[1];
+  const section = flattenNodes(accurateFrame.children).find((node) => node.pluginData?.sourceNodeId === "dom-section");
+  assert(section);
+  assert.equal(section.layoutMode, "VERTICAL");
+  assert.equal(section.counterAxisAlignItems, "CENTER");
+  assert.equal(section.paddingLeft, 0);
+  assert.equal(section.paddingRight, 0);
+});
+
 test("classic Figma runtime sizes full-page frames to the document dimensions", async () => {
   const main = await readFile("apps/figma-plugin/dist/code.js", "utf8");
   const posted = [];
@@ -2844,6 +3021,106 @@ test("classic Figma runtime sizes full-page frames to the document dimensions", 
   const screenshotLayer = frames[0].children[0];
   assert.equal(screenshotLayer.width, 1440);
   assert.equal(screenshotLayer.height, 5200);
+});
+
+test("classic Figma runtime uses packaged full-page screenshot tiles", async () => {
+  const main = await readFile("apps/figma-plugin/dist/code.js", "utf8");
+  const posted = [];
+
+  function createNode(type) {
+    return {
+      type,
+      name: "",
+      children: [],
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0,
+      fills: [],
+      strokes: [],
+      pluginData: {},
+      resize(width, height) {
+        this.width = width;
+        this.height = height;
+      },
+      appendChild(child) {
+        this.children.push(child);
+      },
+      setPluginData(key, value) {
+        this.pluginData[key] = value;
+      }
+    };
+  }
+
+  const figma = {
+    currentPage: { children: [], appendChild(child) { this.children.push(child); } },
+    ui: { onmessage: null, postMessage(message) { posted.push(message); } },
+    showUI() {},
+    createFrame() { return createNode("FRAME"); },
+    createRectangle() { return createNode("RECTANGLE"); },
+    createText() { return createNode("TEXT"); },
+    createImage(bytes) {
+      return { hash: `hash-${bytes.length}` };
+    },
+    async loadFontAsync() {}
+  };
+  const basePackage = createValidPackage();
+  const screenshotBytes = new Uint8Array([...pngHeaderBytes(2880, 6800), 0x01]);
+  const packageData = createValidPackage({
+    manifest: {
+      ...basePackage.manifest,
+      captureMode: "full-page",
+      documentWidth: 1440,
+      documentHeight: 3400,
+      devicePixelRatio: 2
+    },
+    screenshot: screenshotBytes,
+    assets: {
+      ...basePackage.assets,
+      "assets/source-screenshot/tile-0000.png": pngHeaderBytes(2880, 3600),
+      "assets/source-screenshot/tile-0001.png": pngHeaderBytes(2880, 3200)
+    }
+  });
+
+  vm.runInNewContext(main, {
+    figma,
+    Uint8Array,
+    Uint32Array,
+    ArrayBuffer,
+    DataView,
+    Error,
+    JSON,
+    Math,
+    Number,
+    Object,
+    Promise,
+    String,
+    Boolean,
+    Array,
+    isFinite,
+    parseFloat
+  });
+  await figma.ui.onmessage({
+    type: "IMPORT_PACKAGE",
+    filename: "full-page-tiled.figcapture",
+    bytes: packFigcapture(packageData)
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const success = posted.find((message) => message.type === "IMPORT_SUCCESS");
+  assert.ok(success, `expected IMPORT_SUCCESS, got ${JSON.stringify(posted)}`);
+
+  const sourceFrame = figma.currentPage.children[0];
+  assert.deepEqual(sourceFrame.children.map((node) => ({
+    name: node.name,
+    x: node.x,
+    y: node.y,
+    width: node.width,
+    height: node.height
+  })), [
+    { name: "Source screenshot / Tile 1", x: 0, y: 0, width: 1440, height: 1800 },
+    { name: "Source screenshot / Tile 2", x: 0, y: 1800, width: 1440, height: 1600 }
+  ]);
 });
 
 test("classic Figma runtime binds matching colors and numbers to local variables", async () => {

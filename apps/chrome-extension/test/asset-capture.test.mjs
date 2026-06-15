@@ -621,6 +621,65 @@ test("asset capture resolves remote image bytes and records fetch failures", asy
   assert.match(new TextDecoder().decode(result.assets["assets/image-2.png"]), /asset fetch failed/);
 });
 
+test("asset capture unwraps Nuxt IPX image URLs before resolving assets", async () => {
+  const capture = captureElementTree(
+    {
+      tagName: "main",
+      rect: { x: 0, y: 0, width: 800, height: 600 },
+      styles: {},
+      attributes: {},
+      children: [
+        {
+          tagName: "img",
+          sourceNodeId: "dom-avatar",
+          rect: { x: 1355, y: 15, width: 34, height: 34 },
+          styles: { objectFit: "cover" },
+          attributes: {
+            currentSrc: "https://pocketstudio.com.tw/_ipx/f_webp&q_85/https://fsv.cmoney.tw/cmstatic/head-icons/a53.gif",
+            src: "/_ipx/f_webp&q_85/https://fsv.cmoney.tw/cmstatic/head-icons/a53.gif",
+            srcset: "/_ipx/f_webp&amp;q_85/https://fsv.cmoney.tw/cmstatic/head-icons/a53.gif 1x, /_ipx/f_webp&amp;q_85/https://fsv.cmoney.tw/cmstatic/head-icons/a53.gif 2x"
+          },
+          children: []
+        }
+      ]
+    },
+    { width: 1440, height: 973, devicePixelRatio: 2, scrollX: 0, scrollY: 0 },
+    {
+      sourceUrl: "https://pocketstudio.com.tw",
+      captureTimestamp: "2026-06-15T08:00:00.000Z"
+    }
+  );
+  const gifBytes = Uint8Array.from([71, 73, 70, 56, 57, 97]);
+  const resolvedSources = [];
+  let fallbackCalls = 0;
+
+  const result = await captureVisualAssets(capture, {
+    async assetResolver(source) {
+      resolvedSources.push(source.url);
+      return {
+        bytes: gifBytes,
+        contentType: "image/gif"
+      };
+    },
+    fallbackRasterProvider() {
+      fallbackCalls += 1;
+      return Uint8Array.from([137, 80, 78, 71]);
+    }
+  });
+  const avatar = result.capture.root.children[0];
+
+  assert.deepEqual(resolvedSources, ["https://fsv.cmoney.tw/cmstatic/head-icons/a53.gif"]);
+  assert.equal(fallbackCalls, 0);
+  assert.equal(avatar.assetRef, "assets/image-1.gif");
+  assert.equal(avatar.attributes.assetKind, "raster");
+  assert.equal(avatar.attributes.assetSource, "https://fsv.cmoney.tw/cmstatic/head-icons/a53.gif");
+  assert.deepEqual(Array.from(result.assets["assets/image-1.gif"]), Array.from(gifBytes));
+  assert.deepEqual(result.sourceNodeMap, [
+    { sourceNodeId: "dom-avatar", assetRef: "assets/image-1.gif" }
+  ]);
+  assert.equal(result.diagnostics.counts.fallbacks, 0);
+});
+
 test("css image URL extraction ignores unsupported gradients", () => {
   assert.equal(firstCssImageUrl("linear-gradient(red, blue)"), null);
   assert.equal(firstCssImageUrl("url('data:image/svg+xml,%3Csvg%2F%3E')"), "data:image/svg+xml,%3Csvg%2F%3E");

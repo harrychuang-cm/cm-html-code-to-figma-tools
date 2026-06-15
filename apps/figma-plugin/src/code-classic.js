@@ -10,6 +10,14 @@
   var VARIABLE_INDEX = null;
   var SUPPORTED_ZIP_FLAGS = 0x0800;
   var MAX_ARCHIVE_FILE_NAME_LENGTH = 240;
+  var LINEAR_GRADIENT_TO_RIGHT_TRANSFORM = [
+    [1, 0, 0],
+    [0, 1, 0]
+  ];
+  var LINEAR_GRADIENT_TO_BOTTOM_TRANSFORM = [
+    [0, 1, 0],
+    [-1, 0, 1]
+  ];
 
   function postError(category, message) {
     figma.ui.postMessage({
@@ -534,12 +542,10 @@
     var index;
 
     var frameSize = captureFrameSize(packageData.manifest);
-    sourceFrame.appendChild(createImageNode("Source screenshot", packageData.screenshot, {
-      x: 0,
-      y: 0,
-      width: frameSize.width,
-      height: frameSize.height
-    }, true, null, null));
+    var sourceScreenshotNodes = createSourceScreenshotNodes(packageData, frameSize);
+    for (index = 0; index < sourceScreenshotNodes.length; index += 1) {
+      sourceFrame.appendChild(sourceScreenshotNodes[index]);
+    }
 
     for (index = 0; index < layoutModels.length; index += 1) {
       accurateFrame.appendChild(createLayerTreeForModel(layoutModels[index], packageData, fontPromises, fontSubstitutions, progress));
@@ -577,6 +583,70 @@
       return { width: safeManifest.documentWidth, height: safeManifest.documentHeight };
     }
     return { width: safeManifest.viewportWidth, height: safeManifest.viewportHeight };
+  }
+
+  function createSourceScreenshotNodes(packageData, frameSize) {
+    var tileModels = createSourceScreenshotTileModels(packageData, frameSize);
+    var nodes = [];
+    var index;
+    if (tileModels.length > 0) {
+      for (index = 0; index < tileModels.length; index += 1) {
+        nodes.push(createImageNode(
+          tileModels[index].name,
+          tileModels[index].bytes,
+          tileModels[index].rect,
+          true,
+          tileModels[index].assetRef,
+          null
+        ));
+      }
+      return nodes;
+    }
+    return [createImageNode("Source screenshot", packageData.screenshot, {
+      x: 0,
+      y: 0,
+      width: frameSize.width,
+      height: frameSize.height
+    }, true, null, null)];
+  }
+
+  function createSourceScreenshotTileModels(packageData, frameSize) {
+    var prefix = "assets/source-screenshot/tile-";
+    var assets = packageData && packageData.assets || {};
+    var dpr = Number(packageData && packageData.manifest && packageData.manifest.devicePixelRatio || 1) || 1;
+    var names = Object.keys(assets).filter(function (name) {
+      return name.indexOf(prefix) === 0 && /\.png$/.test(name);
+    }).sort();
+    var models = [];
+    var y = 0;
+    var index;
+    var intrinsic;
+    var height;
+    var name;
+    for (index = 0; index < names.length; index += 1) {
+      name = names[index];
+      intrinsic = pngIntrinsicSize(assets[name]);
+      if (!intrinsic || intrinsic.width <= 0 || intrinsic.height <= 0) {
+        return [];
+      }
+      height = Math.min(frameSize.height - y, round(intrinsic.height / dpr));
+      if (height <= 0) {
+        break;
+      }
+      models.push({
+        name: "Source screenshot / Tile " + (index + 1),
+        assetRef: name,
+        bytes: assets[name],
+        rect: {
+          x: 0,
+          y: y,
+          width: frameSize.width,
+          height: height
+        }
+      });
+      y = round(y + height);
+    }
+    return y >= frameSize.height - 1 ? models : [];
   }
 
   function createFrames(packageData, originX) {
@@ -739,6 +809,7 @@
     var node;
     var screenshotFallback;
     var canUseScreenshotCropFallback = false;
+    var aspectMismatchReason;
     if (isSvgAsset(assetRef, assetKind, imageBytes) && typeof figma.createNodeFromSvg === "function") {
       try {
         return createSvgImageNode(name, imageBytes, rect, locked, assetRef, style || {}, sourceNodeId, cssZIndex);
@@ -754,6 +825,13 @@
     writeNodeMetadata(node, "sourceNodeId", sourceNodeId);
     writeNodeMetadata(node, "cssZIndex", cssZIndex);
     if (isSupportedRasterImage(imageBytes)) {
+      aspectMismatchReason = screenshotCropReasonForMismatchedRaster(style || {}, rect, imageBytes);
+      if (aspectMismatchReason) {
+        screenshotFallback = createScreenshotCropFallbackNode(name, rect, locked, assetRef, sourceNodeId, cssZIndex, absoluteRect, packageData, aspectMismatchReason);
+        if (screenshotFallback) {
+          return screenshotFallback;
+        }
+      }
       try {
         image = figma.createImage(imageBytes);
         node.fills = [{
@@ -786,9 +864,41 @@
     return node;
   }
 
+  function screenshotCropReasonForMismatchedRaster(style, rect, bytes) {
+    var objectFit = String(style && style.objectFit || "").replace(/^\s+|\s+$/g, "").toLowerCase();
+    var intrinsic;
+    var rectWidth;
+    var rectHeight;
+    var rectAspect;
+    var intrinsicAspect;
+    if (objectFit !== "contain" && objectFit !== "scale-down") {
+      return "";
+    }
+    intrinsic = pngIntrinsicSize(bytes);
+    rectWidth = Number(rect && rect.width || 0);
+    rectHeight = Number(rect && rect.height || 0);
+    if (!intrinsic || rectWidth <= 0 || rectHeight <= 0 || intrinsic.width <= 0 || intrinsic.height <= 0) {
+      return "";
+    }
+    rectAspect = rectWidth / rectHeight;
+    intrinsicAspect = intrinsic.width / intrinsic.height;
+    if (!aspectRatiosDiffer(rectAspect, intrinsicAspect, 0.25)) {
+      return "";
+    }
+    return "asset aspect ratio mismatch (" + intrinsic.width + "x" + intrinsic.height + " asset for " + round(rectWidth) + "x" + round(rectHeight) + " rendered rect)";
+  }
+
+  function aspectRatiosDiffer(a, b, tolerance) {
+    if (!isFinite(a) || !isFinite(b) || a <= 0 || b <= 0) {
+      return false;
+    }
+    return Math.abs(a - b) / Math.max(a, b) > tolerance;
+  }
+
   function createScreenshotCropFallbackNode(name, rect, locked, assetRef, sourceNodeId, cssZIndex, absoluteRect, packageData, reason) {
-    var viewportWidth = Number(packageData && packageData.manifest && packageData.manifest.viewportWidth || 0);
-    var viewportHeight = Number(packageData && packageData.manifest && packageData.manifest.viewportHeight || 0);
+    var viewport = captureFrameSize(packageData && packageData.manifest || {});
+    var viewportWidth = Number(viewport.width || 0);
+    var viewportHeight = Number(viewport.height || 0);
     var imageHash;
     var frame;
     var screenshotLayer;
@@ -828,6 +938,7 @@
 
     screenshotLayer = figma.createRectangle();
     screenshotLayer.name = "Screenshot crop source";
+    screenshotLayer.locked = true;
     sourceX = numberFromCss(absoluteRect.x);
     sourceY = numberFromCss(absoluteRect.y);
     screenshotLayer.x = sourceX === 0 ? 0 : -sourceX;
@@ -852,7 +963,7 @@
   }
 
   function createSvgImageNode(name, imageBytes, rect, locked, assetRef, style, sourceNodeId, cssZIndex) {
-    var svgText = decodeUtf8(imageBytes);
+    var svgText = resolveSvgCurrentColor(decodeUtf8(imageBytes), svgCurrentColorFromStyle(style || {}));
     var svgNode = figma.createNodeFromSvg(svgText);
     var safeRect = rect || {};
     var rotation = rotationFromTransform(style && style.transform);
@@ -898,6 +1009,36 @@
     writeNodeMetadata(svgNode, "assetKind", "svg");
     frame.appendChild(svgNode);
     return frame;
+  }
+
+  function svgCurrentColorFromStyle(style) {
+    if (!style) {
+      return "";
+    }
+    return style.color || (style.text && style.text.color) || "";
+  }
+
+  function resolveSvgCurrentColor(svgText, colorValue) {
+    var color;
+    if (!/\bcurrentColor\b/i.test(svgText)) {
+      return svgText;
+    }
+    color = parseCssColor(colorValue);
+    if (!color) {
+      return svgText;
+    }
+    return svgText.replace(/\bcurrentColor\b/gi, cssColorToSvgColor(color));
+  }
+
+  function cssColorToSvgColor(color) {
+    var r = Math.round(clamp(color.r, 0, 255));
+    var g = Math.round(clamp(color.g, 0, 255));
+    var b = Math.round(clamp(color.b, 0, 255));
+    var a = clamp(color.a, 0, 1);
+    if (a < 1) {
+      return "rgba(" + r + ", " + g + ", " + b + ", " + (Math.round(a * 1000) / 1000) + ")";
+    }
+    return "rgb(" + r + ", " + g + ", " + b + ")";
   }
 
   function svgIntrinsicSize(svgText) {
@@ -3293,7 +3434,7 @@
     }
 
     primaryAxisAlignItems = inferPrimaryAxisAlignment(styles, children, layoutMode, parentRect);
-    counterAxisAlignItems = counterAxisAlignmentFromCss(styles.alignItems);
+    counterAxisAlignItems = inferCounterAxisAlignment(styles, children, layoutMode, parentRect);
     if (hasNonUniformImplicitSpacing(styles, children, layoutMode, primaryAxisAlignItems)) {
       return skippedLayout("non-uniform-spacing");
     }
@@ -3846,6 +3987,9 @@
 
     lineHeight = numberFromCss(styles.lineHeight) || numberFromCss(styles.fontSize) * 1.2;
     if (lineHeight > 0 && rect.height > lineHeight * 1.75) {
+      if (shouldPreserveTallSingleLineHug(node, rect, styles)) {
+        return "WIDTH_AND_HEIGHT";
+      }
       return "HEIGHT";
     }
 
@@ -4273,6 +4417,55 @@
     return undefined;
   }
 
+  function inferCounterAxisAlignment(styles, children, layoutMode, parentRect) {
+    var cssAlignment = counterAxisAlignmentFromCss(styles.alignItems);
+    if (cssAlignment) {
+      return cssAlignment;
+    }
+    if (shouldInferCounterAxisCenterFromMargins(children, layoutMode, parentRect)) {
+      return "CENTER";
+    }
+    return undefined;
+  }
+
+  function shouldInferCounterAxisCenterFromMargins(children, layoutMode, parentRect) {
+    var parentStart;
+    var parentSize;
+    var index;
+    var child;
+    var rect;
+    var childSize;
+    var remainingSpace;
+    var leadingMargin;
+    var trailingMargin;
+    var expectedStart;
+    if (children.length === 0) {
+      return false;
+    }
+
+    parentStart = counterAxisStart(parentRect, layoutMode);
+    parentSize = counterAxisSize(parentRect, layoutMode);
+    for (index = 0; index < children.length; index += 1) {
+      child = children[index];
+      rect = child.absoluteRect;
+      childSize = counterAxisSize(rect, layoutMode);
+      remainingSpace = parentSize - childSize;
+      if (remainingSpace <= 4) {
+        return false;
+      }
+      leadingMargin = leadingCounterAxisMargin(child, layoutMode);
+      trailingMargin = trailingCounterAxisMargin(child, layoutMode);
+      if (leadingMargin <= 0 || trailingMargin <= 0 || !approximatelyEqualInset(leadingMargin, trailingMargin, 2)) {
+        return false;
+      }
+      expectedStart = parentStart + remainingSpace / 2;
+      if (!approximatelyEqualInset(counterAxisStart(rect, layoutMode), expectedStart, 1)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   function shouldInferSpaceBetweenFromGeometry(styles, children, layoutMode, parentRect) {
     var sorted;
     var explicitGap;
@@ -4376,6 +4569,14 @@
     return layoutMode === "HORIZONTAL" ? rect.x + rect.width : rect.y + rect.height;
   }
 
+  function counterAxisStart(rect, layoutMode) {
+    return layoutMode === "HORIZONTAL" ? rect.y : rect.x;
+  }
+
+  function counterAxisSize(rect, layoutMode) {
+    return layoutMode === "HORIZONTAL" ? rect.height : rect.width;
+  }
+
   function leadingAxisPadding(styles, layoutMode) {
     return numberFromCss(layoutMode === "HORIZONTAL" ? styles.paddingLeft : styles.paddingTop);
   }
@@ -4390,6 +4591,14 @@
 
   function trailingAxisMargin(model, layoutMode) {
     return numberFromCss(layoutMode === "HORIZONTAL" ? model.styles && model.styles.marginRight : model.styles && model.styles.marginBottom);
+  }
+
+  function leadingCounterAxisMargin(model, layoutMode) {
+    return numberFromCss(layoutMode === "HORIZONTAL" ? model.styles && model.styles.marginTop : model.styles && model.styles.marginLeft);
+  }
+
+  function trailingCounterAxisMargin(model, layoutMode) {
+    return numberFromCss(layoutMode === "HORIZONTAL" ? model.styles && model.styles.marginBottom : model.styles && model.styles.marginRight);
   }
 
   function approximatelyEqualInset(value, expected, tolerance) {
@@ -4464,6 +4673,7 @@
       objectFit: styles.objectFit || "",
       transform: styles.transform || "",
       transformOrigin: styles.transformOrigin || "",
+      color: styles.color || "",
       text: node.textContent ? {
         fontFamily: styles.fontFamily || "",
         fontSize: numberFromCss(styles.fontSize),
@@ -4927,7 +5137,7 @@
     var parts;
     var first;
     var stops;
-    var reverseStops = false;
+    var direction = "to bottom";
     var parsedStops;
     var gradientStops;
     if (!args) {
@@ -4941,7 +5151,7 @@
     first = parts[0].replace(/^\s+|\s+$/g, "").toLowerCase();
     if (isCssGradientDirection(first)) {
       stops = parts.slice(1);
-      reverseStops = first === "to left" || first === "270deg" || first === "-90deg";
+      direction = normalizeCssGradientDirection(first);
     }
     if (stops.length < 2) {
       return null;
@@ -4952,7 +5162,7 @@
     if (parsedStops.length < 2) {
       return null;
     }
-    gradientStops = reverseStops
+    gradientStops = shouldReverseCssGradientStops(direction)
       ? parsedStops.map(function (stop) {
         return {
           position: round(1 - stop.position),
@@ -4962,10 +5172,7 @@
       : parsedStops;
     return {
       type: "GRADIENT_LINEAR",
-      gradientTransform: [
-        [1, 0, 0],
-        [0, 1, 0]
-      ],
+      gradientTransform: cssGradientTransform(direction),
       gradientStops: gradientStops
     };
   }
@@ -5026,6 +5233,46 @@
   function isCssGradientDirection(value) {
     return /^to\s+(?:left|right|top|bottom)$/.test(value) ||
       /^-?\d+(?:\.\d+)?deg$/.test(value);
+  }
+
+  function normalizeCssGradientDirection(value) {
+    var source = String(value || "").replace(/^\s+|\s+$/g, "").toLowerCase();
+    var angleMatch;
+    var normalized;
+    if (source.indexOf("to ") === 0) {
+      return source;
+    }
+    angleMatch = source.match(/^(-?\d+(?:\.\d+)?)deg$/);
+    if (!angleMatch) {
+      return "to bottom";
+    }
+    normalized = ((parseFloat(angleMatch[1]) % 360) + 360) % 360;
+    if (normalized === 0) {
+      return "to top";
+    }
+    if (normalized === 90) {
+      return "to right";
+    }
+    if (normalized === 180) {
+      return "to bottom";
+    }
+    if (normalized === 270) {
+      return "to left";
+    }
+    return "to right";
+  }
+
+  function shouldReverseCssGradientStops(direction) {
+    return direction === "to left" || direction === "to top";
+  }
+
+  function cssGradientTransform(direction) {
+    var transform = direction === "to top" || direction === "to bottom"
+      ? LINEAR_GRADIENT_TO_BOTTOM_TRANSFORM
+      : LINEAR_GRADIENT_TO_RIGHT_TRANSFORM;
+    return transform.map(function (row) {
+      return row.slice();
+    });
   }
 
   function cssGradientStop(value, index, total) {
@@ -5444,6 +5691,21 @@
     return bytes.length >= 4 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
   }
 
+  function pngIntrinsicSize(bytes) {
+    var imageBytes = toUint8Array(bytes);
+    if (
+      imageBytes.length < 24 ||
+      !isPng(imageBytes) ||
+      decodeUtf8(copyBytes(imageBytes, 12, 16)) !== "IHDR"
+    ) {
+      return null;
+    }
+    return {
+      width: readUint32BigEndian(imageBytes, 16),
+      height: readUint32BigEndian(imageBytes, 20)
+    };
+  }
+
   function isJpeg(bytes) {
     return bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
   }
@@ -5454,6 +5716,13 @@
 
   function isWebp(bytes) {
     return bytes.length >= 12 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50;
+  }
+
+  function readUint32BigEndian(bytes, offset) {
+    return ((bytes[offset] << 24) >>> 0) +
+      (bytes[offset + 1] << 16) +
+      (bytes[offset + 2] << 8) +
+      bytes[offset + 3];
   }
 
   function copyBytes(bytes, start, end) {

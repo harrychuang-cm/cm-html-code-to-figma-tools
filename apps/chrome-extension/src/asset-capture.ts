@@ -65,7 +65,19 @@ export function captureVisualAssets(capture, options = {}) {
   function storeAssetSource(node, source, namePrefix, fallbackExtension) {
     const assetKind = source.assetKind;
     const extension = normalizeAssetExtension(source.extension ?? fallbackExtension ?? "png");
-    const assetName = `assets/${namePrefix}-${source.index}.${extension}`;
+    let assetName = `assets/${namePrefix}-${source.index}.${extension}`;
+    let sourceMapEntry = null;
+
+    function updateAssetName(nextAssetName) {
+      if (!nextAssetName || nextAssetName === assetName) {
+        return;
+      }
+      assetName = nextAssetName;
+      node.assetRef = assetName;
+      if (sourceMapEntry) {
+        sourceMapEntry.assetRef = assetName;
+      }
+    }
 
     if (!source.url && !source.bytes) {
       node.assetRef = assetName;
@@ -75,7 +87,8 @@ export function captureVisualAssets(capture, options = {}) {
     }
 
     node.assetRef = assetName;
-    sourceNodeMap.push({ sourceNodeId: node.sourceNodeId, assetRef: assetName });
+    sourceMapEntry = { sourceNodeId: node.sourceNodeId, assetRef: assetName };
+    sourceNodeMap.push(sourceMapEntry);
 
     if (source.bytes) {
       storeAssetBytes(node, assetName, source.bytes, assetKind, source);
@@ -105,8 +118,22 @@ export function captureVisualAssets(capture, options = {}) {
           const resolvedBytes = resolved?.bytes ?? resolved;
           const contentType = resolved?.contentType ?? "";
           const resolvedKind = assetKindFromContentType(contentType) ?? assetKind;
+          const normalizedBytes = toUint8Array(resolvedBytes);
+          if (shouldRasterizeFetchedImageAsset(source, normalizedBytes, contentType) && options.fallbackRasterProvider) {
+            return Promise.resolve(options.fallbackRasterProvider(node))
+              .then((bytes) => {
+                const croppedBytes = normalizeFallbackBytes(bytes);
+                if (croppedBytes.length > 0 && !isTransparentPlaceholder(croppedBytes)) {
+                  updateAssetName(`assets/${namePrefix}-${source.index}.png`);
+                  storeAssetBytes(node, assetName, croppedBytes, "raster", source);
+                  return;
+                }
+                node.attributes.assetKind = resolvedKind;
+                storeAssetBytes(node, assetName, normalizedBytes, resolvedKind, source);
+              });
+          }
           node.attributes.assetKind = resolvedKind;
-          storeAssetBytes(node, assetName, resolvedBytes, resolvedKind, source);
+          storeAssetBytes(node, assetName, normalizedBytes, resolvedKind, source);
         })
         .catch((error) => {
           recordMissingAsset(node, assetName, "asset fetch failed", {
@@ -246,6 +273,26 @@ function normalizeFallbackBytes(bytes) {
   return normalized.length > 0 ? normalized : TRANSPARENT_PNG;
 }
 
+function shouldRasterizeFetchedImageAsset(source, bytes, contentType = "") {
+  if (source.assetKind !== "raster") {
+    return false;
+  }
+  return isWebpBytes(bytes) || /\bimage\/webp\b/i.test(contentType);
+}
+
+function isWebpBytes(bytes) {
+  const normalized = toUint8Array(bytes);
+  return normalized.length >= 12 &&
+    normalized[0] === 0x52 &&
+    normalized[1] === 0x49 &&
+    normalized[2] === 0x46 &&
+    normalized[3] === 0x46 &&
+    normalized[8] === 0x57 &&
+    normalized[9] === 0x45 &&
+    normalized[10] === 0x42 &&
+    normalized[11] === 0x50;
+}
+
 function isTransparentPlaceholder(bytes) {
   const normalized = toUint8Array(bytes);
   if (normalized.length !== TRANSPARENT_PNG.length) {
@@ -337,10 +384,11 @@ function imageSourceForNode(node, index) {
     .find((candidate) => candidate && !isTransparentPlaceholderSource(candidate)) ||
     imageSourceCandidates(node).find(Boolean) ||
     "";
-  const extension = extensionFromSource(src) ?? "png";
+  const assetSrc = assetSourceFromImageUrl(src);
+  const extension = extensionFromSource(assetSrc) ?? extensionFromSource(src) ?? "png";
   return {
     index,
-    url: src,
+    url: assetSrc,
     extension,
     assetKind: extension === "svg" ? "svg" : "raster",
     missingReason: "missing image source"
@@ -366,6 +414,39 @@ function firstSrcsetUrl(value) {
   }
   const firstCandidate = value.split(",").map((item) => item.trim()).find(Boolean) ?? "";
   return firstCandidate.split(/\s+/)[0] ?? "";
+}
+
+function assetSourceFromImageUrl(src) {
+  const normalized = String(src || "").trim().replace(/&amp;/g, "&");
+  return originalUrlFromNuxtIpxSource(normalized) || normalized;
+}
+
+function originalUrlFromNuxtIpxSource(src) {
+  const markerIndex = src.indexOf("/_ipx/");
+  if (markerIndex < 0) {
+    return "";
+  }
+
+  const payload = src.slice(markerIndex + "/_ipx/".length);
+  const rawProtocolIndex = payload.search(/https?:\/\//i);
+  if (rawProtocolIndex >= 0) {
+    return payload.slice(rawProtocolIndex);
+  }
+
+  const encodedProtocolIndex = payload.search(/https?%3A%2F%2F/i);
+  if (encodedProtocolIndex >= 0) {
+    return decodeUriComponentSafe(payload.slice(encodedProtocolIndex));
+  }
+
+  return "";
+}
+
+function decodeUriComponentSafe(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
 }
 
 function isTransparentPlaceholderSource(src) {

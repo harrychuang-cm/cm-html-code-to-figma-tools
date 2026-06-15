@@ -1,6 +1,6 @@
 {
   "name": "production-ui-to-figma",
-  "version": "0.1.47",
+  "version": "0.1.56",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.20.0",

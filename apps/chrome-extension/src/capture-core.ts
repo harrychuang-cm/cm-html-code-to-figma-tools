@@ -143,8 +143,11 @@ export function captureVisibleViewportFromDocument(documentRef = globalThis.docu
   const rawRoot = snapshotDomElement(rootElement, documentRef, windowRef, null, {
     openOrClosedShadowRoot: options.openOrClosedShadowRoot
   });
+  const root = options.captureMode === "full-page"
+    ? translateFullPageCaptureRoot(rawRoot, viewport, options.captureBounds)
+    : rawRoot;
 
-  return captureElementTree(rawRoot, viewport, {
+  return captureElementTree(root, viewport, {
     sourceUrl: documentRef.location?.href ?? windowRef.location?.href ?? "about:blank",
     title: documentRef.title ?? "",
     captureTimestamp: options.captureTimestamp,
@@ -152,6 +155,43 @@ export function captureVisibleViewportFromDocument(documentRef = globalThis.docu
     captureMode: options.captureMode,
     captureBounds: options.captureBounds
   });
+}
+
+function translateFullPageCaptureRoot(root, viewport, captureBounds = {}) {
+  const width = positiveNumber(captureBounds?.width, positiveNumber(root?.rect?.width, viewport.width));
+  const height = positiveNumber(captureBounds?.height, positiveNumber(root?.rect?.height, viewport.height));
+  const offset = {
+    x: Number(viewport.scrollX ?? 0),
+    y: Number(viewport.scrollY ?? 0)
+  };
+
+  return translateCaptureNodeToDocument(root, offset, true, { width, height });
+}
+
+function translateCaptureNodeToDocument(node, offset, isRoot = false, rootBounds = {}) {
+  if (!node) {
+    return node;
+  }
+
+  const rect = normalizeRect(node.rect ?? {});
+  const documentRect = isRoot
+    ? {
+      x: 0,
+      y: 0,
+      width: round(rootBounds.width),
+      height: round(rootBounds.height)
+    }
+    : {
+      ...rect,
+      x: round(rect.x + offset.x),
+      y: round(rect.y + offset.y)
+    };
+
+  return {
+    ...node,
+    rect: documentRect,
+    children: (node.children ?? []).map((child) => translateCaptureNodeToDocument(child, offset))
+  };
 }
 
 export function isRectInViewport(rect, viewport) {
@@ -651,6 +691,11 @@ function parseCssNumber(value) {
   }
   const parsed = Number.parseFloat(value);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function positiveNumber(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function visibleColor(value) {

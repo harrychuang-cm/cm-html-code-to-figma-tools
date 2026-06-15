@@ -46,7 +46,9 @@ export function pageMetrics(documentRef = globalThis.document, windowRef = globa
 }
 
 export async function scrollToAndSettle(scrollY, windowRef = globalThis.window) {
-  windowRef.scrollTo(0, Number(scrollY ?? 0));
+  const targetY = Math.max(0, Number(scrollY ?? 0));
+  scrollInstantly(windowRef, targetY);
+  await waitForScrollPosition(targetY, windowRef);
   await waitForRenderSettle(windowRef);
   return { scrollY: windowRef.scrollY || 0, scrollX: windowRef.scrollX || 0 };
 }
@@ -80,8 +82,7 @@ export async function collectDom(message, documentRef = globalThis.document, win
     await waitForRenderSettle(windowRef);
     return captureVisibleViewportFromDocument(documentRef, windowRef, { openOrClosedShadowRoot });
   }
-  windowRef.scrollTo(0, 0);
-  await waitForRenderSettle(windowRef);
+  await scrollToAndSettle(0, windowRef);
   const metrics = pageMetrics(documentRef, windowRef);
   return captureVisibleViewportFromDocument(documentRef, windowRef, {
     openOrClosedShadowRoot,
@@ -129,6 +130,47 @@ function contentMessageHandler(type) {
     return (message) => setPinnedHidden(Boolean(message?.hidden));
   }
   return null;
+}
+
+function scrollInstantly(windowRef, targetY) {
+  if (typeof windowRef?.scrollTo !== "function") {
+    return;
+  }
+  try {
+    windowRef.scrollTo({ left: 0, top: targetY, behavior: "instant" });
+  } catch {
+    windowRef.scrollTo(0, targetY);
+    return;
+  }
+  if (!Number.isFinite(windowRef.scrollY) || Math.abs((windowRef.scrollY || 0) - targetY) > 1) {
+    try {
+      windowRef.scrollTo(0, targetY);
+    } catch {
+      // The later settle phase will report the actual scroll position.
+    }
+  }
+}
+
+async function waitForScrollPosition(targetY, windowRef = globalThis.window) {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    if (Math.abs((windowRef.scrollY || 0) - targetY) <= 1) {
+      return;
+    }
+    await waitForNextFrame(windowRef);
+  }
+}
+
+function waitForNextFrame(windowRef = globalThis.window) {
+  return new Promise((resolve) => {
+    const settleTimer = typeof windowRef?.setTimeout === "function"
+      ? windowRef.setTimeout.bind(windowRef)
+      : setTimeout;
+    if (typeof windowRef?.requestAnimationFrame === "function") {
+      windowRef.requestAnimationFrame(() => settleTimer(resolve, 0));
+      return;
+    }
+    settleTimer(resolve, 16);
+  });
 }
 
 function waitForRenderSettle(windowRef = globalThis.window) {

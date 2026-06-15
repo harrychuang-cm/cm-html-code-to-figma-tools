@@ -1686,6 +1686,68 @@ test("captureBounds preserves below-fold content without viewport clamping", () 
   assert.equal(manifest.viewportHeight, 900);
 });
 
+test("full-page document capture translates viewport rects after pre-scroll", () => {
+  function createElement(tagName, options = {}) {
+    return {
+      tagName,
+      attributes: options.attributes ?? [],
+      childNodes: options.childNodes ?? [],
+      children: options.children ?? [],
+      getBoundingClientRect() {
+        return options.rect;
+      }
+    };
+  }
+
+  const footer = createElement("footer", {
+    rect: { x: 100, y: 720, width: 400, height: 120 },
+    childNodes: [{ nodeType: 3, textContent: "頁底內容" }]
+  });
+  const hero = createElement("section", {
+    rect: { x: 80, y: -3920, width: 600, height: 320 },
+    childNodes: [{ nodeType: 3, textContent: "頁首內容" }]
+  });
+  const body = createElement("body", {
+    rect: { x: 0, y: 0, width: 1440, height: 900 },
+    children: [hero, footer]
+  });
+
+  const capture = captureVisibleViewportFromDocument({
+    body,
+    documentElement: body,
+    title: "Pre-scrolled page",
+    location: { href: "https://app.example.com/landing" }
+  }, {
+    innerWidth: 1440,
+    innerHeight: 900,
+    devicePixelRatio: 2,
+    scrollX: 0,
+    scrollY: 4063,
+    location: { href: "https://app.example.com/landing" },
+    getComputedStyle(_element, pseudo) {
+      if (pseudo) {
+        return { display: "none", content: "none" };
+      }
+      return {
+        display: "block",
+        position: "static",
+        visibility: "visible",
+        opacity: "1",
+        backgroundColor: "rgba(0, 0, 0, 0)",
+        color: "rgb(17, 24, 39)"
+      };
+    }
+  }, {
+    captureMode: "full-page",
+    captureBounds: { width: 1440, height: 5882 }
+  });
+
+  assert.equal(capture.captureMode, "full-page");
+  assert.deepEqual(capture.root.rect, { x: 0, y: 0, width: 1440, height: 5882 });
+  assert.deepEqual(capture.root.children.map((child) => child.rect.y), [143, 4783]);
+  assert.deepEqual(capture.root.children.map((child) => child.textContent), ["頁首內容", "頁底內容"]);
+});
+
 test("capture without captureBounds keeps existing viewport clipping behavior", () => {
   const capture = captureElementTree(
     {

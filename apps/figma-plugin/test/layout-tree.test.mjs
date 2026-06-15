@@ -685,6 +685,9 @@ test("mixed direct text and SVG children preserve all inline content", () => {
     },
     children: [
       node("dom-cart-svg", "svg", { x: 100, y: 6, width: 16, height: 16 }, {
+        styles: {
+          color: "color(srgb 0.85098 0.866667 0.894118)"
+        },
         attributes: { assetKind: "svg", svgMarkup: "<svg />" },
         assetRef: "assets/cart.svg"
       })
@@ -698,6 +701,7 @@ test("mixed direct text and SVG children preserve all inline content", () => {
   assert.equal(model.autoLayout.layoutMode, "HORIZONTAL");
   assert.equal(icon.type, "IMAGE");
   assert.equal(icon.assetKind, "svg");
+  assert.equal(icon.style.color, "color(srgb 0.85098 0.866667 0.894118)");
   assert.equal(label.type, "TEXT");
   assert.equal(label.text, "結帳");
   assert.equal(label.sourceNodeId, "dom-checkout-link::text");
@@ -1285,6 +1289,43 @@ test("vertical flex column receives auto layout with measured gap fallback", () 
   assert.equal(model.autoLayout.itemSpacing, 12);
 });
 
+test("vertical flex column infers centered cross-axis alignment from geometry", () => {
+  const productSections = node("dom-products", "div", { x: 0, y: 1267.52, width: 1434, height: 1131.25 }, {
+    styles: {
+      display: "flex",
+      flexDirection: "column",
+      gap: "120px",
+      alignItems: "normal"
+    },
+    children: [
+      node("dom-product-a", "div", { x: 117, y: 1367.52, width: 1200, height: 455.63 }, {
+        styles: {
+          marginLeft: "117px",
+          marginRight: "117px"
+        },
+        children: [
+          text("dom-product-a-title", "向大師學習", { x: 117, y: 1367.52, width: 160, height: 40 })
+        ]
+      }),
+      node("dom-product-b", "div", { x: 117, y: 1943.15, width: 1200, height: 455.62 }, {
+        styles: {
+          marginLeft: "117px",
+          marginRight: "117px"
+        },
+        children: [
+          text("dom-product-b-title", "放大你的資產", { x: 117, y: 1943.15, width: 192, height: 40 })
+        ]
+      })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(productSections))[0];
+
+  assert.equal(model.autoLayout.applied, true);
+  assert.equal(model.autoLayout.layoutMode, "VERTICAL");
+  assert.equal(model.autoLayout.counterAxisAlignItems, "CENTER");
+  assert.deepEqual(model.children.map((child) => child.rect.x), [117, 117]);
+});
+
 test("risky flex containers are nested but skipped for auto layout", () => {
   const root = node("dom-root", "main", { x: 0, y: 0, width: 500, height: 400 }, {
     children: [
@@ -1783,6 +1824,46 @@ test("mixed direct nav text keeps hug sizing when parent line box is tall", () =
   assert(label);
   assert.equal(label.text, "熱門ETF排行榜");
   assert.deepEqual(label.rect, { x: 0, y: 10.5, width: 120.24, height: 27 });
+  assert.equal(label.textAutoResize, "WIDTH_AND_HEIGHT");
+  assert.equal(label.layoutSizingHorizontal, "HUG");
+  assert.equal(label.layoutSizingVertical, "HUG");
+});
+
+test("transparent padded nav link centers single-line hug text within content box", () => {
+  const navLink = node("dom-learning-link", "a", { x: 1185.87, y: 0, width: 96.13, height: 64 }, {
+    nodeType: "element",
+    textContent: "我的學習",
+    styles: {
+      display: "flex",
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      width: "96.13px",
+      height: "64px",
+      paddingTop: "10px",
+      paddingRight: "16px",
+      paddingBottom: "10px",
+      paddingLeft: "16px",
+      fontSize: "16px",
+      lineHeight: "24px",
+      whiteSpace: "normal",
+      color: "color(srgb 0.85098 0.866667 0.894118)",
+      backgroundColor: "rgba(0, 0, 0, 0)"
+    },
+    attributes: {
+      href: "/learning",
+      class: "flex items-center justify-center py-10px px-16px h-full text-label-medium"
+    }
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(navLink))[0];
+  const label = model.children.find((child) => child.sourceNodeId === "dom-learning-link::text");
+
+  assert.equal(model.type, "FRAME");
+  assert.equal(model.autoLayout.applied, true);
+  assert.equal(model.autoLayout.counterAxisAlignItems, "CENTER");
+  assert(label);
+  assert.equal(label.text, "我的學習");
+  assert.deepEqual(label.rect, { x: 16, y: 20, width: 64.13, height: 24 });
   assert.equal(label.textAutoResize, "WIDTH_AND_HEIGHT");
   assert.equal(label.layoutSizingHorizontal, "HUG");
   assert.equal(label.layoutSizingVertical, "HUG");

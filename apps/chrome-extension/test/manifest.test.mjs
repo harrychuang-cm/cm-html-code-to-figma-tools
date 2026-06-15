@@ -88,6 +88,6 @@ test("injectable content script is a classic script without module syntax", asyn
   assert.equal(source.includes("export "), false);
   assert(source.includes("FIGCAPTURE_COLLECT_DOM"));
   assert(source.includes("__figcaptureContentRuntimeState"));
-  assert(source.includes("2026-06-15-full-page-v2"));
+  assert(source.includes("2026-06-15-full-page-v3"));
   assert(source.includes("canvasDataUrl"));
 });

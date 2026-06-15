@@ -1,6 +1,6 @@
 (() => {
   const runtimeStateKey = "__figcaptureContentRuntimeState";
-  const runtimeVersion = "2026-06-15-full-page-v2";
+  const runtimeVersion = "2026-06-15-full-page-v3";
   const runtimeState = globalThis[runtimeStateKey] ?? { registered: false, handler: null };
   runtimeState.version = runtimeVersion;
   globalThis[runtimeStateKey] = runtimeState;
@@ -142,8 +142,7 @@
       await waitForRenderSettle();
       return { capture: captureVisibleViewportFromDocument() };
     }
-    window.scrollTo(0, 0);
-    await waitForRenderSettle();
+    await scrollToAndSettle(0);
     const metrics = pageMetrics();
     return {
       capture: captureVisibleViewportFromDocument(document, window, {
@@ -161,9 +160,15 @@
   }
 
   async function scrollToMessage(message) {
-    window.scrollTo(0, Number(message?.scrollY ?? 0));
+    return scrollToAndSettle(message?.scrollY);
+  }
+
+  async function scrollToAndSettle(scrollY, windowRef = window) {
+    const targetY = Math.max(0, Number(scrollY ?? 0));
+    scrollInstantly(windowRef, targetY);
+    await waitForScrollPosition(targetY, windowRef);
     await waitForRenderSettle();
-    return { scrollY: window.scrollY || 0, scrollX: window.scrollX || 0 };
+    return { scrollY: windowRef.scrollY || 0, scrollX: windowRef.scrollX || 0 };
   }
 
   function setPinnedHiddenMessage(message) {
@@ -214,6 +219,47 @@
     pinnedHiddenRecords = [];
   }
 
+  function scrollInstantly(windowRef, targetY) {
+    if (typeof windowRef?.scrollTo !== "function") {
+      return;
+    }
+    try {
+      windowRef.scrollTo({ left: 0, top: targetY, behavior: "instant" });
+    } catch {
+      windowRef.scrollTo(0, targetY);
+      return;
+    }
+    if (!Number.isFinite(windowRef.scrollY) || Math.abs((windowRef.scrollY || 0) - targetY) > 1) {
+      try {
+        windowRef.scrollTo(0, targetY);
+      } catch {
+        // The later settle phase will report the actual scroll position.
+      }
+    }
+  }
+
+  async function waitForScrollPosition(targetY, windowRef = window) {
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      if (Math.abs((windowRef.scrollY || 0) - targetY) <= 1) {
+        return;
+      }
+      await waitForNextFrame(windowRef);
+    }
+  }
+
+  function waitForNextFrame(windowRef = window) {
+    return new Promise((resolve) => {
+      const settleTimer = typeof windowRef?.setTimeout === "function"
+        ? windowRef.setTimeout.bind(windowRef)
+        : setTimeout;
+      if (typeof windowRef?.requestAnimationFrame === "function") {
+        windowRef.requestAnimationFrame(() => settleTimer(resolve, 0));
+        return;
+      }
+      settleTimer(resolve, 16);
+    });
+  }
+
   function waitForRenderSettle() {
     return new Promise((resolve) => {
       if (typeof requestAnimationFrame !== "function") {
@@ -238,14 +284,54 @@
     };
     const rootElement = documentRef.body ?? documentRef.documentElement;
     const rawRoot = snapshotDomElement(rootElement, windowRef);
+    const root = options.captureMode === "full-page"
+      ? translateFullPageCaptureRoot(rawRoot, viewport, options.captureBounds)
+      : rawRoot;
 
-    return captureElementTree(rawRoot, viewport, {
+    return captureElementTree(root, viewport, {
       sourceUrl: documentRef.location?.href ?? windowRef.location?.href ?? "about:blank",
       title: documentRef.title ?? "",
       captureTimestamp: new Date().toISOString(),
       captureMode: options.captureMode,
       captureBounds: options.captureBounds
     });
+  }
+
+  function translateFullPageCaptureRoot(root, viewport, captureBounds = {}) {
+    const width = positiveNumber(captureBounds?.width, positiveNumber(root?.rect?.width, viewport.width));
+    const height = positiveNumber(captureBounds?.height, positiveNumber(root?.rect?.height, viewport.height));
+    const offset = {
+      x: Number(viewport.scrollX ?? 0),
+      y: Number(viewport.scrollY ?? 0)
+    };
+
+    return translateCaptureNodeToDocument(root, offset, true, { width, height });
+  }
+
+  function translateCaptureNodeToDocument(node, offset, isRoot = false, rootBounds = {}) {
+    if (!node) {
+      return node;
+    }
+
+    const rect = normalizeRect(node.rect ?? {});
+    const documentRect = isRoot
+      ? {
+        x: 0,
+        y: 0,
+        width: round(rootBounds.width),
+        height: round(rootBounds.height)
+      }
+      : {
+        ...rect,
+        x: round(rect.x + offset.x),
+        y: round(rect.y + offset.y)
+      };
+
+    return {
+      ...node,
+      rect: documentRect,
+      children: (node.children ?? []).map((child) => translateCaptureNodeToDocument(child, offset))
+    };
   }
 
   function captureElementTree(inputRoot, viewport, options = {}) {
@@ -731,6 +817,11 @@
     }
     const parsed = Number.parseFloat(value);
     return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function positiveNumber(value, fallback) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
   }
 
   function visibleColor(value) {

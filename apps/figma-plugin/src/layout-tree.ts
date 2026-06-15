@@ -1125,7 +1125,7 @@ function inferAutoLayout(node, children) {
   }
 
   const primaryAxisAlignItems = inferPrimaryAxisAlignment(styles, children, layoutMode, parentRect);
-  const counterAxisAlignItems = counterAxisAlignmentFromCss(styles.alignItems);
+  const counterAxisAlignItems = inferCounterAxisAlignment(styles, children, layoutMode, parentRect);
   if (hasNonUniformImplicitSpacing(styles, children, layoutMode, primaryAxisAlignItems)) {
     return skippedLayout("non-uniform-spacing");
   }
@@ -1565,6 +1565,9 @@ function inferPaddedBackingTextAutoResize(node, rect) {
 
   const lineHeight = parseCssNumber(styles.lineHeight) || parseCssNumber(styles.fontSize) * 1.2;
   if (lineHeight > 0 && rect.height > lineHeight * 1.75) {
+    if (shouldPreserveTallSingleLineHug(node, rect, styles)) {
+      return "WIDTH_AND_HEIGHT";
+    }
     return "HEIGHT";
   }
 
@@ -1925,6 +1928,41 @@ function inferPrimaryAxisAlignment(styles, children, layoutMode, parentRect) {
   return undefined;
 }
 
+function inferCounterAxisAlignment(styles, children, layoutMode, parentRect) {
+  const cssAlignment = counterAxisAlignmentFromCss(styles.alignItems);
+  if (cssAlignment) {
+    return cssAlignment;
+  }
+  if (shouldInferCounterAxisCenterFromMargins(children, layoutMode, parentRect)) {
+    return "CENTER";
+  }
+  return undefined;
+}
+
+function shouldInferCounterAxisCenterFromMargins(children, layoutMode, parentRect) {
+  if (children.length === 0) {
+    return false;
+  }
+
+  const parentStart = counterAxisStart(parentRect, layoutMode);
+  const parentSize = counterAxisSize(parentRect, layoutMode);
+  return children.every((child) => {
+    const rect = child.absoluteRect;
+    const childSize = counterAxisSize(rect, layoutMode);
+    const remainingSpace = parentSize - childSize;
+    if (remainingSpace <= 4) {
+      return false;
+    }
+    const leadingMargin = leadingCounterAxisMargin(child, layoutMode);
+    const trailingMargin = trailingCounterAxisMargin(child, layoutMode);
+    if (leadingMargin <= 0 || trailingMargin <= 0 || !approximatelyEqualInset(leadingMargin, trailingMargin, 2)) {
+      return false;
+    }
+    const expectedStart = parentStart + remainingSpace / 2;
+    return approximatelyEqualInset(counterAxisStart(rect, layoutMode), expectedStart, 1);
+  });
+}
+
 function shouldInferSpaceBetweenFromGeometry(styles, children, layoutMode, parentRect) {
   if (children.length !== 2) {
     return false;
@@ -2007,6 +2045,14 @@ function primaryAxisEnd(rect, layoutMode) {
   return layoutMode === "HORIZONTAL" ? rect.x + rect.width : rect.y + rect.height;
 }
 
+function counterAxisStart(rect, layoutMode) {
+  return layoutMode === "HORIZONTAL" ? rect.y : rect.x;
+}
+
+function counterAxisSize(rect, layoutMode) {
+  return layoutMode === "HORIZONTAL" ? rect.height : rect.width;
+}
+
 function leadingAxisPadding(styles, layoutMode) {
   return parseCssNumber(layoutMode === "HORIZONTAL" ? styles.paddingLeft : styles.paddingTop);
 }
@@ -2021,6 +2067,14 @@ function leadingAxisMargin(model, layoutMode) {
 
 function trailingAxisMargin(model, layoutMode) {
   return parseCssNumber(layoutMode === "HORIZONTAL" ? model.styles?.marginRight : model.styles?.marginBottom);
+}
+
+function leadingCounterAxisMargin(model, layoutMode) {
+  return parseCssNumber(layoutMode === "HORIZONTAL" ? model.styles?.marginTop : model.styles?.marginLeft);
+}
+
+function trailingCounterAxisMargin(model, layoutMode) {
+  return parseCssNumber(layoutMode === "HORIZONTAL" ? model.styles?.marginBottom : model.styles?.marginRight);
 }
 
 function approximatelyEqualInset(value, expected, tolerance) {
@@ -2083,6 +2137,7 @@ function extractVisualStyle(node) {
     objectFit: styles.objectFit ?? "",
     transform: styles.transform ?? "",
     transformOrigin: styles.transformOrigin ?? "",
+    color: styles.color ?? "",
     text: node.textContent ? {
       fontFamily: styles.fontFamily ?? "",
       fontSize: parseCssNumber(styles.fontSize),

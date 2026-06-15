@@ -3,6 +3,7 @@ import test from "node:test";
 import { unpackFigcapture, unpackMultiCaptureFigcapture } from "../../../packages/capture-schema/dist/index.js";
 import { captureElementTree } from "../dist/capture-core.js";
 import {
+  buildCapturePackageData,
   buildConfirmedExportPackage,
   buildMultiCaptureExportPackage,
   createScreenshotCropFallbackProvider,
@@ -206,6 +207,170 @@ test("screenshot crop fallback provider maps viewport rects to screenshot bitmap
     assert.equal(drawArgs[2], 10);
     assert.equal(drawArgs[3], 40);
     assert.equal(drawArgs[4], 20);
+  } finally {
+    globalThis.createImageBitmap = originalCreateImageBitmap;
+    globalThis.OffscreenCanvas = originalOffscreenCanvas;
+  }
+});
+
+test("full-page export crops screenshot fallbacks against document dimensions", async () => {
+  const originalCreateImageBitmap = globalThis.createImageBitmap;
+  const originalOffscreenCanvas = globalThis.OffscreenCanvas;
+  const cropBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 99]);
+  const canvasSizes = [];
+  const drawCalls = [];
+
+  globalThis.createImageBitmap = async () => ({ width: 2880, height: 11764 });
+  globalThis.OffscreenCanvas = class MockOffscreenCanvas {
+    constructor(width, height) {
+      canvasSizes.push({ width, height });
+    }
+
+    getContext(type) {
+      assert.equal(type, "2d");
+      return {
+        drawImage(...args) {
+          drawCalls.push(args);
+        }
+      };
+    }
+
+    async convertToBlob() {
+      return {
+        async arrayBuffer() {
+          return cropBytes.buffer.slice(cropBytes.byteOffset, cropBytes.byteOffset + cropBytes.byteLength);
+        }
+      };
+    }
+  };
+
+  const capture = captureElementTree(
+    {
+      tagName: "body",
+      rect: { x: 0, y: 0, width: 1440, height: 5882 },
+      styles: {},
+      attributes: {},
+      children: [
+        {
+          tagName: "img",
+          sourceNodeId: "dom-logo",
+          rect: { x: 40, y: 6, width: 156, height: 52 },
+          styles: { objectFit: "contain" },
+          attributes: {
+            currentSrc: "https://pocketstudio.com.tw/_ipx/f_webp&q_85&s_312x104/images/logo.webp",
+            alt: "口袋 Studio"
+          },
+          children: []
+        }
+      ]
+    },
+    { width: 1440, height: 973, devicePixelRatio: 2, scrollX: 0, scrollY: 0 },
+    {
+      sourceUrl: "https://pocketstudio.com.tw/",
+      title: "Studio",
+      captureTimestamp: "2026-06-15T09:10:50.410Z",
+      captureMode: "full-page",
+      captureBounds: { width: 1440, height: 5882 }
+    }
+  );
+
+  try {
+    const packageData = await buildCapturePackageData(
+      capture,
+      "data:image/png;base64,iVBORw0KGgo=",
+      {
+        async assetResolver() {
+          return {
+            bytes: Uint8Array.from([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]),
+            contentType: "image/webp"
+          };
+        }
+      }
+    );
+
+    assert.equal(packageData.capture.root.children[0].assetRef, "assets/image-1.png");
+    assert.deepEqual(canvasSizes[0], { width: 312, height: 104 });
+    assert.equal(drawCalls[0][1], 80);
+    assert.equal(drawCalls[0][2], 12);
+    assert.equal(drawCalls[0][3], 312);
+    assert.equal(drawCalls[0][4], 104);
+  } finally {
+    globalThis.createImageBitmap = originalCreateImageBitmap;
+    globalThis.OffscreenCanvas = originalOffscreenCanvas;
+  }
+});
+
+test("full-page export packages source screenshot tiles for stable Figma rendering", async () => {
+  const originalCreateImageBitmap = globalThis.createImageBitmap;
+  const originalOffscreenCanvas = globalThis.OffscreenCanvas;
+  const tileBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 116]);
+  const canvasSizes = [];
+  const drawCalls = [];
+
+  globalThis.createImageBitmap = async () => ({ width: 2880, height: 11764 });
+  globalThis.OffscreenCanvas = class MockOffscreenCanvas {
+    constructor(width, height) {
+      canvasSizes.push({ width, height });
+    }
+
+    getContext(type) {
+      assert.equal(type, "2d");
+      return {
+        drawImage(...args) {
+          drawCalls.push(args);
+        }
+      };
+    }
+
+    async convertToBlob() {
+      return {
+        async arrayBuffer() {
+          return tileBytes.buffer.slice(tileBytes.byteOffset, tileBytes.byteOffset + tileBytes.byteLength);
+        }
+      };
+    }
+  };
+
+  const capture = captureElementTree(
+    {
+      tagName: "body",
+      rect: { x: 0, y: 0, width: 1440, height: 5882 },
+      styles: {},
+      attributes: {},
+      children: []
+    },
+    { width: 1440, height: 973, devicePixelRatio: 2, scrollX: 0, scrollY: 0 },
+    {
+      sourceUrl: "https://pocketstudio.com.tw/",
+      title: "Studio",
+      captureTimestamp: "2026-06-15T09:10:50.410Z",
+      captureMode: "full-page",
+      captureBounds: { width: 1440, height: 5882 }
+    }
+  );
+
+  try {
+    const packageData = await buildCapturePackageData(capture, "data:image/png;base64,iVBORw0KGgo=");
+    const tileNames = Object.keys(packageData.assets).filter((name) => name.startsWith("assets/source-screenshot/tile-"));
+
+    assert.deepEqual(tileNames, [
+      "assets/source-screenshot/tile-0000.png",
+      "assets/source-screenshot/tile-0001.png",
+      "assets/source-screenshot/tile-0002.png",
+      "assets/source-screenshot/tile-0003.png"
+    ]);
+    assert.deepEqual(canvasSizes, [
+      { width: 2880, height: 3600 },
+      { width: 2880, height: 3600 },
+      { width: 2880, height: 3600 },
+      { width: 2880, height: 964 }
+    ]);
+    assert.deepEqual(drawCalls.map((args) => [args[1], args[2], args[3], args[4]]), [
+      [0, 0, 2880, 3600],
+      [0, 3600, 2880, 3600],
+      [0, 7200, 2880, 3600],
+      [0, 10800, 2880, 964]
+    ]);
   } finally {
     globalThis.createImageBitmap = originalCreateImageBitmap;
     globalThis.OffscreenCanvas = originalOffscreenCanvas;

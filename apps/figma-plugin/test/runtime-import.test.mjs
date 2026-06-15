@@ -287,6 +287,7 @@ test("Figma API adapter falls back to a screenshot crop when a raster asset cann
   assert.equal(banner.children[0].y, -159);
   assert.equal(banner.children[0].width, 390);
   assert.equal(banner.children[0].height, 844);
+  assert.equal(banner.children[0].locked, true);
   assert.equal(banner.children[0].fills[0].imageHash, "hash-4");
 });
 
@@ -346,6 +347,67 @@ test("Figma API adapter falls back to a screenshot crop when an image asset is u
   assert.match(product.pluginData.fallbackReason, /screenshot crop fallback/);
   assert.equal(product.children[0].x, -24);
   assert.equal(product.children[0].y, -332);
+  assert.equal(product.children[0].locked, true);
+});
+
+test("Figma API adapter falls back to a full-page screenshot crop when a contained raster asset has the wrong aspect ratio", async () => {
+  const screenshotBytes = pngHeaderBytes(2880, 11764);
+  const figmaApi = createMockFigmaApi();
+  const basePackage = createRuntimePackage();
+  const packageData = createRuntimePackage({
+    manifest: {
+      ...basePackage.manifest,
+      captureMode: "full-page",
+      viewportWidth: 1440,
+      viewportHeight: 973,
+      documentWidth: 1440,
+      documentHeight: 5882
+    },
+    capture: {
+      ...basePackage.capture,
+      viewport: { width: 1440, height: 973, devicePixelRatio: 2, scrollX: 0, scrollY: 0 },
+      root: {
+        id: "node-root",
+        sourceNodeId: "dom-root",
+        nodeType: "element",
+        tagName: "main",
+        rect: { x: 0, y: 0, width: 1440, height: 5882 },
+        styles: {},
+        attributes: {},
+        children: [
+          {
+            id: "node-logo",
+            sourceNodeId: "dom-logo",
+            nodeType: "element",
+            tagName: "img",
+            rect: { x: 40, y: 6, width: 156, height: 52 },
+            styles: { objectFit: "contain" },
+            attributes: { alt: "Logo" },
+            assetRef: "assets/logo.png",
+            children: []
+          }
+        ]
+      }
+    },
+    screenshot: screenshotBytes,
+    assets: {
+      "assets/logo.png": pngHeaderBytes(312, 628)
+    }
+  });
+
+  const result = await importPackageBytes(packFigcapture(packageData), { figmaApi });
+  const editableNodes = flattenNodes(result.renderResult.frames[1].children);
+  const logo = editableNodes.find((node) => node.pluginData?.sourceNodeId === "dom-logo");
+
+  assert.equal(result.status, "success");
+  assert(logo);
+  assert.equal(logo.type, "FRAME");
+  assert.equal(logo.name, "Image / Logo / Screenshot Crop");
+  assert.equal(logo.children[0].x, -40);
+  assert.equal(logo.children[0].y, -6);
+  assert.equal(logo.children[0].width, 1440);
+  assert.equal(logo.children[0].height, 5882);
+  assert.match(logo.pluginData.fallbackReason, /asset aspect ratio mismatch/);
 });
 
 test("Figma API adapter applies side-specific strokes for rounded partial borders", async () => {
@@ -886,11 +948,40 @@ test("Figma API adapter preserves SVG image aspect ratio and CSS rotation", () =
   assert.equal(vector.y, 16);
 });
 
+test("Figma API adapter resolves SVG currentColor from captured computed color", () => {
+  const svgBytes = new TextEncoder().encode(
+    "<svg width=\"16\" height=\"16\" viewBox=\"0 0 16 16\"><path fill=\"currentColor\" stroke=\"currentColor\" d=\"M4 4h8v8H4z\"/></svg>"
+  );
+  const figmaApi = createMockFigmaApi();
+  const adapter = createFigmaApiAdapter(figmaApi, {
+    assets: {
+      "assets/current-color.svg": svgBytes
+    }
+  });
+
+  const node = adapter.createImageLayer({
+    name: "Vector / Icon",
+    sourceNodeId: "dom-icon",
+    assetRef: "assets/current-color.svg",
+    assetKind: "svg",
+    rect: { x: 0, y: 0, width: 16, height: 16 },
+    style: {
+      color: "color(srgb 0.85098 0.866667 0.894118)",
+      objectFit: "fill"
+    }
+  });
+
+  assert.equal(node.type, "VECTOR");
+  assert.equal(node.svg.includes("currentColor"), false);
+  assert.match(node.svg, /fill="rgb\(217, 221, 228\)"/);
+  assert.match(node.svg, /stroke="rgb\(217, 221, 228\)"/);
+});
+
 test("Figma API adapter converts CSS linear gradients to Figma paints", () => {
   const figmaApi = createMockFigmaApi();
   const adapter = createFigmaApiAdapter(figmaApi);
 
-  const node = adapter.createRectLayer({
+  const horizontalNode = adapter.createRectLayer({
     name: "Shape / fade",
     sourceNodeId: "dom-fade",
     rect: { x: 0, y: 0, width: 56, height: 330 },
@@ -899,11 +990,34 @@ test("Figma API adapter converts CSS linear gradients to Figma paints", () => {
     }
   });
 
-  assert.equal(node.fills.length, 1);
-  assert.equal(node.fills[0].type, "GRADIENT_LINEAR");
-  assert.deepEqual(node.fills[0].gradientStops.map((stop) => stop.position), [0, 1]);
-  assert.deepEqual(node.fills[0].gradientStops[0].color, { r: 1, g: 1, b: 1, a: 0 });
-  assert.deepEqual(node.fills[0].gradientStops[1].color, { r: 1, g: 1, b: 1, a: 1 });
+  assert.equal(horizontalNode.fills.length, 1);
+  assert.equal(horizontalNode.fills[0].type, "GRADIENT_LINEAR");
+  assert.deepEqual(horizontalNode.fills[0].gradientTransform, [
+    [1, 0, 0],
+    [0, 1, 0]
+  ]);
+  assert.deepEqual(horizontalNode.fills[0].gradientStops.map((stop) => stop.position), [0, 1]);
+  assert.deepEqual(horizontalNode.fills[0].gradientStops[0].color, { r: 1, g: 1, b: 1, a: 0 });
+  assert.deepEqual(horizontalNode.fills[0].gradientStops[1].color, { r: 1, g: 1, b: 1, a: 1 });
+
+  const verticalNode = adapter.createRectLayer({
+    name: "Shape / card fade",
+    sourceNodeId: "dom-card-fade",
+    rect: { x: 0, y: 141, width: 280, height: 360 },
+    style: {
+      fills: ["linear-gradient(rgba(0, 0, 0, 0), rgb(0, 0, 0))"]
+    }
+  });
+
+  assert.equal(verticalNode.fills.length, 1);
+  assert.equal(verticalNode.fills[0].type, "GRADIENT_LINEAR");
+  assert.deepEqual(verticalNode.fills[0].gradientTransform, [
+    [0, 1, 0],
+    [-1, 0, 1]
+  ]);
+  assert.deepEqual(verticalNode.fills[0].gradientStops.map((stop) => stop.position), [0, 1]);
+  assert.deepEqual(verticalNode.fills[0].gradientStops[0].color, { r: 0, g: 0, b: 0, a: 0 });
+  assert.deepEqual(verticalNode.fills[0].gradientStops[1].color, { r: 0, g: 0, b: 0, a: 1 });
 });
 
 test("Figma API adapter parses CSS Color 4 values from browser-computed styles", async () => {
@@ -1071,6 +1185,22 @@ test("plugin UI reports file transfer error and renders success without raw JSON
 
 function flattenNodes(nodes) {
   return nodes.flatMap((node) => [node, ...flattenNodes(node.children ?? [])]);
+}
+
+function pngHeaderBytes(width, height) {
+  const bytes = new Uint8Array(24);
+  bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+  bytes.set([0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52], 8);
+  writeUint32(bytes, 16, width);
+  writeUint32(bytes, 20, height);
+  return bytes;
+}
+
+function writeUint32(bytes, offset, value) {
+  bytes[offset] = (value >>> 24) & 0xff;
+  bytes[offset + 1] = (value >>> 16) & 0xff;
+  bytes[offset + 2] = (value >>> 8) & 0xff;
+  bytes[offset + 3] = value & 0xff;
 }
 
 function narrowPackage(width) {

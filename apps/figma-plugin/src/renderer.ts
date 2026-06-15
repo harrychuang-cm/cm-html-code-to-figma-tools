@@ -13,6 +13,8 @@ export const FRAME_ROLES = [
 
 export const FRAME_GAP = 80;
 
+const SOURCE_SCREENSHOT_TILE_PREFIX = "assets/source-screenshot/tile-";
+
 export function createFrameModels(packageData, options = {}) {
   const size = captureFrameSize(packageData.manifest);
   const width = size.width;
@@ -41,20 +43,18 @@ export function renderThreeFrames(adapter, packageData, options = {}) {
   const models = createFrameModels(packageData, options);
   const frames = models.map((model) => adapter.createFrame(model));
   const sourceFrame = frames[0];
-  const screenshotLayer = adapter.createImageLayer({
-    name: "Source screenshot",
-    bytes: packageData.screenshot,
-    width: captureFrameSize(packageData.manifest).width,
-    height: captureFrameSize(packageData.manifest).height,
-    locked: true
-  });
+  const screenshotLayers = createSourceScreenshotLayerModels(packageData)
+    .map((model) => adapter.createImageLayer(model));
 
-  adapter.appendChild(sourceFrame, screenshotLayer);
+  for (const screenshotLayer of screenshotLayers) {
+    adapter.appendChild(sourceFrame, screenshotLayer);
+  }
   const editableResult = renderEditableAccurate(adapter, frames[1], packageData);
 
   return {
     frames,
-    sourceScreenshotLayer: screenshotLayer,
+    sourceScreenshotLayer: screenshotLayers[0],
+    sourceScreenshotLayers: screenshotLayers,
     autoLayoutFrameEnabled: false,
     autoLayoutSummary: editableResult.autoLayoutSummary,
     semanticNamingSummary: editableResult.semanticNamingSummary
@@ -65,25 +65,78 @@ export async function renderThreeFramesAsync(adapter, packageData, options = {})
   const models = createFrameModels(packageData, options);
   const frames = await Promise.all(models.map((model) => maybeAsync(adapter.createFrame(model))));
   const sourceFrame = frames[0];
-  const screenshotLayer = await maybeAsync(adapter.createImageLayer({
-    name: "Source screenshot",
-    bytes: packageData.screenshot,
-    width: captureFrameSize(packageData.manifest).width,
-    height: captureFrameSize(packageData.manifest).height,
-    locked: true
-  }));
+  const screenshotLayers = [];
+  for (const model of createSourceScreenshotLayerModels(packageData)) {
+    screenshotLayers.push(await maybeAsync(adapter.createImageLayer(model)));
+  }
 
-  adapter.appendChild(sourceFrame, screenshotLayer);
+  for (const screenshotLayer of screenshotLayers) {
+    adapter.appendChild(sourceFrame, screenshotLayer);
+  }
   const editableResult = await renderEditableAccurateAsync(adapter, frames[1], packageData);
 
   return {
     frames,
-    sourceScreenshotLayer: screenshotLayer,
+    sourceScreenshotLayer: screenshotLayers[0],
+    sourceScreenshotLayers: screenshotLayers,
     autoLayoutFrameEnabled: false,
     autoLayoutSummary: editableResult.autoLayoutSummary,
     semanticNamingSummary: editableResult.semanticNamingSummary,
     fontSubstitutions: adapter.fontSubstitutions ?? []
   };
+}
+
+function createSourceScreenshotLayerModels(packageData) {
+  const tiled = createSourceScreenshotTileLayerModels(packageData);
+  if (tiled.length > 0) {
+    return tiled;
+  }
+  const size = captureFrameSize(packageData.manifest);
+  return [{
+    name: "Source screenshot",
+    bytes: packageData.screenshot,
+    x: 0,
+    y: 0,
+    width: size.width,
+    height: size.height,
+    locked: true
+  }];
+}
+
+function createSourceScreenshotTileLayerModels(packageData) {
+  const assets = packageData.assets ?? {};
+  const size = captureFrameSize(packageData.manifest);
+  const dpr = Number(packageData.manifest?.devicePixelRatio ?? 1) || 1;
+  const tileEntries = Object.entries(assets)
+    .filter(([name]) => name.startsWith(SOURCE_SCREENSHOT_TILE_PREFIX) && name.endsWith(".png"))
+    .sort(([a], [b]) => a.localeCompare(b));
+  const models = [];
+  let y = 0;
+
+  for (let index = 0; index < tileEntries.length; index += 1) {
+    const [assetRef, bytes] = tileEntries[index];
+    const intrinsic = pngIntrinsicSize(bytes);
+    if (!intrinsic || intrinsic.width <= 0 || intrinsic.height <= 0) {
+      return [];
+    }
+    const height = Math.min(size.height - y, round(intrinsic.height / dpr));
+    if (height <= 0) {
+      break;
+    }
+    models.push({
+      name: `Source screenshot / Tile ${index + 1}`,
+      bytes,
+      assetRef,
+      x: 0,
+      y,
+      width: size.width,
+      height,
+      locked: true
+    });
+    y = round(y + height);
+  }
+
+  return y >= size.height - 1 ? models : [];
 }
 
 export function renderAutoLayoutExperimental(adapter, frame, packageData) {
@@ -212,6 +265,48 @@ function maybeAsync(value) {
   return value && typeof value.then === "function" ? value : Promise.resolve(value);
 }
 
+function pngIntrinsicSize(bytes) {
+  const imageBytes = toUint8Array(bytes);
+  if (
+    imageBytes.length < 24 ||
+    imageBytes[0] !== 0x89 ||
+    imageBytes[1] !== 0x50 ||
+    imageBytes[2] !== 0x4e ||
+    imageBytes[3] !== 0x47 ||
+    String.fromCharCode(imageBytes[12], imageBytes[13], imageBytes[14], imageBytes[15]) !== "IHDR"
+  ) {
+    return null;
+  }
+  return {
+    width: readUint32BigEndian(imageBytes, 16),
+    height: readUint32BigEndian(imageBytes, 20)
+  };
+}
+
+function readUint32BigEndian(bytes, offset) {
+  return ((bytes[offset] << 24) >>> 0) +
+    (bytes[offset + 1] << 16) +
+    (bytes[offset + 2] << 8) +
+    bytes[offset + 3];
+}
+
+function toUint8Array(bytes) {
+  if (bytes instanceof Uint8Array) {
+    return bytes;
+  }
+  if (bytes instanceof ArrayBuffer) {
+    return new Uint8Array(bytes);
+  }
+  if (Array.isArray(bytes)) {
+    return Uint8Array.from(bytes);
+  }
+  return new Uint8Array(bytes ?? []);
+}
+
+function round(value) {
+  return Math.round(value * 100) / 100;
+}
+
 export function createMemoryFigmaAdapter() {
   const createdFrames = [];
   const createdImageLayers = [];
@@ -243,6 +338,8 @@ export function createMemoryFigmaAdapter() {
         assetRef: model.assetRef,
         assetKind: model.assetKind,
         fallbackReason: model.fallbackReason,
+        x: model.x,
+        y: model.y,
         width: model.width,
         height: model.height,
         locked: model.locked,

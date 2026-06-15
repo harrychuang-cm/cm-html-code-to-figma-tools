@@ -6,13 +6,18 @@ import {
 import { captureVisualAssets } from "./asset-capture.ts";
 import { createManifestFromCapture } from "./capture-core.ts";
 
+const SOURCE_SCREENSHOT_TILE_PREFIX = "assets/source-screenshot/tile-";
+const SOURCE_SCREENSHOT_TILE_MAX_CSS_HEIGHT = 1800;
+const SOURCE_SCREENSHOT_TILE_MAX_BITMAP_DIMENSION = 4096;
+
 export async function buildCapturePackageData(capture, screenshotDataUrl, options = {}) {
   const fallbackRasterProvider = options.fallbackRasterProvider ??
-    createScreenshotCropFallbackProvider(screenshotDataUrl, capture.viewport);
+    createScreenshotCropFallbackProvider(screenshotDataUrl, screenshotFallbackBoundsForCapture(capture));
   const assetResult = await captureVisualAssets(capture, {
     ...options,
     fallbackRasterProvider
   });
+  const sourceScreenshotTiles = await createSourceScreenshotTileAssets(assetResult.capture, screenshotDataUrl);
   const figmaPlan = createInitialFigmaPlan(assetResult.capture, assetResult.sourceNodeMap);
   return {
     manifest: createManifestFromCapture(assetResult.capture, {
@@ -23,8 +28,67 @@ export async function buildCapturePackageData(capture, screenshotDataUrl, option
     figmaPlan,
     diagnostics: assetResult.diagnostics,
     screenshot: dataUrlToBytes(screenshotDataUrl),
-    assets: assetResult.assets
+    assets: {
+      ...assetResult.assets,
+      ...sourceScreenshotTiles
+    }
   };
+}
+
+function screenshotFallbackBoundsForCapture(capture = {}) {
+  if (capture.captureMode === "full-page") {
+    const documentWidth = Number(capture.documentWidth ?? 0);
+    const documentHeight = Number(capture.documentHeight ?? 0);
+    if (documentWidth > 0 && documentHeight > 0) {
+      return {
+        width: documentWidth,
+        height: documentHeight
+      };
+    }
+  }
+  return capture.viewport;
+}
+
+async function createSourceScreenshotTileAssets(capture = {}, screenshotDataUrl) {
+  if (capture.captureMode !== "full-page") {
+    return {};
+  }
+  const bounds = screenshotFallbackBoundsForCapture(capture);
+  const documentWidth = Number(bounds?.width ?? 0);
+  const documentHeight = Number(bounds?.height ?? 0);
+  const tileHeight = sourceScreenshotTileCssHeight(capture);
+  if (documentWidth <= 0 || documentHeight <= tileHeight) {
+    return {};
+  }
+
+  const cropProvider = createScreenshotCropFallbackProvider(screenshotDataUrl, bounds);
+  const tiles = {};
+  let index = 0;
+  for (let y = 0; y < documentHeight; y += tileHeight) {
+    const height = Math.min(tileHeight, documentHeight - y);
+    const bytes = await cropProvider({
+      rect: {
+        x: 0,
+        y,
+        width: documentWidth,
+        height
+      }
+    });
+    if (!bytes || bytes.length === 0) {
+      return {};
+    }
+    tiles[`${SOURCE_SCREENSHOT_TILE_PREFIX}${String(index).padStart(4, "0")}.png`] = bytes;
+    index += 1;
+  }
+  return tiles;
+}
+
+function sourceScreenshotTileCssHeight(capture = {}) {
+  const dpr = Number(capture.viewport?.devicePixelRatio ?? 1);
+  const maxCssHeightForBitmap = dpr > 0
+    ? Math.floor(SOURCE_SCREENSHOT_TILE_MAX_BITMAP_DIMENSION / dpr)
+    : SOURCE_SCREENSHOT_TILE_MAX_CSS_HEIGHT;
+  return Math.max(1, Math.min(SOURCE_SCREENSHOT_TILE_MAX_CSS_HEIGHT, maxCssHeightForBitmap));
 }
 
 export async function buildConfirmedExportPackage(capture, screenshotDataUrl, options = {}) {

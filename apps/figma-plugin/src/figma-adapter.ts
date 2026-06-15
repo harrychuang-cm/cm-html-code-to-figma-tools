@@ -1,5 +1,14 @@
 export const DEFAULT_FALLBACK_FONT = { family: "Inter", style: "Regular" };
 
+const LINEAR_GRADIENT_TO_RIGHT_TRANSFORM = [
+  [1, 0, 0],
+  [0, 1, 0]
+];
+const LINEAR_GRADIENT_TO_BOTTOM_TRANSFORM = [
+  [0, 1, 0],
+  [-1, 0, 1]
+];
+
 export function createFigmaApiAdapter(figmaApi = globalThis.figma, options = {}) {
   const assets = options.assets ?? {};
   const fallbackFont = options.fallbackFont ?? DEFAULT_FALLBACK_FONT;
@@ -54,6 +63,18 @@ export function createFigmaApiAdapter(figmaApi = globalThis.figma, options = {})
       writeNodeMetadata(node, "assetRef", model.assetRef);
       let canUseScreenshotCropFallback = false;
       if (isSupportedRasterImage(imageBytes)) {
+        const aspectMismatchFallbackReason = screenshotCropReasonForMismatchedRaster(model, imageBytes);
+        if (aspectMismatchFallbackReason) {
+          const screenshotFallback = createScreenshotCropFallbackLayer(figmaApi, model, {
+            fallbackReason: aspectMismatchFallbackReason,
+            screenshotBytes,
+            viewport,
+            getScreenshotImageHash
+          });
+          if (screenshotFallback) {
+            return screenshotFallback;
+          }
+        }
         try {
           const imageHash = figmaApi.createImage(imageBytes).hash;
           node.fills = [{
@@ -307,11 +328,11 @@ function cssLinearGradientToPaint(value) {
   }
 
   let stops = parts;
-  let reverseStops = false;
+  let direction = "to bottom";
   const first = parts[0].trim().toLowerCase();
   if (isCssGradientDirection(first)) {
     stops = parts.slice(1);
-    reverseStops = first === "to left" || first === "270deg" || first === "-90deg";
+    direction = normalizeCssGradientDirection(first);
   }
   if (stops.length < 2) {
     return null;
@@ -324,7 +345,7 @@ function cssLinearGradientToPaint(value) {
     return null;
   }
 
-  const gradientStops = reverseStops
+  const gradientStops = shouldReverseCssGradientStops(direction)
     ? parsedStops
       .map((stop) => ({ ...stop, position: round(1 - stop.position) }))
       .sort((a, b) => a.position - b.position)
@@ -332,10 +353,7 @@ function cssLinearGradientToPaint(value) {
 
   return {
     type: "GRADIENT_LINEAR",
-    gradientTransform: [
-      [1, 0, 0],
-      [0, 1, 0]
-    ],
+    gradientTransform: cssGradientTransform(direction),
     gradientStops
   };
 }
@@ -343,6 +361,52 @@ function cssLinearGradientToPaint(value) {
 export function isSupportedRasterImage(bytes) {
   const imageBytes = toUint8Array(bytes);
   return isPng(imageBytes) || isJpeg(imageBytes) || isGif(imageBytes) || isWebp(imageBytes);
+}
+
+function screenshotCropReasonForMismatchedRaster(model, bytes) {
+  const objectFit = String(model.style?.objectFit ?? model.styles?.objectFit ?? "").trim().toLowerCase();
+  if (objectFit !== "contain" && objectFit !== "scale-down") {
+    return "";
+  }
+  const rect = model.rect ?? {
+    x: model.x ?? 0,
+    y: model.y ?? 0,
+    width: model.width ?? 0,
+    height: model.height ?? 0
+  };
+  const rectWidth = Number(rect.width) || 0;
+  const rectHeight = Number(rect.height) || 0;
+  const intrinsic = rasterIntrinsicSize(bytes);
+  if (!intrinsic || rectWidth <= 0 || rectHeight <= 0 || intrinsic.width <= 0 || intrinsic.height <= 0) {
+    return "";
+  }
+  const rectAspect = rectWidth / rectHeight;
+  const intrinsicAspect = intrinsic.width / intrinsic.height;
+  if (!aspectRatiosDiffer(rectAspect, intrinsicAspect, 0.25)) {
+    return "";
+  }
+  return `asset aspect ratio mismatch (${intrinsic.width}x${intrinsic.height} asset for ${round(rectWidth)}x${round(rectHeight)} rendered rect)`;
+}
+
+function rasterIntrinsicSize(bytes) {
+  const imageBytes = toUint8Array(bytes);
+  if (isPng(imageBytes)) {
+    return pngIntrinsicSize(imageBytes);
+  }
+  if (isJpeg(imageBytes)) {
+    return jpegIntrinsicSize(imageBytes);
+  }
+  if (isGif(imageBytes)) {
+    return gifIntrinsicSize(imageBytes);
+  }
+  return null;
+}
+
+function aspectRatiosDiffer(a, b, tolerance) {
+  if (!Number.isFinite(a) || !Number.isFinite(b) || a <= 0 || b <= 0) {
+    return false;
+  }
+  return Math.abs(a - b) / Math.max(a, b) > tolerance;
 }
 
 function createMockNode(type, createdNodes) {
@@ -424,6 +488,42 @@ function isCssGradientDirection(value) {
     /^-?\d+(?:\.\d+)?deg$/.test(value);
 }
 
+function normalizeCssGradientDirection(value) {
+  const source = String(value ?? "").trim().toLowerCase();
+  if (source.startsWith("to ")) {
+    return source;
+  }
+  const angleMatch = source.match(/^(-?\d+(?:\.\d+)?)deg$/);
+  if (!angleMatch) {
+    return "to bottom";
+  }
+  const normalized = ((Number.parseFloat(angleMatch[1]) % 360) + 360) % 360;
+  if (normalized === 0) {
+    return "to top";
+  }
+  if (normalized === 90) {
+    return "to right";
+  }
+  if (normalized === 180) {
+    return "to bottom";
+  }
+  if (normalized === 270) {
+    return "to left";
+  }
+  return "to right";
+}
+
+function shouldReverseCssGradientStops(direction) {
+  return direction === "to left" || direction === "to top";
+}
+
+function cssGradientTransform(direction) {
+  const transform = direction === "to top" || direction === "to bottom"
+    ? LINEAR_GRADIENT_TO_BOTTOM_TRANSFORM
+    : LINEAR_GRADIENT_TO_RIGHT_TRANSFORM;
+  return transform.map((row) => [...row]);
+}
+
 function cssGradientStop(value, index, total) {
   const source = String(value ?? "").trim();
   const colorMatch = source.match(/^(transparent|rgba?\([^)]+\)|color\([^)]+\)|#[0-9a-f]{3,8})/i);
@@ -501,6 +601,7 @@ function createScreenshotCropFallbackLayer(figmaApi, model, options = {}) {
 
   const screenshotLayer = figmaApi.createRectangle();
   screenshotLayer.name = "Screenshot crop source";
+  screenshotLayer.locked = true;
   const sourceX = Number(absoluteRect.x ?? 0);
   const sourceY = Number(absoluteRect.y ?? 0);
   screenshotLayer.x = sourceX === 0 ? 0 : -sourceX;
@@ -523,7 +624,7 @@ function createScreenshotCropFallbackLayer(figmaApi, model, options = {}) {
 }
 
 function createSvgImageLayer(figmaApi, model, imageBytes) {
-  const svgText = decodeUtf8(imageBytes);
+  const svgText = resolveSvgCurrentColor(decodeUtf8(imageBytes), svgCurrentColor(model));
   const svgNode = figmaApi.createNodeFromSvg(svgText);
   const rect = model.rect ?? {
     x: model.x ?? 0,
@@ -573,6 +674,36 @@ function createSvgImageLayer(figmaApi, model, imageBytes) {
   writeNodeMetadata(svgNode, "assetKind", "svg");
   frame.appendChild(svgNode);
   return frame;
+}
+
+function svgCurrentColor(model = {}) {
+  return model.style?.color ??
+    model.styles?.color ??
+    model.style?.text?.color ??
+    model.styles?.webkitTextFillColor ??
+    "";
+}
+
+function resolveSvgCurrentColor(svgText, colorValue) {
+  if (!/\bcurrentColor\b/i.test(svgText)) {
+    return svgText;
+  }
+  const color = parseCssColor(colorValue);
+  if (!color) {
+    return svgText;
+  }
+  return svgText.replace(/\bcurrentColor\b/gi, cssColorToSvgColor(color));
+}
+
+function cssColorToSvgColor(color) {
+  const r = Math.round(clamp(color.r, 0, 255));
+  const g = Math.round(clamp(color.g, 0, 255));
+  const b = Math.round(clamp(color.b, 0, 255));
+  const a = clamp(color.a, 0, 1);
+  if (a < 1) {
+    return `rgba(${r}, ${g}, ${b}, ${Math.round(a * 1000) / 1000})`;
+  }
+  return `rgb(${r}, ${g}, ${b})`;
 }
 
 function applyNodeBasics(node, model) {
@@ -999,11 +1130,64 @@ function isPng(bytes) {
     && bytes[3] === 0x47;
 }
 
+function pngIntrinsicSize(bytes) {
+  if (bytes.length < 24 || !isPng(bytes)) {
+    return null;
+  }
+  const type = decodeUtf8(bytes.slice(12, 16));
+  if (type !== "IHDR") {
+    return null;
+  }
+  return {
+    width: readUint32BigEndian(bytes, 16),
+    height: readUint32BigEndian(bytes, 20)
+  };
+}
+
 function isJpeg(bytes) {
   return bytes.length >= 3
     && bytes[0] === 0xff
     && bytes[1] === 0xd8
     && bytes[2] === 0xff;
+}
+
+function jpegIntrinsicSize(bytes) {
+  if (!isJpeg(bytes)) {
+    return null;
+  }
+  let index = 2;
+  while (index + 8 < bytes.length) {
+    while (index < bytes.length && bytes[index] === 0xff) {
+      index += 1;
+    }
+    const marker = bytes[index];
+    index += 1;
+    if (marker === 0xd9 || marker === 0xda) {
+      break;
+    }
+    if (index + 2 > bytes.length) {
+      return null;
+    }
+    const segmentLength = readUint16BigEndian(bytes, index);
+    if (segmentLength < 2 || index + segmentLength > bytes.length) {
+      return null;
+    }
+    if (isJpegStartOfFrameMarker(marker) && segmentLength >= 7) {
+      return {
+        height: readUint16BigEndian(bytes, index + 3),
+        width: readUint16BigEndian(bytes, index + 5)
+      };
+    }
+    index += segmentLength;
+  }
+  return null;
+}
+
+function isJpegStartOfFrameMarker(marker) {
+  return (marker >= 0xc0 && marker <= 0xc3) ||
+    (marker >= 0xc5 && marker <= 0xc7) ||
+    (marker >= 0xc9 && marker <= 0xcb) ||
+    (marker >= 0xcd && marker <= 0xcf);
 }
 
 function isGif(bytes) {
@@ -1016,6 +1200,16 @@ function isGif(bytes) {
     && bytes[5] === 0x61;
 }
 
+function gifIntrinsicSize(bytes) {
+  if (bytes.length < 10 || !isGif(bytes)) {
+    return null;
+  }
+  return {
+    width: readUint16LittleEndian(bytes, 6),
+    height: readUint16LittleEndian(bytes, 8)
+  };
+}
+
 function isWebp(bytes) {
   return bytes.length >= 12
     && bytes[0] === 0x52
@@ -1026,6 +1220,21 @@ function isWebp(bytes) {
     && bytes[9] === 0x45
     && bytes[10] === 0x42
     && bytes[11] === 0x50;
+}
+
+function readUint32BigEndian(bytes, offset) {
+  return ((bytes[offset] << 24) >>> 0) +
+    (bytes[offset + 1] << 16) +
+    (bytes[offset + 2] << 8) +
+    bytes[offset + 3];
+}
+
+function readUint16BigEndian(bytes, offset) {
+  return (bytes[offset] << 8) + bytes[offset + 1];
+}
+
+function readUint16LittleEndian(bytes, offset) {
+  return bytes[offset] + (bytes[offset + 1] << 8);
 }
 
 function normalizeFontCandidates(fonts, fallbackFont) {
