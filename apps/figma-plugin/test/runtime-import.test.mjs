@@ -290,6 +290,64 @@ test("Figma API adapter falls back to a screenshot crop when a raster asset cann
   assert.equal(banner.children[0].fills[0].imageHash, "hash-4");
 });
 
+test("Figma API adapter falls back to a screenshot crop when an image asset is unsupported", async () => {
+  const screenshotBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+  const figmaApi = createMockFigmaApi();
+  const basePackage = createRuntimePackage();
+  const packageData = createRuntimePackage({
+    manifest: {
+      ...basePackage.manifest,
+      viewportWidth: 390,
+      viewportHeight: 844
+    },
+    capture: {
+      ...basePackage.capture,
+      viewport: { width: 390, height: 844, devicePixelRatio: 3, scrollX: 0, scrollY: 0 },
+      root: {
+        id: "node-root",
+        sourceNodeId: "dom-root",
+        nodeType: "element",
+        tagName: "main",
+        rect: { x: 0, y: 0, width: 390, height: 844 },
+        styles: {},
+        attributes: {},
+        children: [
+          {
+            id: "node-product",
+            sourceNodeId: "dom-product",
+            nodeType: "element",
+            tagName: "img",
+            rect: { x: 24, y: 332, width: 156, height: 208 },
+            styles: {},
+            attributes: { alt: "product" },
+            assetRef: "assets/product.json",
+            children: []
+          }
+        ]
+      }
+    },
+    screenshot: screenshotBytes,
+    assets: {
+      "assets/product.json": new TextEncoder().encode(JSON.stringify({
+        kind: "external-image-reference",
+        src: "https://example.com/product.png"
+      }))
+    }
+  });
+
+  const result = await importPackageBytes(packFigcapture(packageData), { figmaApi });
+  const editableNodes = flattenNodes(result.renderResult.frames[1].children);
+  const product = editableNodes.find((node) => node.pluginData?.sourceNodeId === "dom-product");
+
+  assert.equal(result.status, "success");
+  assert(product);
+  assert.equal(product.type, "FRAME");
+  assert.equal(product.name, "Image / product / Screenshot Crop");
+  assert.match(product.pluginData.fallbackReason, /screenshot crop fallback/);
+  assert.equal(product.children[0].x, -24);
+  assert.equal(product.children[0].y, -332);
+});
+
 test("Figma API adapter applies side-specific strokes for rounded partial borders", async () => {
   const figmaApi = createMockFigmaApi();
   const basePackage = createRuntimePackage();
@@ -846,6 +904,44 @@ test("Figma API adapter converts CSS linear gradients to Figma paints", () => {
   assert.deepEqual(node.fills[0].gradientStops.map((stop) => stop.position), [0, 1]);
   assert.deepEqual(node.fills[0].gradientStops[0].color, { r: 1, g: 1, b: 1, a: 0 });
   assert.deepEqual(node.fills[0].gradientStops[1].color, { r: 1, g: 1, b: 1, a: 1 });
+});
+
+test("Figma API adapter parses CSS Color 4 values from browser-computed styles", async () => {
+  const figmaApi = createMockFigmaApi();
+  const adapter = createFigmaApiAdapter(figmaApi);
+
+  const text = await adapter.createTextLayer({
+    name: "Text / Explore",
+    sourceNodeId: "dom-explore",
+    rect: { x: 0, y: 0, width: 120, height: 24 },
+    text: "探索",
+    textAutoResize: "WIDTH_AND_HEIGHT",
+    style: {
+      text: {
+        fontFamily: "Inter",
+        fontSize: 16,
+        fontWeight: "400",
+        lineHeight: "24px",
+        color: "color(srgb 0.85098 0.866667 0.894118)"
+      }
+    }
+  });
+
+  const gradient = adapter.createRectLayer({
+    name: "Shape / color-srgb-gradient",
+    sourceNodeId: "dom-gradient",
+    rect: { x: 0, y: 0, width: 120, height: 24 },
+    style: {
+      fills: ["linear-gradient(to right, color(srgb 1 0.298039 0.415686 / 0), color(srgb 1 0.298039 0.415686))"]
+    }
+  });
+
+  assert.equal(Number(text.fills[0].color.r.toFixed(6)), 0.85098);
+  assert.equal(Number(text.fills[0].color.g.toFixed(6)), 0.866667);
+  assert.equal(Number(text.fills[0].color.b.toFixed(6)), 0.894118);
+  assert.equal(gradient.fills[0].type, "GRADIENT_LINEAR");
+  assert.equal(gradient.fills[0].gradientStops[0].color.a, 0);
+  assert.equal(Number(gradient.fills[0].gradientStops[1].color.g.toFixed(6)), 0.298039);
 });
 
 test("Figma API adapter applies clipped background gradients to text fills", async () => {

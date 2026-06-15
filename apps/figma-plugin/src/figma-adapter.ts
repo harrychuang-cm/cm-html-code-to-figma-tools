@@ -71,6 +71,7 @@ export function createFigmaApiAdapter(figmaApi = globalThis.figma, options = {})
         }
       } else {
         fallbackReason = model.fallbackReason ?? (imageBytes.length > 0 ? "external or unsupported image asset" : "missing image asset");
+        canUseScreenshotCropFallback = true;
       }
       if (canUseScreenshotCropFallback) {
         const screenshotFallback = createScreenshotCropFallbackLayer(figmaApi, model, {
@@ -425,7 +426,7 @@ function isCssGradientDirection(value) {
 
 function cssGradientStop(value, index, total) {
   const source = String(value ?? "").trim();
-  const colorMatch = source.match(/^(transparent|rgba?\([^)]+\)|#[0-9a-f]{3,8})/i);
+  const colorMatch = source.match(/^(transparent|rgba?\([^)]+\)|color\([^)]+\)|#[0-9a-f]{3,8})/i);
   if (!colorMatch) {
     return null;
   }
@@ -741,7 +742,7 @@ function firstOuterCssShadow(value) {
 }
 
 function extractCssShadowColor(value) {
-  const match = String(value ?? "").match(/rgba?\([^)]+\)|#[0-9a-f]{3,8}|transparent/i);
+  const match = String(value ?? "").match(/rgba?\([^)]+\)|color\([^)]+\)|#[0-9a-f]{3,8}|transparent/i);
   return match ? match[0] : "";
 }
 
@@ -1220,25 +1221,30 @@ function parseCssColor(value) {
   if (typeof value !== "string" || value.length === 0) {
     return null;
   }
-  if (value === "transparent") {
+  const source = value.trim();
+  if (source.toLowerCase() === "transparent") {
     return { r: 0, g: 0, b: 0, a: 0 };
   }
 
-  const rgb = value.match(/^rgba?\(([^)]+)\)$/i);
-  if (rgb) {
-    const parts = rgb[1].split(",").map((part) => Number.parseFloat(part.trim()));
-    if (parts.length < 3 || parts.some((part) => !Number.isFinite(part))) {
+  const srgb = source.match(/^color\(\s*srgb\s+([^)]+)\)$/i);
+  if (srgb) {
+    const channels = parseCssFunctionalColorParts(srgb[1], "srgb");
+    if (!channels) {
       return null;
     }
-    return {
-      r: clamp(parts[0], 0, 255),
-      g: clamp(parts[1], 0, 255),
-      b: clamp(parts[2], 0, 255),
-      a: clamp(parts[3] ?? 1, 0, 1)
-    };
+    return channels;
   }
 
-  const hex = value.match(/^#([0-9a-f]{3,8})$/i);
+  const rgb = source.match(/^rgba?\(([^)]+)\)$/i);
+  if (rgb) {
+    const channels = parseCssFunctionalColorParts(rgb[1], "rgb");
+    if (!channels) {
+      return null;
+    }
+    return channels;
+  }
+
+  const hex = source.match(/^#([0-9a-f]{3,8})$/i);
   if (!hex) {
     return null;
   }
@@ -1251,6 +1257,60 @@ function parseCssColor(value) {
     b: Number.parseInt(expanded.slice(4, 6), 16),
     a: expanded.length >= 8 ? clamp(Number.parseInt(expanded.slice(6, 8), 16) / 255, 0, 1) : 1
   };
+}
+
+function parseCssFunctionalColorParts(value, colorSpace) {
+  const slashParts = String(value ?? "").trim().split(/\s*\/\s*/);
+  const channelsSource = slashParts[0];
+  const alphaSource = slashParts[1];
+  const parts = channelsSource.includes(",")
+    ? channelsSource.split(",").map((part) => part.trim()).filter(Boolean)
+    : channelsSource.split(/\s+/).map((part) => part.trim()).filter(Boolean);
+  if (parts.length < 3) {
+    return null;
+  }
+
+  const alpha = alphaSource !== undefined
+    ? parseCssAlpha(alphaSource)
+    : parts.length > 3
+      ? parseCssAlpha(parts[3])
+      : 1;
+  const channels = parts.slice(0, 3).map((part) => colorSpace === "srgb"
+    ? parseCssSrgbChannel(part)
+    : parseCssRgbChannel(part));
+  if (channels.some((part) => !Number.isFinite(part)) || !Number.isFinite(alpha)) {
+    return null;
+  }
+  return {
+    r: clamp(channels[0], 0, 255),
+    g: clamp(channels[1], 0, 255),
+    b: clamp(channels[2], 0, 255),
+    a: clamp(alpha, 0, 1)
+  };
+}
+
+function parseCssRgbChannel(value) {
+  const source = String(value ?? "").trim();
+  if (source.endsWith("%")) {
+    return clamp(Number.parseFloat(source), 0, 100) * 2.55;
+  }
+  return Number.parseFloat(source);
+}
+
+function parseCssSrgbChannel(value) {
+  const source = String(value ?? "").trim();
+  if (source.endsWith("%")) {
+    return clamp(Number.parseFloat(source), 0, 100) * 2.55;
+  }
+  return Number.parseFloat(source) * 255;
+}
+
+function parseCssAlpha(value) {
+  const source = String(value ?? "").trim();
+  if (source.endsWith("%")) {
+    return Number.parseFloat(source) / 100;
+  }
+  return Number.parseFloat(source);
 }
 
 function parseCssNumber(value) {

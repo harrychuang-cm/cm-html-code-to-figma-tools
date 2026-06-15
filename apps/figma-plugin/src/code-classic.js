@@ -771,6 +771,7 @@
       }
     } else {
       reason = fallbackReasonValue || (imageBytes.length > 0 ? "external or unsupported image asset" : "missing image asset");
+      canUseScreenshotCropFallback = true;
     }
     if (canUseScreenshotCropFallback) {
       screenshotFallback = createScreenshotCropFallbackNode(name, rect, locked, assetRef, sourceNodeId, cssZIndex, absoluteRect, packageData, reason);
@@ -1226,7 +1227,7 @@
   }
 
   function extractCssShadowColor(value) {
-    var match = String(value || "").match(/rgba?\([^)]+\)|#[0-9a-f]{3,8}|transparent/i);
+    var match = String(value || "").match(/rgba?\([^)]+\)|color\([^)]+\)|#[0-9a-f]{3,8}|transparent/i);
     return match ? match[0] : "";
   }
 
@@ -5029,7 +5030,7 @@
 
   function cssGradientStop(value, index, total) {
     var source = String(value || "").replace(/^\s+|\s+$/g, "");
-    var colorMatch = source.match(/^(transparent|rgba?\([^)]+\)|#[0-9a-f]{3,8})/i);
+    var colorMatch = source.match(/^(transparent|rgba?\([^)]+\)|color\([^)]+\)|#[0-9a-f]{3,8})/i);
     var color;
     var remainder;
     var positionMatch;
@@ -5074,13 +5075,14 @@
   }
 
   function parseCssColor(value) {
+    var source;
     var match;
-    var parts;
     var expanded;
     if (typeof value !== "string" || value === "") {
       return null;
     }
-    if (value === "transparent") {
+    source = value.replace(/^\s+|\s+$/g, "");
+    if (source.toLowerCase() === "transparent") {
       return {
         r: 0,
         g: 0,
@@ -5088,23 +5090,17 @@
         a: 0
       };
     }
-    match = value.match(/^rgba?\(([^)]+)\)$/i);
+    match = source.match(/^color\(\s*srgb\s+([^)]+)\)$/i);
     if (match) {
-      parts = match[1].split(",").map(function (part) {
-        return Number(part.trim());
-      });
-      if (parts.length < 3 || !isFinite(parts[0]) || !isFinite(parts[1]) || !isFinite(parts[2])) {
-        return null;
-      }
-      return {
-        r: clamp(parts[0], 0, 255),
-        g: clamp(parts[1], 0, 255),
-        b: clamp(parts[2], 0, 255),
-        a: clamp(isFinite(parts[3]) ? parts[3] : 1, 0, 1)
-      };
+      return parseCssFunctionalColorParts(match[1], "srgb");
     }
 
-    match = value.match(/^#([0-9a-f]{3,8})$/i);
+    match = source.match(/^rgba?\(([^)]+)\)$/i);
+    if (match) {
+      return parseCssFunctionalColorParts(match[1], "rgb");
+    }
+
+    match = source.match(/^#([0-9a-f]{3,8})$/i);
     if (!match) {
       return null;
     }
@@ -5117,6 +5113,61 @@
       b: parseInt(expanded.slice(4, 6), 16),
       a: expanded.length >= 8 ? clamp(parseInt(expanded.slice(6, 8), 16) / 255, 0, 1) : 1
     };
+  }
+
+  function parseCssFunctionalColorParts(value, colorSpace) {
+    var slashParts = String(value || "").replace(/^\s+|\s+$/g, "").split(/\s*\/\s*/);
+    var channelsSource = slashParts[0];
+    var alphaSource = slashParts[1];
+    var parts = channelsSource.indexOf(",") >= 0
+      ? channelsSource.split(",").map(function (part) { return part.replace(/^\s+|\s+$/g, ""); }).filter(Boolean)
+      : channelsSource.split(/\s+/).map(function (part) { return part.replace(/^\s+|\s+$/g, ""); }).filter(Boolean);
+    var alpha;
+    var channels;
+    if (parts.length < 3) {
+      return null;
+    }
+    alpha = alphaSource !== undefined
+      ? parseCssAlpha(alphaSource)
+      : parts.length > 3
+        ? parseCssAlpha(parts[3])
+        : 1;
+    channels = parts.slice(0, 3).map(function (part) {
+      return colorSpace === "srgb" ? parseCssSrgbChannel(part) : parseCssRgbChannel(part);
+    });
+    if (!isFinite(channels[0]) || !isFinite(channels[1]) || !isFinite(channels[2]) || !isFinite(alpha)) {
+      return null;
+    }
+    return {
+      r: clamp(channels[0], 0, 255),
+      g: clamp(channels[1], 0, 255),
+      b: clamp(channels[2], 0, 255),
+      a: clamp(alpha, 0, 1)
+    };
+  }
+
+  function parseCssRgbChannel(value) {
+    var source = String(value || "").replace(/^\s+|\s+$/g, "");
+    if (source.slice(-1) === "%") {
+      return clamp(parseFloat(source), 0, 100) * 2.55;
+    }
+    return parseFloat(source);
+  }
+
+  function parseCssSrgbChannel(value) {
+    var source = String(value || "").replace(/^\s+|\s+$/g, "");
+    if (source.slice(-1) === "%") {
+      return clamp(parseFloat(source), 0, 100) * 2.55;
+    }
+    return parseFloat(source) * 255;
+  }
+
+  function parseCssAlpha(value) {
+    var source = String(value || "").replace(/^\s+|\s+$/g, "");
+    if (source.slice(-1) === "%") {
+      return parseFloat(source) / 100;
+    }
+    return parseFloat(source);
   }
 
   function inferAxis(children) {

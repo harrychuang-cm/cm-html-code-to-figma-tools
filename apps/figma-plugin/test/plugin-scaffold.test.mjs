@@ -1299,7 +1299,7 @@ test("classic Figma runtime renders clipped background gradients as text fills",
     async loadFontAsync() {}
   };
   const basePackage = createValidPackage();
-  const gradient = "linear-gradient(to right, rgb(222, 190, 135), rgb(192, 139, 78))";
+  const gradient = "linear-gradient(to right, color(srgb 0.870588 0.745098 0.529412), color(srgb 0.752941 0.545098 0.305882))";
   const packageData = createValidPackage({
     capture: {
       ...basePackage.capture,
@@ -1366,6 +1366,7 @@ test("classic Figma runtime renders clipped background gradients as text fills",
   assert(rankText);
   assert.equal(rankText.fills.length, 1);
   assert.equal(rankText.fills[0].type, "GRADIENT_LINEAR");
+  assert.equal(Number(rankText.fills[0].gradientStops[0].color.r.toFixed(6)), 0.870588);
 });
 
 test("classic Figma runtime keeps editable layers when an image asset is unsupported", async () => {
@@ -2521,8 +2522,11 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
   assert(carouselFade);
   assert.equal(carouselFade.fills[0].type, "GRADIENT_LINEAR");
   assert(placeholder);
-  assert.equal(placeholder.fills[0].type, "SOLID");
-  assert.equal(placeholder.pluginData.fallbackReason, "external or unsupported image asset");
+  assert.equal(placeholder.type, "FRAME");
+  assert.match(placeholder.name, /Screenshot Crop$/);
+  assert.match(placeholder.pluginData.fallbackReason, /screenshot crop fallback/);
+  assert.equal(placeholder.children[0].x, -32);
+  assert.equal(placeholder.children[0].y, -96);
   assert(webpBannerFallback);
   assert.equal(webpBannerFallback.type, "FRAME");
   assert.match(webpBannerFallback.pluginData.fallbackReason, /screenshot crop fallback/);

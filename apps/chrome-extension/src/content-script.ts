@@ -1,9 +1,9 @@
 (() => {
-  const runtimeFlag = "__figcaptureContentRuntimeRegistered";
-  if (globalThis[runtimeFlag]) {
-    return;
-  }
-  globalThis[runtimeFlag] = true;
+  const runtimeStateKey = "__figcaptureContentRuntimeState";
+  const runtimeVersion = "2026-06-15-full-page-v2";
+  const runtimeState = globalThis[runtimeStateKey] ?? { registered: false, handler: null };
+  runtimeState.version = runtimeVersion;
+  globalThis[runtimeStateKey] = runtimeState;
 
   const CAPTURE_DOM_MESSAGE = "FIGCAPTURE_COLLECT_DOM";
   const DEFAULT_STYLE_PROPERTIES = [
@@ -90,7 +90,7 @@
   const SET_PINNED_HIDDEN_MESSAGE = "FIGCAPTURE_SET_PINNED_HIDDEN";
   let pinnedHiddenRecords = [];
 
-  chrome?.runtime?.onMessage?.addListener?.((message, _sender, sendResponse) => {
+  runtimeState.handler = (message, _sender, sendResponse) => {
     const handler = messageHandler(message?.type);
     if (!handler) {
       return false;
@@ -108,7 +108,18 @@
       }));
 
     return true;
-  });
+  };
+
+  if (!runtimeState.registered) {
+    chrome?.runtime?.onMessage?.addListener?.((message, sender, sendResponse) => {
+      const activeState = globalThis[runtimeStateKey];
+      if (typeof activeState?.handler !== "function") {
+        return false;
+      }
+      return activeState.handler(message, sender, sendResponse);
+    });
+    runtimeState.registered = true;
+  }
 
   function messageHandler(type) {
     if (type === CAPTURE_DOM_MESSAGE) {
