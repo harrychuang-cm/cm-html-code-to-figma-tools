@@ -300,6 +300,68 @@ test("content runtime page metrics, scroll, and pinned hiding respond with expec
   assert.equal(fixedHeader.style.visibility, "");
 });
 
+test("content viewport DOM capture waits for render settle before snapshot", async () => {
+  const { collectDom } = await import("../dist/content.js");
+  const settleCalls = [];
+  let settled = false;
+  const chart = {
+    tagName: "svg",
+    attributes: [],
+    children: [],
+    childNodes: [],
+    get outerHTML() {
+      return settled
+        ? "<svg data-layout=\"mobile\"></svg>"
+        : "<svg data-layout=\"desktop\"></svg>";
+    },
+    getBoundingClientRect() {
+      return { x: 24, y: 40, width: 320, height: 160 };
+    }
+  };
+  const body = {
+    tagName: "body",
+    attributes: [],
+    children: [chart],
+    childNodes: [],
+    getBoundingClientRect() {
+      return { x: 0, y: 0, width: 375, height: 800 };
+    }
+  };
+  const fakeDocument = {
+    body,
+    documentElement: body,
+    title: "Responsive chart",
+    location: { href: "https://app.example.com/chart" }
+  };
+  const fakeWindow = {
+    innerWidth: 375,
+    innerHeight: 800,
+    devicePixelRatio: 2,
+    scrollX: 0,
+    scrollY: 0,
+    requestAnimationFrame(callback) {
+      settleCalls.push("raf");
+      callback();
+    },
+    setTimeout(callback, delay) {
+      settleCalls.push(["timeout", delay]);
+      settled = true;
+      callback();
+    },
+    getComputedStyle(_element, pseudo) {
+      if (pseudo) {
+        return { display: "none", content: "none" };
+      }
+      return { display: "block" };
+    }
+  };
+
+  const capture = await collectDom({}, fakeDocument, fakeWindow);
+
+  assert.deepEqual(settleCalls, ["raf", "raf", ["timeout", 250]]);
+  assert.equal(capture.root.children[0].attributes.svgMarkup, "<svg data-layout=\"mobile\"></svg>");
+});
+
 function createFullPageCapture(documentHeight) {
   return captureElementTree(
     {

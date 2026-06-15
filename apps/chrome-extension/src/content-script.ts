@@ -128,6 +128,7 @@
 
   async function collectDomMessage(message) {
     if (message?.mode !== "full-page") {
+      await waitForRenderSettle();
       return { capture: captureVisibleViewportFromDocument() };
     }
     window.scrollTo(0, 0);

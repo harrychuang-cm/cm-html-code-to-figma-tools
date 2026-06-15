@@ -268,6 +268,149 @@ test("asset capture packages inline svg and css mask icon assets", async () => {
   assert.match(new TextDecoder().decode(result.assets["assets/icon-1.svg"]), /<svg/);
 });
 
+test("asset capture keeps simple inline svg icons as vector assets", async () => {
+  const capture = captureElementTree(
+    {
+      tagName: "main",
+      rect: { x: 0, y: 0, width: 800, height: 600 },
+      styles: {},
+      attributes: {},
+      children: [
+        {
+          tagName: "svg",
+          sourceNodeId: "dom-svg-icon",
+          rect: { x: 20, y: 20, width: 12, height: 12 },
+          styles: {},
+          attributes: {
+            svgMarkup: "<svg viewBox=\"0 0 12 12\"><path d=\"M4 2l4 4-4 4\"/></svg>"
+          },
+          children: [
+            {
+              tagName: "path",
+              rect: { x: 20, y: 20, width: 12, height: 12 },
+              styles: {},
+              attributes: { d: "M4 2l4 4-4 4" },
+              children: []
+            }
+          ]
+        }
+      ]
+    },
+    { width: 800, height: 600, devicePixelRatio: 1, scrollX: 0, scrollY: 0 },
+    {
+      sourceUrl: "https://example.com",
+      captureTimestamp: "2026-06-08T08:00:00.000Z"
+    }
+  );
+
+  const result = await captureVisualAssets(capture);
+
+  assert.deepEqual(Object.keys(result.assets), ["assets/vector-1.svg"]);
+  assert.equal(result.capture.root.children[0].assetRef, "assets/vector-1.svg");
+  assert.equal(result.capture.root.children[0].fallbackRef, undefined);
+  assert.equal(result.capture.root.children[0].attributes.assetKind, "svg");
+});
+
+test("asset capture uses screenshot fallback for complex inline svg charts", async () => {
+  const capture = captureElementTree(
+    {
+      tagName: "main",
+      rect: { x: 0, y: 0, width: 375, height: 973 },
+      styles: {},
+      attributes: {},
+      children: [
+        {
+          tagName: "svg",
+          sourceNodeId: "dom-chart",
+          rect: { x: 80, y: 320, width: 512, height: 320 },
+          styles: {},
+          attributes: {
+            svgMarkup:
+              "<svg viewBox=\"0 0 512 320\"><g><rect x=\"12\" y=\"24\" width=\"8\" height=\"260\"/><rect x=\"36\" y=\"140\" width=\"8\" height=\"144\"/><rect x=\"60\" y=\"150\" width=\"8\" height=\"134\"/><rect x=\"84\" y=\"178\" width=\"8\" height=\"106\"/><rect x=\"108\" y=\"196\" width=\"8\" height=\"88\"/><text x=\"12\" y=\"304\">元大台灣50</text></g></svg>"
+          },
+          children: [
+            {
+              tagName: "g",
+              rect: { x: 80, y: 320, width: 512, height: 320 },
+              styles: {},
+              attributes: {},
+              children: [
+                {
+                  tagName: "rect",
+                  rect: { x: 92, y: 344, width: 8, height: 260 },
+                  styles: {},
+                  attributes: {},
+                  children: []
+                },
+                {
+                  tagName: "rect",
+                  rect: { x: 116, y: 460, width: 8, height: 144 },
+                  styles: {},
+                  attributes: {},
+                  children: []
+                },
+                {
+                  tagName: "rect",
+                  rect: { x: 140, y: 470, width: 8, height: 134 },
+                  styles: {},
+                  attributes: {},
+                  children: []
+                },
+                {
+                  tagName: "rect",
+                  rect: { x: 164, y: 498, width: 8, height: 106 },
+                  styles: {},
+                  attributes: {},
+                  children: []
+                },
+                {
+                  tagName: "rect",
+                  rect: { x: 188, y: 516, width: 8, height: 88 },
+                  styles: {},
+                  attributes: {},
+                  children: []
+                },
+                {
+                  tagName: "text",
+                  textContent: "元大台灣50",
+                  rect: { x: 92, y: 624, width: 72, height: 18 },
+                  styles: {},
+                  attributes: {},
+                  children: []
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    { width: 375, height: 973, devicePixelRatio: 2, scrollX: 0, scrollY: 0 },
+    {
+      sourceUrl: "https://example.com/etf",
+      captureTimestamp: "2026-06-08T08:00:00.000Z"
+    }
+  );
+  const cropBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 77]);
+  const providerCalls = [];
+
+  const result = await captureVisualAssets(capture, {
+    async fallbackRasterProvider(node) {
+      providerCalls.push(node.sourceNodeId);
+      return cropBytes;
+    }
+  });
+
+  assert.deepEqual(providerCalls, ["dom-chart"]);
+  assert.deepEqual(Object.keys(result.assets), ["assets/fallback-1.png"]);
+  assert.equal(result.capture.root.children[0].assetRef, undefined);
+  assert.equal(result.capture.root.children[0].fallbackRef, "assets/fallback-1.png");
+  assert.deepEqual(Array.from(result.assets["assets/fallback-1.png"]), Array.from(cropBytes));
+  assert.equal(result.diagnostics.counts.fallbacks, 1);
+  assert.deepEqual(result.diagnostics.fallbackReasons, [
+    { sourceNodeId: "dom-chart", reason: "complex svg fallback" }
+  ]);
+});
+
 test("asset capture packages pseudo-element css image assets", async () => {
   const svgDataUrl = "data:image/svg+xml,%3Csvg%20viewBox%3D%220%200%2016%2016%22%3E%3Ccircle%20cx%3D%228%22%20cy%3D%228%22%20r%3D%228%22%2F%3E%3C%2Fsvg%3E";
   const capture = captureElementTree(

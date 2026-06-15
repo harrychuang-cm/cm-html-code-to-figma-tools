@@ -124,23 +124,6 @@ export function captureVisualAssets(capture, options = {}) {
     if (node.tagName === "img") {
       imageIndex += 1;
       storeAssetSource(node, imageSourceForNode(node, imageIndex), "image", "png");
-    } else if (node.tagName === "svg" && node.attributes?.svgMarkup) {
-      vectorIndex += 1;
-      storeAssetSource(node, {
-        index: vectorIndex,
-        bytes: encodeTextBytes(node.attributes.svgMarkup),
-        extension: "svg",
-        assetKind: "svg"
-      }, "vector", "svg");
-    } else if (canUseCssImageAsset(node)) {
-      const cssSource = cssImageSourceForNode(node);
-      if (cssSource) {
-        iconIndex += 1;
-        storeAssetSource(node, {
-          ...cssSource,
-          index: iconIndex
-        }, "icon", "png");
-      }
     } else if (needsRasterFallback(node)) {
       fallbackIndex += 1;
       const fallbackName = `assets/fallback-${fallbackIndex}.png`;
@@ -166,6 +149,23 @@ export function captureVisualAssets(capture, options = {}) {
       diagnostics.fallbackReasons.push({ sourceNodeId: node.sourceNodeId, reason });
       diagnostics.warnings.push(`${node.sourceNodeId}: ${reason}`);
       sourceNodeMap.push({ sourceNodeId: node.sourceNodeId, fallbackRef: fallbackName });
+    } else if (node.tagName === "svg" && node.attributes?.svgMarkup) {
+      vectorIndex += 1;
+      storeAssetSource(node, {
+        index: vectorIndex,
+        bytes: encodeTextBytes(node.attributes.svgMarkup),
+        extension: "svg",
+        assetKind: "svg"
+      }, "vector", "svg");
+    } else if (canUseCssImageAsset(node)) {
+      const cssSource = cssImageSourceForNode(node);
+      if (cssSource) {
+        iconIndex += 1;
+        storeAssetSource(node, {
+          ...cssSource,
+          index: iconIndex
+        }, "icon", "png");
+      }
     }
 
     for (const [property, value] of Object.entries(node.styles ?? {})) {
@@ -284,8 +284,52 @@ function traverse(node, visit) {
   }
 }
 
+const SVG_CONTAINER_TAGS = new Set(["a", "g", "svg", "switch", "symbol"]);
+const SVG_NON_RENDERING_TAGS = new Set([
+  "clippath",
+  "defs",
+  "desc",
+  "filter",
+  "lineargradient",
+  "marker",
+  "mask",
+  "metadata",
+  "pattern",
+  "radialgradient",
+  "script",
+  "style",
+  "title"
+]);
+const SVG_TEXT_TAGS = new Set(["text", "textpath", "tspan"]);
+const COMPLEX_SVG_VISUAL_NODE_THRESHOLD = 4;
+
 function isComplexSvg(node) {
-  return (node.children?.length ?? 0) > 0 || node.attributes?.role === "img" || Boolean(node.textContent);
+  if (node.attributes?.role === "img" || Boolean(node.textContent)) {
+    return true;
+  }
+  const stats = svgDescendantStats(node);
+  return stats.textNodes > 0 || stats.visualNodes > COMPLEX_SVG_VISUAL_NODE_THRESHOLD;
+}
+
+function svgDescendantStats(node) {
+  const stats = { textNodes: 0, visualNodes: 0 };
+  for (const child of node.children ?? []) {
+    collectSvgDescendantStats(child, stats);
+  }
+  return stats;
+}
+
+function collectSvgDescendantStats(node, stats) {
+  const tagName = String(node.tagName ?? "").toLowerCase();
+  if (SVG_TEXT_TAGS.has(tagName)) {
+    stats.textNodes += 1;
+    stats.visualNodes += 1;
+  } else if (!SVG_CONTAINER_TAGS.has(tagName) && !SVG_NON_RENDERING_TAGS.has(tagName)) {
+    stats.visualNodes += 1;
+  }
+  for (const child of node.children ?? []) {
+    collectSvgDescendantStats(child, stats);
+  }
 }
 
 function imageSourceForNode(node, index) {

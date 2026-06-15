@@ -77,6 +77,7 @@ export function setPinnedHidden(hidden, documentRef = globalThis.document, windo
 export async function collectDom(message, documentRef = globalThis.document, windowRef = globalThis.window) {
   const openOrClosedShadowRoot = chromeShadowRootAccessor();
   if (message?.mode !== "full-page") {
+    await waitForRenderSettle(windowRef);
     return captureVisibleViewportFromDocument(documentRef, windowRef, { openOrClosedShadowRoot });
   }
   windowRef.scrollTo(0, 0);
@@ -132,13 +133,16 @@ function contentMessageHandler(type) {
 
 function waitForRenderSettle(windowRef = globalThis.window) {
   return new Promise((resolve) => {
+    const settleTimer = typeof windowRef?.setTimeout === "function"
+      ? windowRef.setTimeout.bind(windowRef)
+      : setTimeout;
     if (typeof windowRef?.requestAnimationFrame !== "function") {
-      setTimeout(resolve, 0);
+      settleTimer(resolve, 0);
       return;
     }
     windowRef.requestAnimationFrame(() => {
       windowRef.requestAnimationFrame(() => {
-        setTimeout(resolve, 250);
+        settleTimer(resolve, 250);
       });
     });
   });
