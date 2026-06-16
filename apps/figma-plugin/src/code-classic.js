@@ -3829,6 +3829,10 @@
     var crossSize = layoutMode === "HORIZONTAL"
       ? Math.max(1, parentRect.height - padding.top - padding.bottom)
       : Math.max(1, parentRect.width - padding.left - padding.right);
+    var firstLineRect = firstLineDirectTextRect(node, parentRect, children, layoutMode, padding);
+    if (firstLineRect) {
+      return firstLineRect;
+    }
     if (shouldUseFullMultilineDirectTextRect(node, parentRect, children, layoutMode, padding)) {
       if (layoutMode === "HORIZONTAL") {
         return {
@@ -3863,6 +3867,8 @@
     var bestSegment;
     var estimatedTextSize;
     var start;
+    var textAlign;
+    var shouldAlignToSegmentEnd;
 
     for (index = 0; index < sorted.length; index += 1) {
       child = sorted[index];
@@ -3889,7 +3895,10 @@
     }
 
     estimatedTextSize = Math.min(bestSegment.size, estimateTextPrimarySize(node.textContent, styles));
-    start = bestSegment.hasPrevious && bestSegment.hasNext
+    textAlign = normalizeCssKeyword(styles.textAlign);
+    shouldAlignToSegmentEnd = bestSegment.hasNext &&
+      (bestSegment.hasPrevious || textAlign === "center" || textAlign === "right" || textAlign === "end");
+    start = shouldAlignToSegmentEnd
       ? bestSegment.end - estimatedTextSize
       : bestSegment.start;
     if (layoutMode === "HORIZONTAL") {
@@ -3906,6 +3915,51 @@
       width: round(crossSize),
       height: round(Math.max(1, estimatedTextSize))
     };
+  }
+
+  function firstLineDirectTextRect(node, parentRect, children, layoutMode, padding) {
+    var styles;
+    var lineHeight;
+    var contentWidth;
+    var fontSize;
+    var firstLineBottom;
+    var index;
+    if (layoutMode !== "HORIZONTAL") {
+      return null;
+    }
+    for (index = 0; index < children.length; index += 1) {
+      if (children[index].pseudoType) {
+        return null;
+      }
+    }
+    if (String(node.textContent || "").indexOf("\n") >= 0) {
+      return null;
+    }
+
+    styles = node.styles || {};
+    lineHeight = numberFromCss(styles.lineHeight) || numberFromCss(styles.fontSize) * 1.2;
+    if (!(lineHeight > 0)) {
+      return null;
+    }
+
+    contentWidth = Math.max(1, parentRect.width - padding.left - padding.right);
+    fontSize = numberFromCss(styles.fontSize) || 14;
+    if (estimateTextPrimarySize(node.textContent, styles) > contentWidth + fontSize) {
+      return null;
+    }
+
+    firstLineBottom = parentRect.y + padding.top + lineHeight - 0.5;
+    for (index = 0; index < children.length; index += 1) {
+      if (children[index].absoluteRect.y >= firstLineBottom) {
+        return {
+          x: round(parentRect.x + padding.left),
+          y: round(parentRect.y + padding.top),
+          width: round(contentWidth),
+          height: round(lineHeight)
+        };
+      }
+    }
+    return null;
   }
 
   function shouldUseFullMultilineDirectTextRect(node, parentRect, children, layoutMode, padding) {
@@ -4005,6 +4059,7 @@
     var index;
     var isFlex;
     var canTrySingleChildAlignment;
+    var canTryNonFlexFlow;
 
     if (position === "fixed" || position === "sticky") {
       return skippedLayout("fixed-or-sticky-layout");
@@ -4015,7 +4070,8 @@
     isFlex = display === "flex" || display === "inline-flex";
     canTrySingleChildAlignment = children.length === 1 &&
       (isFlex || hasPotentialLineHeightAlignment(node, children[0]) || hasButtonTextAlignmentPotential(node, children[0]));
-    if (!isFlex && !canTrySingleChildAlignment) {
+    canTryNonFlexFlow = children.length > 1 && hasNonFlexFlowStyleEvidence(node);
+    if (!isFlex && !canTrySingleChildAlignment && !canTryNonFlexFlow) {
       return null;
     }
     if (!hasUsableBounds(node.rect)) {
@@ -4046,7 +4102,7 @@
     }
 
     if (!isFlex) {
-      return null;
+      return inferNonFlexFlowAutoLayout(node, children, parentRect);
     }
     if (children.length < 2) {
       return skippedLayout("one-child-container");
@@ -4093,6 +4149,152 @@
       reversedChildren: isReverseFlexDirection(flexDirection),
       confidence: 0.92
     };
+  }
+
+  function inferNonFlexFlowAutoLayout(node, children, parentRect) {
+    var styles;
+    var layoutMode;
+    var primaryAxisAlignItems;
+    var counterAxisAlignItems;
+    var spacing;
+    var paddingResult;
+    var padding;
+    if (children.length < 2 || !hasNonFlexFlowEvidence(node, children, parentRect)) {
+      return null;
+    }
+
+    styles = node.styles || {};
+    layoutMode = inferNonFlexFlowMode(children);
+    if (!layoutMode) {
+      return null;
+    }
+
+    primaryAxisAlignItems = inferNonFlexFlowPrimaryAxisAlignment(styles, children, layoutMode, parentRect);
+    counterAxisAlignItems = inferNonFlexFlowCounterAxisAlignment(styles, children, layoutMode, parentRect);
+    spacing = explicitSpacing(styles, layoutMode);
+    if (spacing === null) {
+      spacing = measuredSpacing(children, layoutMode);
+    }
+    paddingResult = resolvePadding(styles, parentRect, children);
+    padding = alignmentAwarePadding(
+      paddingResult.padding,
+      layoutMode,
+      primaryAxisAlignItems,
+      counterAxisAlignItems,
+      paddingResult.explicit
+    );
+
+    return {
+      applied: true,
+      layoutMode: layoutMode,
+      itemSpacing: spacing,
+      primaryAxisAlignItems: primaryAxisAlignItems,
+      counterAxisAlignItems: counterAxisAlignItems,
+      paddingLeft: padding.left,
+      paddingRight: padding.right,
+      paddingTop: padding.top,
+      paddingBottom: padding.bottom,
+      confidence: 0.78
+    };
+  }
+
+  function hasNonFlexFlowEvidence(node, children, parentRect) {
+    if (!hasNonFlexFlowStyleEvidence(node)) {
+      return false;
+    }
+    return centeredChildrenBounds(children, parentRect, "HORIZONTAL") ||
+      centeredChildrenBounds(children, parentRect, "VERTICAL") ||
+      hasNonFlexFlowCssAlignment(node);
+  }
+
+  function hasNonFlexFlowStyleEvidence(node) {
+    var styles = node.styles || {};
+    var display = normalizeCssKeyword(styles.display);
+    return ["block", "inline-block", "inline", ""].indexOf(display) >= 0 && hasNonFlexFlowCssAlignment(node);
+  }
+
+  function hasNonFlexFlowCssAlignment(node) {
+    var styles = node.styles || {};
+    var textAlign = normalizeCssKeyword(styles.textAlign);
+    if (textAlign === "center" || textAlign === "right" || textAlign === "end") {
+      return true;
+    }
+    if (
+      normalizeCssKeyword(styles.justifyContent) === "center" ||
+      normalizeCssKeyword(styles.alignItems) === "center"
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  function inferNonFlexFlowMode(children) {
+    var overlapsHorizontally = hasPrimaryAxisOverlap(children, "HORIZONTAL");
+    var overlapsVertically = hasPrimaryAxisOverlap(children, "VERTICAL");
+    if (!overlapsHorizontally && overlapsVertically) {
+      return "HORIZONTAL";
+    }
+    if (overlapsHorizontally && !overlapsVertically) {
+      return "VERTICAL";
+    }
+    return null;
+  }
+
+  function inferNonFlexFlowPrimaryAxisAlignment(styles, children, layoutMode, parentRect) {
+    var cssAlignment;
+    if (layoutMode === "HORIZONTAL") {
+      cssAlignment = primaryAxisAlignmentFromCss(styles.justifyContent);
+      if (cssAlignment) {
+        return cssAlignment;
+      }
+      if (normalizeCssKeyword(styles.textAlign) === "center" || centeredChildrenBounds(children, parentRect, layoutMode)) {
+        return "CENTER";
+      }
+    }
+    if (centeredChildrenBounds(children, parentRect, layoutMode) && !childrenFillPrimaryAxis(children, parentRect, layoutMode)) {
+      return "CENTER";
+    }
+    return "MIN";
+  }
+
+  function inferNonFlexFlowCounterAxisAlignment(styles, children, layoutMode, parentRect) {
+    var cssAlignment = counterAxisAlignmentFromCss(styles.alignItems);
+    if (cssAlignment) {
+      return cssAlignment;
+    }
+    if (layoutMode === "VERTICAL" && normalizeCssKeyword(styles.textAlign) === "center") {
+      return "CENTER";
+    }
+    if (children.every(function (child) {
+      return centeredRectOnAxis(child.absoluteRect, parentRect, counterLayoutMode(layoutMode));
+    })) {
+      return "CENTER";
+    }
+    return "MIN";
+  }
+
+  function centeredChildrenBounds(children, parentRect, layoutMode) {
+    var bounds = unionAbsoluteRect(children);
+    return Boolean(bounds && centeredRectOnAxis(bounds, parentRect, layoutMode));
+  }
+
+  function centeredRectOnAxis(rect, parentRect, layoutMode) {
+    var tolerance = Math.max(2, primaryAxisSize(parentRect, layoutMode) * 0.02);
+    var rectCenter = primaryAxisStart(rect, layoutMode) + primaryAxisSize(rect, layoutMode) / 2;
+    var parentCenter = primaryAxisStart(parentRect, layoutMode) + primaryAxisSize(parentRect, layoutMode) / 2;
+    return Math.abs(rectCenter - parentCenter) <= tolerance;
+  }
+
+  function childrenFillPrimaryAxis(children, parentRect, layoutMode) {
+    var bounds = unionAbsoluteRect(children);
+    if (!bounds) {
+      return false;
+    }
+    return primaryAxisSize(bounds, layoutMode) >= primaryAxisSize(parentRect, layoutMode) - 1;
+  }
+
+  function counterLayoutMode(layoutMode) {
+    return layoutMode === "HORIZONTAL" ? "VERTICAL" : "HORIZONTAL";
   }
 
   function orderedChildrenForAutoLayout(children, autoLayout) {
@@ -5286,6 +5488,10 @@
 
   function primaryAxisEnd(rect, layoutMode) {
     return layoutMode === "HORIZONTAL" ? rect.x + rect.width : rect.y + rect.height;
+  }
+
+  function primaryAxisSize(rect, layoutMode) {
+    return layoutMode === "HORIZONTAL" ? rect.width : rect.height;
   }
 
   function counterAxisStart(rect, layoutMode) {

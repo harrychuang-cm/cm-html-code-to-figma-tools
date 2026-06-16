@@ -1721,6 +1721,111 @@ test("multi-layer CSS box shadows import as separate effects", () => {
   ]);
 });
 
+test("centered non-flex sponsor heading imports as horizontal auto layout", () => {
+  const heading = node("dom-sponsor-heading", "h5", { x: 132.5, y: 4784.41, width: 1160, height: 40 }, {
+    textContent: "スポンサー",
+    styles: {
+      display: "block",
+      width: "1160px",
+      height: "40px",
+      textAlign: "center",
+      fontSize: "14px",
+      lineHeight: "20px"
+    },
+    children: [
+      node("dom-sponsor-link", "a", { x: 665.5, y: 4784.41, width: 164, height: 40 }, {
+        textContent: "スポンサーになる",
+        styles: {
+          display: "inline-block",
+          width: "164px",
+          height: "40px",
+          justifyContent: "center",
+          alignItems: "center",
+          textAlign: "center",
+          fontSize: "13px",
+          lineHeight: "13px",
+          borderTopWidth: "3px",
+          borderRightWidth: "3px",
+          borderBottomWidth: "3px",
+          borderLeftWidth: "3px",
+          borderTopStyle: "solid",
+          borderRightStyle: "solid",
+          borderBottomStyle: "solid",
+          borderLeftStyle: "solid",
+          borderTopColor: "rgb(255, 23, 85)",
+          borderRightColor: "rgb(255, 23, 85)",
+          borderBottomColor: "rgb(255, 23, 85)",
+          borderLeftColor: "rgb(255, 23, 85)",
+          borderTopLeftRadius: "30px",
+          borderTopRightRadius: "30px",
+          borderBottomRightRadius: "30px",
+          borderBottomLeftRadius: "30px"
+        },
+        children: [
+          node("dom-sponsor-icon", "img", { x: 787.5, y: 4792.41, width: 24, height: 24 }, {
+            assetRef: "assets/sponsor.svg",
+            attributes: { alt: "awwrated - become a sponsor!" }
+          })
+        ]
+      })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(heading))[0];
+  const [label, link] = model.children;
+  const [linkText, icon] = link.children;
+
+  assert.equal(model.autoLayout.applied, true);
+  assert.equal(model.autoLayout.layoutMode, "HORIZONTAL");
+  assert.equal(model.autoLayout.primaryAxisAlignItems, "CENTER");
+  assert.equal(model.autoLayout.counterAxisAlignItems, "CENTER");
+  assert.deepEqual(label.rect, { x: 463, y: 10, width: 70, height: 20 });
+  assert.equal(link.autoLayout.applied, true);
+  assert.equal(link.autoLayout.layoutMode, "HORIZONTAL");
+  assert.equal(link.autoLayout.primaryAxisAlignItems, "CENTER");
+  assert.equal(link.autoLayout.counterAxisAlignItems, "CENTER");
+  assert.equal(linkText.text, "スポンサーになる");
+  assert.equal(icon.type, "IMAGE");
+});
+
+test("centered non-flex metric section imports as two-row auto layout", () => {
+  const metric = node("dom-metric-section", "section", { x: 603.73, y: 5099.5, width: 217.54, height: 52 }, {
+    textContent: "2025年の総ユニーク訪問者数",
+    styles: {
+      display: "block",
+      width: "217.539px",
+      height: "52px",
+      textAlign: "center",
+      fontSize: "16px",
+      lineHeight: "26px"
+    },
+    children: [
+      node("dom-metric-value", "b", { x: 603.73, y: 5125.5, width: 217.54, height: 26 }, {
+        textContent: "610,000",
+        styles: {
+          display: "block",
+          width: "217.539px",
+          height: "26px",
+          textAlign: "center",
+          fontSize: "24px",
+          lineHeight: "26px",
+          color: "rgb(255, 23, 85)"
+        }
+      })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(metric))[0];
+  const [label, value] = model.children;
+
+  assert.equal(model.autoLayout.applied, true);
+  assert.equal(model.autoLayout.layoutMode, "VERTICAL");
+  assert.equal(model.autoLayout.counterAxisAlignItems, "CENTER");
+  assert.equal(model.children.length, 2);
+  assert.equal(label.text, "2025年の総ユニーク訪問者数");
+  assert.equal(value.text, "610,000");
+  assert.deepEqual(label.rect, { x: 0, y: 0, width: 217.54, height: 26 });
+  assert.deepEqual(value.rect, { x: 0, y: 26, width: 217.54, height: 26 });
+});
+
 test("rounded video cards keep top-right ranking badges", () => {
   const card = node("dom-video-card", "a", { x: 142.5, y: 223, width: 105, height: 140 }, {
     assetRef: "assets/poster.jpg",

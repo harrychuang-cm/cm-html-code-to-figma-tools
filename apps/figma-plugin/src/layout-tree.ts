@@ -1063,6 +1063,10 @@ function inferDirectTextRect(node, parentRect, children) {
   const crossSize = layoutMode === "HORIZONTAL"
     ? Math.max(1, parentRect.height - padding.top - padding.bottom)
     : Math.max(1, parentRect.width - padding.left - padding.right);
+  const firstLineRect = firstLineDirectTextRect(node, parentRect, children, layoutMode, padding);
+  if (firstLineRect) {
+    return firstLineRect;
+  }
   if (shouldUseFullMultilineDirectTextRect(node, parentRect, children, layoutMode, padding)) {
     if (layoutMode === "HORIZONTAL") {
       return {
@@ -1103,7 +1107,10 @@ function inferDirectTextRect(node, parentRect, children) {
   }
 
   const estimatedTextSize = Math.min(bestSegment.size, estimateTextPrimarySize(node.textContent, styles));
-  const start = bestSegment.hasPrevious && bestSegment.hasNext
+  const textAlign = normalizeCssKeyword(styles.textAlign);
+  const shouldAlignToSegmentEnd = bestSegment.hasNext &&
+    (bestSegment.hasPrevious || textAlign === "center" || textAlign === "right" || textAlign === "end");
+  const start = shouldAlignToSegmentEnd
     ? bestSegment.end - estimatedTextSize
     : bestSegment.start;
   if (layoutMode === "HORIZONTAL") {
@@ -1119,6 +1126,39 @@ function inferDirectTextRect(node, parentRect, children) {
     y: round(start),
     width: round(crossSize),
     height: round(Math.max(1, estimatedTextSize))
+  };
+}
+
+function firstLineDirectTextRect(node, parentRect, children, layoutMode, padding) {
+  if (layoutMode !== "HORIZONTAL" || children.some((child) => child.pseudoType)) {
+    return null;
+  }
+  if (String(node.textContent ?? "").includes("\n")) {
+    return null;
+  }
+
+  const styles = node.styles ?? {};
+  const lineHeight = parseCssNumber(styles.lineHeight) || parseCssNumber(styles.fontSize) * 1.2;
+  if (!(lineHeight > 0)) {
+    return null;
+  }
+
+  const contentWidth = Math.max(1, parentRect.width - padding.left - padding.right);
+  const fontSize = parseCssNumber(styles.fontSize) || 14;
+  if (estimateTextPrimarySize(node.textContent, styles) > contentWidth + fontSize) {
+    return null;
+  }
+
+  const firstLineBottom = parentRect.y + padding.top + lineHeight - 0.5;
+  if (!children.some((child) => child.absoluteRect.y >= firstLineBottom)) {
+    return null;
+  }
+
+  return {
+    x: round(parentRect.x + padding.left),
+    y: round(parentRect.y + padding.top),
+    width: round(contentWidth),
+    height: round(lineHeight)
   };
 }
 
@@ -1191,7 +1231,8 @@ function inferAutoLayout(node, children) {
   const isFlex = display === "flex" || display === "inline-flex";
   const canTrySingleChildAlignment = children.length === 1 &&
     (isFlex || hasPotentialLineHeightAlignment(node, children[0]) || hasButtonTextAlignmentPotential(node, children[0]));
-  if (!isFlex && !canTrySingleChildAlignment) {
+  const canTryNonFlexFlow = children.length > 1 && hasNonFlexFlowStyleEvidence(node);
+  if (!isFlex && !canTrySingleChildAlignment && !canTryNonFlexFlow) {
     return null;
   }
   if (!hasUsableBounds(node.rect) || children.some((child) => !hasUsableBounds(child.absoluteRect))) {
@@ -1218,7 +1259,7 @@ function inferAutoLayout(node, children) {
   }
 
   if (!isFlex) {
-    return null;
+    return inferNonFlexFlowAutoLayout(node, children, parentRect);
   }
   if (children.length < 2) {
     return skippedLayout("one-child-container");
@@ -1260,6 +1301,139 @@ function inferAutoLayout(node, children) {
     reversedChildren: isReverseFlexDirection(flexDirection),
     confidence: 0.92
   };
+}
+
+function inferNonFlexFlowAutoLayout(node, children, parentRect) {
+  if (children.length < 2 || !hasNonFlexFlowEvidence(node, children, parentRect)) {
+    return null;
+  }
+
+  const styles = node.styles ?? {};
+  const layoutMode = inferNonFlexFlowMode(children);
+  if (!layoutMode) {
+    return null;
+  }
+
+  const primaryAxisAlignItems = inferNonFlexFlowPrimaryAxisAlignment(styles, children, layoutMode, parentRect);
+  const counterAxisAlignItems = inferNonFlexFlowCounterAxisAlignment(styles, children, layoutMode, parentRect);
+  const spacing = explicitSpacing(styles, layoutMode) ?? measuredSpacing(children, layoutMode);
+  const paddingResult = resolvePadding(styles, parentRect, children);
+  const padding = alignmentAwarePadding(
+    paddingResult.padding,
+    layoutMode,
+    primaryAxisAlignItems,
+    counterAxisAlignItems,
+    paddingResult.explicit
+  );
+
+  return {
+    applied: true,
+    layoutMode,
+    itemSpacing: spacing,
+    primaryAxisAlignItems,
+    counterAxisAlignItems,
+    paddingLeft: padding.left,
+    paddingRight: padding.right,
+    paddingTop: padding.top,
+    paddingBottom: padding.bottom,
+    confidence: 0.78
+  };
+}
+
+function hasNonFlexFlowEvidence(node, children, parentRect) {
+  if (!hasNonFlexFlowStyleEvidence(node)) {
+    return false;
+  }
+  return centeredChildrenBounds(children, parentRect, "HORIZONTAL") ||
+    centeredChildrenBounds(children, parentRect, "VERTICAL") ||
+    hasNonFlexFlowCssAlignment(node);
+}
+
+function hasNonFlexFlowStyleEvidence(node) {
+  const styles = node.styles ?? {};
+  const display = normalizeCssKeyword(styles.display);
+  return ["block", "inline-block", "inline", ""].includes(display) && hasNonFlexFlowCssAlignment(node);
+}
+
+function hasNonFlexFlowCssAlignment(node) {
+  const styles = node.styles ?? {};
+  const textAlign = normalizeCssKeyword(styles.textAlign);
+  if (textAlign === "center" || textAlign === "right" || textAlign === "end") {
+    return true;
+  }
+  if (
+    normalizeCssKeyword(styles.justifyContent) === "center" ||
+    normalizeCssKeyword(styles.alignItems) === "center"
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function inferNonFlexFlowMode(children) {
+  const overlapsHorizontally = hasPrimaryAxisOverlap(children, "HORIZONTAL");
+  const overlapsVertically = hasPrimaryAxisOverlap(children, "VERTICAL");
+  if (!overlapsHorizontally && overlapsVertically) {
+    return "HORIZONTAL";
+  }
+  if (overlapsHorizontally && !overlapsVertically) {
+    return "VERTICAL";
+  }
+  return null;
+}
+
+function inferNonFlexFlowPrimaryAxisAlignment(styles, children, layoutMode, parentRect) {
+  if (layoutMode === "HORIZONTAL") {
+    const cssAlignment = primaryAxisAlignmentFromCss(styles.justifyContent);
+    if (cssAlignment) {
+      return cssAlignment;
+    }
+    if (normalizeCssKeyword(styles.textAlign) === "center" || centeredChildrenBounds(children, parentRect, layoutMode)) {
+      return "CENTER";
+    }
+  }
+  if (centeredChildrenBounds(children, parentRect, layoutMode) && !childrenFillPrimaryAxis(children, parentRect, layoutMode)) {
+    return "CENTER";
+  }
+  return "MIN";
+}
+
+function inferNonFlexFlowCounterAxisAlignment(styles, children, layoutMode, parentRect) {
+  const cssAlignment = counterAxisAlignmentFromCss(styles.alignItems);
+  if (cssAlignment) {
+    return cssAlignment;
+  }
+  if (layoutMode === "VERTICAL" && normalizeCssKeyword(styles.textAlign) === "center") {
+    return "CENTER";
+  }
+  if (children.every((child) => centeredRectOnAxis(child.absoluteRect, parentRect, counterLayoutMode(layoutMode)))) {
+    return "CENTER";
+  }
+  return "MIN";
+}
+
+function centeredChildrenBounds(children, parentRect, layoutMode) {
+  const bounds = unionAbsoluteRect(children);
+  return Boolean(bounds && centeredRectOnAxis(bounds, parentRect, layoutMode));
+}
+
+function centeredRectOnAxis(rect, parentRect, layoutMode) {
+  const tolerance = Math.max(2, primaryAxisSize(parentRect, layoutMode) * 0.02);
+  const rectCenter = primaryAxisStart(rect, layoutMode) + primaryAxisSize(rect, layoutMode) / 2;
+  const parentCenter = primaryAxisStart(parentRect, layoutMode) + primaryAxisSize(parentRect, layoutMode) / 2;
+  return Math.abs(rectCenter - parentCenter) <= tolerance;
+}
+
+function childrenFillPrimaryAxis(children, parentRect, layoutMode) {
+  const bounds = unionAbsoluteRect(children);
+  if (!bounds) {
+    return false;
+  }
+  return primaryAxisSize(bounds, layoutMode) >= primaryAxisSize(parentRect, layoutMode) - 1;
+}
+
+function counterLayoutMode(layoutMode) {
+  return layoutMode === "HORIZONTAL" ? "VERTICAL" : "HORIZONTAL";
 }
 
 function orderedChildrenForAutoLayout(children, autoLayout) {
@@ -2241,6 +2415,10 @@ function primaryAxisStart(rect, layoutMode) {
 
 function primaryAxisEnd(rect, layoutMode) {
   return layoutMode === "HORIZONTAL" ? rect.x + rect.width : rect.y + rect.height;
+}
+
+function primaryAxisSize(rect, layoutMode) {
+  return layoutMode === "HORIZONTAL" ? rect.width : rect.height;
 }
 
 function counterAxisStart(rect, layoutMode) {

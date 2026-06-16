@@ -3658,6 +3658,167 @@ test("classic Figma runtime keeps transformed labels auto-width and pseudo bar o
   assert.equal(overlay.strokeWeight, 0.5);
 });
 
+test("classic Figma runtime applies auto layout to centered non-flex flow groups", async () => {
+  const main = await readFile("apps/figma-plugin/dist/code.js", "utf8");
+  const posted = [];
+
+  function captureNode(sourceNodeId, tagName, rect, extra = {}) {
+    return {
+      id: `node-${sourceNodeId}`,
+      sourceNodeId,
+      nodeType: extra.nodeType ?? "element",
+      tagName,
+      textContent: extra.textContent ?? "",
+      rect,
+      styles: extra.styles ?? {},
+      attributes: extra.attributes ?? {},
+      children: extra.children ?? []
+    };
+  }
+
+  function createNode(type) {
+    return {
+      type,
+      name: "",
+      children: [],
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0,
+      fills: [],
+      strokes: [],
+      effects: [],
+      pluginData: {},
+      resize(width, height) {
+        this.width = width;
+        this.height = height;
+      },
+      appendChild(child) {
+        this.children.push(child);
+      },
+      setPluginData(key, value) {
+        this.pluginData[key] = value;
+      }
+    };
+  }
+
+  const root = captureNode("dom-root", "main", { x: 0, y: 0, width: 1160, height: 120 }, {
+    children: [
+      captureNode("dom-sponsor-heading", "h5", { x: 0, y: 0, width: 1160, height: 40 }, {
+        textContent: "スポンサー",
+        styles: {
+          display: "block",
+          textAlign: "center",
+          fontSize: "14px",
+          lineHeight: "20px"
+        },
+        children: [
+          captureNode("dom-sponsor-link", "a", { x: 533, y: 0, width: 164, height: 40 }, {
+            textContent: "スポンサーになる",
+            styles: {
+              display: "inline-block",
+              justifyContent: "center",
+              alignItems: "center",
+              textAlign: "center",
+              fontSize: "13px",
+              lineHeight: "13px"
+            },
+            children: [
+              captureNode("dom-sponsor-plus", "span", { x: 655, y: 8, width: 24, height: 24 }, {
+                textContent: "+1",
+                styles: {
+                  display: "inline",
+                  fontSize: "13px",
+                  lineHeight: "24px"
+                }
+              })
+            ]
+          })
+        ]
+      }),
+      captureNode("dom-metric-section", "section", { x: 471.23, y: 60, width: 217.54, height: 52 }, {
+        textContent: "2025年の総ユニーク訪問者数",
+        styles: {
+          display: "block",
+          textAlign: "center",
+          fontSize: "16px",
+          lineHeight: "26px"
+        },
+        children: [
+          captureNode("dom-metric-value", "b", { x: 471.23, y: 86, width: 217.54, height: 26 }, {
+            textContent: "610,000",
+            styles: {
+              display: "block",
+              textAlign: "center",
+              fontSize: "24px",
+              lineHeight: "26px"
+            }
+          })
+        ]
+      })
+    ]
+  });
+  const basePackage = createValidPackage();
+  const packageData = createValidPackage({
+    capture: {
+      ...basePackage.capture,
+      root
+    }
+  });
+  const figma = {
+    currentPage: { children: [], appendChild(child) { this.children.push(child); } },
+    ui: { onmessage: null, postMessage(message) { posted.push(message); } },
+    showUI() {},
+    createFrame() { return createNode("FRAME"); },
+    createRectangle() { return createNode("RECTANGLE"); },
+    createText() { return createNode("TEXT"); },
+    createImage(bytes) { return { hash: `hash-${bytes.length}` }; },
+    async loadFontAsync() {}
+  };
+
+  vm.runInNewContext(main, {
+    figma,
+    Uint8Array,
+    Uint32Array,
+    ArrayBuffer,
+    DataView,
+    Error,
+    JSON,
+    Math,
+    Number,
+    Object,
+    Promise,
+    String,
+    Boolean,
+    Array,
+    isFinite,
+    parseFloat
+  });
+  await figma.ui.onmessage({
+    type: "IMPORT_PACKAGE",
+    filename: "non-flex-flow.figcapture",
+    bytes: packFigcapture(packageData)
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const nodes = flattenNodes(figma.currentPage.children);
+  const heading = nodes.find((node) => node.pluginData?.sourceNodeId === "dom-sponsor-heading");
+  const link = nodes.find((node) => node.pluginData?.sourceNodeId === "dom-sponsor-link");
+  const metric = nodes.find((node) => node.pluginData?.sourceNodeId === "dom-metric-section");
+
+  assert.equal(resultMessage(posted).type, "IMPORT_SUCCESS");
+  assert.equal(heading?.layoutMode, "HORIZONTAL");
+  assert.equal(heading?.primaryAxisAlignItems, "CENTER");
+  assert.equal(link?.layoutMode, "HORIZONTAL");
+  assert.equal(link?.counterAxisAlignItems, "CENTER");
+  assert.equal(metric?.layoutMode, "VERTICAL");
+  assert.equal(metric?.counterAxisAlignItems, "CENTER");
+  assert.deepEqual(metric?.children.map((node) => node.pluginData?.sourceNodeId), [
+    "dom-metric-section::text",
+    "dom-metric-value"
+  ]);
+});
+
 test("classic Figma runtime sizes full-page frames to the document dimensions", async () => {
   const main = await readFile("apps/figma-plugin/dist/code.js", "utf8");
   const posted = [];
