@@ -5,6 +5,7 @@ import { captureElementTree } from "../dist/capture-core.js";
 import {
   CAPTURE_ACTIVE_TAB_MESSAGE,
   EXPORT_CONFIRMED_MESSAGE,
+  GET_PENDING_CAPTURE_MESSAGE,
   RUNTIME_ERROR_CATEGORIES,
   createChromeCaptureRuntime,
   handleCaptureActiveTab,
@@ -285,6 +286,7 @@ test("confirmed export maps package generation and download failures", async () 
 test("runtime message constants remain stable", () => {
   assert.equal(CAPTURE_ACTIVE_TAB_MESSAGE, "FIGCAPTURE_CAPTURE_ACTIVE_TAB");
   assert.equal(EXPORT_CONFIRMED_MESSAGE, "FIGCAPTURE_EXPORT_CONFIRMED");
+  assert.equal(GET_PENDING_CAPTURE_MESSAGE, "FIGCAPTURE_GET_PENDING_CAPTURE");
 });
 
 test("content runtime page metrics, scroll, and pinned hiding respond with expected shapes", async () => {
@@ -993,4 +995,95 @@ test("viewport capture mode keeps existing behavior without full-page messages",
   assert.equal(response.status, "ready");
   assert.equal(response.preview.captureMode, "viewport");
   assert.equal(calls.length, 0);
+});
+
+test("element capture selects one DOM node and captures the matching clipped screenshot", async () => {
+  const calls = [];
+  const shots = [];
+  let visibleScreenshots = 0;
+  const selection = {
+    id: "selection-1",
+    rect: { x: 100, y: 200, width: 320, height: 180 },
+    documentRect: { x: 100, y: 600, width: 320, height: 180 },
+    viewport: { width: 1440, height: 900, devicePixelRatio: 2, scrollX: 0, scrollY: 400 }
+  };
+  const capture = captureElementTree(
+    {
+      tagName: "article",
+      rect: { x: 0, y: 0, width: 320, height: 180 },
+      styles: {},
+      attributes: {},
+      children: []
+    },
+    { width: 320, height: 180, devicePixelRatio: 2, scrollX: 0, scrollY: 400 },
+    {
+      sourceUrl: "https://app.example.com/cards",
+      title: "Cards",
+      captureTimestamp: "2026-06-16T03:10:00.000Z",
+      captureMode: "element",
+      captureBounds: { width: 320, height: 180 }
+    }
+  );
+
+  const runtime = createChromeCaptureRuntime({
+    chromeApi: {
+      tabs: {
+        async query() {
+          return [{ id: 42, url: capture.sourceUrl, title: capture.title }];
+        }
+      }
+    },
+    contentRequest: async (_api, _tabId, message) => {
+      calls.push(message);
+      if (message.type === "FIGCAPTURE_SELECT_ELEMENT") {
+        return { status: "success", selection };
+      }
+      if (message.type === "FIGCAPTURE_COLLECT_DOM") {
+        assert.equal(message.mode, "element");
+        assert.equal(message.selection.id, "selection-1");
+        return { status: "success", capture };
+      }
+      throw new Error(`Unexpected message ${message.type}`);
+    },
+    screenshotAdapter: async () => {
+      visibleScreenshots += 1;
+      return SCREENSHOT_DATA_URL;
+    },
+    emulationFactory: () => ({
+      async attach() {},
+      async captureScreenshot(params) {
+        shots.push(params);
+        return "data:image/png;base64,element-cdp";
+      },
+      async detach() {}
+    }),
+    packageBuilder: fakePackageBuilder,
+    getPending: () => null,
+    setPending: () => {}
+  });
+
+  const response = await runtime.captureActiveTab({
+    captureMode: "element",
+    breakpointWidths: [1440, 375]
+  });
+
+  assert.deepEqual(calls.map((call) => call.type), [
+    "FIGCAPTURE_SELECT_ELEMENT",
+    "FIGCAPTURE_COLLECT_DOM"
+  ]);
+  assert.deepEqual(shots, [{
+    clip: { x: 100, y: 600, width: 320, height: 180, scale: 1 },
+    captureBeyondViewport: true
+  }]);
+  assert.equal(visibleScreenshots, 0);
+  assert.equal(response.status, "ready");
+  assert.equal(response.preview.captureMode, "element");
+  assert.deepEqual(response.preview.viewport, {
+    width: 320,
+    height: 180,
+    devicePixelRatio: 2,
+    scrollX: 0,
+    scrollY: 400
+  });
+  assert.equal(response.preview.screenshotDataUrl, "data:image/png;base64,element-cdp");
 });

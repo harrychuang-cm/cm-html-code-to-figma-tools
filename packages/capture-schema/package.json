@@ -1,6 +1,6 @@
 {
   "name": "@figma-capture/capture-schema",
-  "version": "0.1.81",
+  "version": "0.1.85",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

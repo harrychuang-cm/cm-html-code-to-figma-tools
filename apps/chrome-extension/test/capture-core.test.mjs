@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  captureElementFromDocument,
   captureElementTree,
   captureVisibleViewportFromDocument,
   createManifestFromCapture,
@@ -1779,4 +1780,62 @@ test("capture without captureBounds keeps existing viewport clipping behavior", 
   const manifest = createManifestFromCapture(capture);
   assert.equal(manifest.captureMode, undefined);
   assert.equal(manifest.documentHeight, undefined);
+});
+
+test("selected element capture uses element-local frame coordinates", () => {
+  const child = {
+    tagName: "span",
+    attributes: [],
+    children: [],
+    childNodes: [{ nodeType: 3, textContent: "Price" }],
+    getBoundingClientRect() {
+      return { x: 130, y: 230, width: 60, height: 24 };
+    }
+  };
+  const card = {
+    tagName: "article",
+    attributes: [{ name: "class", value: "pricing-card" }],
+    children: [child],
+    childNodes: [],
+    getBoundingClientRect() {
+      return { x: 100, y: 200, width: 320, height: 180 };
+    }
+  };
+  const fakeDocument = {
+    title: "Pricing",
+    location: { href: "https://app.example.com/pricing" }
+  };
+  const fakeWindow = {
+    innerWidth: 1440,
+    innerHeight: 900,
+    devicePixelRatio: 2,
+    scrollX: 0,
+    scrollY: 400,
+    getComputedStyle(_element, pseudo) {
+      if (pseudo) {
+        return { display: "none", content: "none" };
+      }
+      return { display: "block", position: "static", whiteSpace: "normal" };
+    }
+  };
+
+  const capture = captureElementFromDocument(card, fakeDocument, fakeWindow, {
+    captureTimestamp: "2026-06-16T03:00:00.000Z"
+  });
+  const manifest = createManifestFromCapture(capture);
+
+  assert.equal(capture.captureMode, "element");
+  assert.deepEqual(capture.viewport, {
+    width: 320,
+    height: 180,
+    devicePixelRatio: 2,
+    scrollX: 0,
+    scrollY: 400
+  });
+  assert.deepEqual(capture.root.rect, { x: 0, y: 0, width: 320, height: 180 });
+  assert.deepEqual(capture.root.children[0].rect, { x: 30, y: 30, width: 60, height: 24 });
+  assert.equal(capture.root.children[0].textContent, "Price");
+  assert.equal(manifest.captureMode, "element");
+  assert.equal(manifest.viewportWidth, 320);
+  assert.equal(manifest.viewportHeight, 180);
 });

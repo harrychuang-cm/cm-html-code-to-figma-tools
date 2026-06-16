@@ -83,10 +83,15 @@ export function validateManifest(value) {
     errors.push(error(ERROR_CODES.INVALID_FIELD, "deviceLabel must be a string", "manifest.deviceLabel"));
   }
 
-  if ("captureMode" in value && value.captureMode !== "viewport" && value.captureMode !== "full-page") {
+  if (
+    "captureMode" in value &&
+    value.captureMode !== "viewport" &&
+    value.captureMode !== "full-page" &&
+    value.captureMode !== "element"
+  ) {
     errors.push(error(
       ERROR_CODES.INVALID_FIELD,
-      "captureMode must be viewport or full-page",
+      "captureMode must be viewport, full-page, or element",
       "manifest.captureMode"
     ));
   }

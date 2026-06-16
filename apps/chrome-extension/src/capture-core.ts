@@ -85,6 +85,7 @@ export const DEFAULT_STYLE_PROPERTIES = [
 ];
 
 export function createManifestFromCapture(capture, options = {}) {
+  const captureMode = capture.captureMode === "element" ? "element" : capture.captureMode;
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     generatorVersion: options.generatorVersion ?? "0.1.0",
@@ -96,12 +97,14 @@ export function createManifestFromCapture(capture, options = {}) {
     scrollX: capture.viewport.scrollX,
     scrollY: capture.viewport.scrollY,
     ...(options.deviceLabel ? { deviceLabel: options.deviceLabel } : {}),
-    ...(capture.captureMode === "full-page"
+    ...(captureMode === "full-page"
       ? {
         captureMode: "full-page",
         documentWidth: capture.documentWidth,
         documentHeight: capture.documentHeight
       }
+      : captureMode === "element"
+        ? { captureMode: "element" }
       : {})
   };
 }
@@ -109,7 +112,8 @@ export function createManifestFromCapture(capture, options = {}) {
 export function captureElementTree(inputRoot, viewport, options = {}) {
   const timestamp = options.captureTimestamp ?? new Date().toISOString();
   const captureBounds = options.captureBounds ?? { width: viewport.width, height: viewport.height };
-  const isFullPage = options.captureMode === "full-page";
+  const captureMode = options.captureMode === "element" ? "element" : options.captureMode;
+  const isFullPage = captureMode === "full-page";
   const root = normalizeElement(inputRoot, "dom-1", captureBounds, true, {
     clipToViewport: options.clipToViewport !== false
   });
@@ -131,6 +135,8 @@ export function captureElementTree(inputRoot, viewport, options = {}) {
         documentWidth: captureBounds.width,
         documentHeight: captureBounds.height
       }
+      : captureMode === "element"
+        ? { captureMode: "element" }
       : {}),
     root
   };
@@ -162,6 +168,44 @@ export function captureVisibleViewportFromDocument(documentRef = globalThis.docu
   });
 }
 
+export function captureElementFromDocument(element, documentRef = globalThis.document, windowRef = globalThis.window, options = {}) {
+  if (!element || typeof element.getBoundingClientRect !== "function") {
+    throw new Error("A selectable element is required for element capture");
+  }
+
+  const browserViewport = {
+    width: windowRef.innerWidth,
+    height: windowRef.innerHeight,
+    devicePixelRatio: windowRef.devicePixelRatio || 1,
+    scrollX: windowRef.scrollX || 0,
+    scrollY: windowRef.scrollY || 0
+  };
+  const elementRect = normalizeRect(element.getBoundingClientRect());
+  const captureBounds = {
+    width: positiveNumber(options.captureBounds?.width, positiveNumber(elementRect.width, 1)),
+    height: positiveNumber(options.captureBounds?.height, positiveNumber(elementRect.height, 1))
+  };
+  const rawRoot = snapshotDomElement(element, documentRef, windowRef, null, {
+    openOrClosedShadowRoot: options.openOrClosedShadowRoot
+  });
+  const root = translateElementCaptureRoot(rawRoot, elementRect, captureBounds);
+
+  return captureElementTree(root, {
+    width: captureBounds.width,
+    height: captureBounds.height,
+    devicePixelRatio: browserViewport.devicePixelRatio,
+    scrollX: browserViewport.scrollX,
+    scrollY: browserViewport.scrollY
+  }, {
+    sourceUrl: documentRef.location?.href ?? windowRef.location?.href ?? "about:blank",
+    title: documentRef.title ?? "",
+    captureTimestamp: options.captureTimestamp,
+    captureMode: "element",
+    captureBounds,
+    selection: options.selection
+  });
+}
+
 function translateFullPageCaptureRoot(root, viewport, captureBounds = {}) {
   const width = positiveNumber(captureBounds?.width, positiveNumber(root?.rect?.width, viewport.width));
   const height = positiveNumber(captureBounds?.height, positiveNumber(root?.rect?.height, viewport.height));
@@ -171,6 +215,16 @@ function translateFullPageCaptureRoot(root, viewport, captureBounds = {}) {
   };
 
   return translateCaptureNodeToDocument(root, offset, true, { width, height });
+}
+
+function translateElementCaptureRoot(root, elementRect, captureBounds = {}) {
+  return translateCaptureNodeToDocument(root, {
+    x: -Number(elementRect.x ?? 0),
+    y: -Number(elementRect.y ?? 0)
+  }, true, {
+    width: captureBounds.width,
+    height: captureBounds.height
+  });
 }
 
 function translateCaptureNodeToDocument(node, offset, isRoot = false, rootBounds = {}) {

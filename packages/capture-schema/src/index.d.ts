@@ -32,6 +32,9 @@ export interface CaptureManifest {
   scrollX: number;
   scrollY: number;
   deviceLabel?: string;
+  captureMode?: "viewport" | "full-page" | "element";
+  documentWidth?: number;
+  documentHeight?: number;
 }
 
 export interface CaptureViewport {
@@ -66,6 +69,9 @@ export interface CaptureNode {
 export interface CaptureDocument {
   sourceUrl: string;
   title?: string;
+  captureMode?: "viewport" | "full-page" | "element";
+  documentWidth?: number;
+  documentHeight?: number;
   viewport: CaptureViewport;
   root: CaptureNode;
 }

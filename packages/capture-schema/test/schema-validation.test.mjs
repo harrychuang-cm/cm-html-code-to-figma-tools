@@ -102,6 +102,18 @@ test("full-page manifest fields validate when well formed", () => {
   assert.equal(validation.ok, true);
 });
 
+test("element manifest mode validates without document dimensions", () => {
+  const packageData = createValidPackage();
+  const validation = validateManifest({
+    ...packageData.manifest,
+    captureMode: "element",
+    viewportWidth: 320,
+    viewportHeight: 180
+  });
+
+  assert.equal(validation.ok, true);
+});
+
 test("invalid captureMode is rejected", () => {
   const packageData = createValidPackage();
   const validation = validateManifest({

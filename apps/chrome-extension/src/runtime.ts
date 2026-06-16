@@ -16,10 +16,12 @@ import {
 
 export const CAPTURE_ACTIVE_TAB_MESSAGE = "FIGCAPTURE_CAPTURE_ACTIVE_TAB";
 export const EXPORT_CONFIRMED_MESSAGE = "FIGCAPTURE_EXPORT_CONFIRMED";
+export const GET_PENDING_CAPTURE_MESSAGE = "FIGCAPTURE_GET_PENDING_CAPTURE";
 export const CAPTURE_DOM_MESSAGE = "FIGCAPTURE_COLLECT_DOM";
 export const PAGE_METRICS_MESSAGE = "FIGCAPTURE_PAGE_METRICS";
 export const SCROLL_TO_MESSAGE = "FIGCAPTURE_SCROLL_TO";
 export const SET_PINNED_HIDDEN_MESSAGE = "FIGCAPTURE_SET_PINNED_HIDDEN";
+export const SELECT_ELEMENT_MESSAGE = "FIGCAPTURE_SELECT_ELEMENT";
 
 export const MAX_FULL_PAGE_HEIGHT = 20000;
 export const MAX_FULL_PAGE_SEGMENTS = 25;
@@ -135,6 +137,25 @@ export function createChromeCaptureRuntime(options = {}) {
     return { capture, screenshotDataUrl, truncationWarning: null };
   }
 
+  async function captureElementOnce(tab, screenshot = visibleScreenshot) {
+    const selectionResponse = await contentRequest(chromeApi, tab.id, { type: SELECT_ELEMENT_MESSAGE });
+    const selection = normalizeElementSelection(selectionResponse?.selection);
+    const domResponse = await contentRequest(chromeApi, tab.id, {
+      type: CAPTURE_DOM_MESSAGE,
+      mode: "element",
+      selection
+    });
+    if (!domResponse?.capture) {
+      throw runtimeError(
+        RUNTIME_ERROR_CATEGORIES.CAPTURE_SCRIPT_FAILED,
+        "Content runtime did not return selected element capture data"
+      );
+    }
+
+    const screenshotDataUrl = await captureElementScreenshot(tab, selection, screenshot);
+    return { capture: domResponse.capture, screenshotDataUrl, truncationWarning: null };
+  }
+
   async function captureFullPageOnce(tab, screenshot = visibleScreenshot) {
     const metricsResponse = await contentRequest(chromeApi, tab.id, { type: PAGE_METRICS_MESSAGE });
     const metrics = metricsResponse?.metrics;
@@ -238,10 +259,66 @@ export function createChromeCaptureRuntime(options = {}) {
     }
   }
 
+  async function captureElementScreenshot(tab, selection, screenshot) {
+    const documentRect = selection.documentRect;
+    const documentClip = clipFor(documentRect.width, documentRect.height, documentRect.x, documentRect.y);
+    if (!documentClip) {
+      throw runtimeError(
+        RUNTIME_ERROR_CATEGORIES.CAPTURE_SCRIPT_FAILED,
+        "Selected element has no screenshot bounds"
+      );
+    }
+
+    if (screenshot.supportsClip) {
+      return screenshot(tab, documentClip);
+    }
+
+    const cdpScreenshot = await captureElementScreenshotWithDebugger(tab, documentClip).catch((error) => {
+      return { error };
+    });
+    if (typeof cdpScreenshot === "string") {
+      return cdpScreenshot;
+    }
+
+    const visibleDataUrl = await screenshot(tab);
+    const croppedDataUrl = await cropScreenshotDataUrlToClip(visibleDataUrl, selection.rect, selection.viewport);
+    if (croppedDataUrl) {
+      return croppedDataUrl;
+    }
+
+    throw runtimeError(
+      RUNTIME_ERROR_CATEGORIES.SCREENSHOT_FAILED,
+      cdpScreenshot?.error?.message ?? "Could not capture the selected element screenshot",
+      cdpScreenshot?.error
+    );
+  }
+
+  async function captureElementScreenshotWithDebugger(tab, clip) {
+    const session = emulationFactory(chromeApi, tab.id);
+    try {
+      await session.attach();
+      if (typeof session.captureScreenshot !== "function") {
+        throw runtimeError(
+          RUNTIME_ERROR_CATEGORIES.SCREENSHOT_FAILED,
+          "Chrome debugger screenshot API is unavailable for selected element capture"
+        );
+      }
+      return await session.captureScreenshot({ clip, captureBeyondViewport: true });
+    } finally {
+      if (typeof session.detach === "function") {
+        await session.detach().catch(() => null);
+      }
+    }
+  }
+
   function captureOnce(tab, captureMode, screenshot = visibleScreenshot) {
-    return captureMode === "full-page"
-      ? captureFullPageOnce(tab, screenshot)
-      : captureViewportOnce(tab, screenshot);
+    if (captureMode === "full-page") {
+      return captureFullPageOnce(tab, screenshot);
+    }
+    if (captureMode === "element") {
+      return captureElementOnce(tab, screenshot);
+    }
+    return captureViewportOnce(tab, screenshot);
   }
 
   async function captureBreakpoints(tab, widths, captureMode) {
@@ -338,13 +415,16 @@ export function createChromeCaptureRuntime(options = {}) {
   return {
     async captureActiveTab(captureOptions = {}) {
       const tab = await resolveActiveTab(chromeApi);
+      const captureMode = normalizeCaptureMode(captureOptions.captureMode);
 
-      const widths = normalizeBreakpointWidths(captureOptions.breakpointWidths ?? []);
+      const widths = captureMode === "element"
+        ? []
+        : normalizeBreakpointWidths(captureOptions.breakpointWidths ?? []);
       if (widths.length > 0) {
-        return captureBreakpoints(tab, widths, captureOptions.captureMode);
+        return captureBreakpoints(tab, widths, captureMode);
       }
 
-      const single = await captureOnce(tab, captureOptions.captureMode);
+      const single = await captureOnce(tab, captureMode);
       return buildPreviewResult(tab, single.capture, single.screenshotDataUrl, single.truncationWarning);
     },
 
@@ -390,6 +470,19 @@ export function createChromeCaptureRuntime(options = {}) {
         filename: exportPackage.filename,
         downloadId
       };
+    },
+
+    getPendingPreview() {
+      const pending = getPending();
+      if (!pending?.preview) {
+        return { status: "empty" };
+      }
+      return {
+        status: "ready",
+        localFirst: true,
+        tab: pending.tab,
+        preview: pending.preview
+      };
     }
   };
 }
@@ -424,12 +517,105 @@ export function computeFullPageCapturePlan(metrics, limits = {}) {
   };
 }
 
+export function normalizeCaptureMode(value) {
+  return value === "full-page" || value === "element" ? value : "viewport";
+}
+
+export function normalizeElementSelection(selection = {}) {
+  const rect = normalizeSelectionRect(selection.rect, "Selected element viewport bounds are missing");
+  const documentRect = normalizeSelectionRect(
+    selection.documentRect ?? {
+      x: rect.x + Number(selection.viewport?.scrollX ?? 0),
+      y: rect.y + Number(selection.viewport?.scrollY ?? 0),
+      width: rect.width,
+      height: rect.height
+    },
+    "Selected element document bounds are missing"
+  );
+  const viewport = {
+    width: Number(selection.viewport?.width ?? 0),
+    height: Number(selection.viewport?.height ?? 0),
+    devicePixelRatio: Number(selection.viewport?.devicePixelRatio ?? 1) || 1,
+    scrollX: Number(selection.viewport?.scrollX ?? 0) || 0,
+    scrollY: Number(selection.viewport?.scrollY ?? 0) || 0
+  };
+  if (viewport.width <= 0 || viewport.height <= 0) {
+    throw runtimeError(
+      RUNTIME_ERROR_CATEGORIES.CAPTURE_SCRIPT_FAILED,
+      "Selected element viewport metadata is missing"
+    );
+  }
+  return {
+    ...selection,
+    rect,
+    documentRect,
+    viewport
+  };
+}
+
+function normalizeSelectionRect(rect = {}, message) {
+  const normalized = {
+    x: Number(rect.x ?? rect.left ?? 0) || 0,
+    y: Number(rect.y ?? rect.top ?? 0) || 0,
+    width: Number(rect.width ?? 0),
+    height: Number(rect.height ?? 0)
+  };
+  if (!(normalized.width > 0) || !(normalized.height > 0)) {
+    throw runtimeError(RUNTIME_ERROR_CATEGORIES.CAPTURE_SCRIPT_FAILED, message);
+  }
+  return normalized;
+}
+
 export function shouldSegmentCdpFullPageCapture(plan = {}, viewport = {}, limits = {}) {
   const maxBitmapDimension = limits.maxBitmapDimension ?? MAX_CDP_SCREENSHOT_BITMAP_DIMENSION;
   const dpr = Number(viewport.devicePixelRatio ?? 1) || 1;
   const width = Number(plan.documentWidth ?? 0);
   const height = Number(plan.documentHeight ?? 0);
   return width * dpr > maxBitmapDimension || height * dpr > maxBitmapDimension;
+}
+
+export async function cropScreenshotDataUrlToClip(screenshotDataUrl, clip = {}, viewport = {}) {
+  if (
+    typeof screenshotDataUrl !== "string" ||
+    !screenshotDataUrl.startsWith("data:image/") ||
+    typeof globalThis.createImageBitmap !== "function" ||
+    typeof globalThis.OffscreenCanvas !== "function" ||
+    typeof globalThis.Blob !== "function"
+  ) {
+    return null;
+  }
+
+  const bitmap = await decodeScreenshotDataUrlBitmap(screenshotDataUrl);
+  if (!bitmap?.width || !bitmap?.height) {
+    return null;
+  }
+
+  try {
+    const crop = screenshotCropRectForBitmap(clip, viewport, bitmap);
+    if (crop.width <= 0 || crop.height <= 0) {
+      return null;
+    }
+    const canvas = new globalThis.OffscreenCanvas(crop.width, crop.height);
+    const context = canvas.getContext?.("2d");
+    if (!context?.drawImage || typeof canvas.convertToBlob !== "function") {
+      return null;
+    }
+    context.drawImage(
+      bitmap,
+      crop.x,
+      crop.y,
+      crop.width,
+      crop.height,
+      0,
+      0,
+      crop.width,
+      crop.height
+    );
+    const blob = await canvas.convertToBlob({ type: "image/png" });
+    return await blobToDataUrl(blob);
+  } finally {
+    bitmap.close?.();
+  }
 }
 
 export function cdpFullPageClipSegments(plan = {}, viewport = {}, limits = {}) {
@@ -560,9 +746,21 @@ export async function handleConfirmExport(chromeApi = globalThis.chrome, options
   }
 }
 
+export async function handleGetPendingCapture(chromeApi = globalThis.chrome, options = {}) {
+  try {
+    return createChromeCaptureRuntime({ chromeApi, ...options }).getPendingPreview();
+  } catch (error) {
+    return {
+      status: "error",
+      error: toRuntimeErrorPayload(error, RUNTIME_ERROR_CATEGORIES.CAPTURE_SCRIPT_FAILED)
+    };
+  }
+}
+
 export function createPreviewPayload(capture, screenshotDataUrl, diagnostics, tab = {}, options = {}) {
   const summary = summarizeDiagnostics(diagnostics);
   const previewScreenshot = boundedPreviewScreenshotDataUrl(screenshotDataUrl, options);
+  const captureMode = normalizeCaptureMode(capture.captureMode);
   const payload = {
     sourceUrl: capture.sourceUrl || tab.url || "",
     viewport: {
@@ -577,12 +775,14 @@ export function createPreviewPayload(capture, screenshotDataUrl, diagnostics, ta
     packageGenerationStatus: "ready",
     packageStatus: "ready",
     screenshotPreviewStatus: previewScreenshot ? "ready" : "omitted",
-    ...(capture.captureMode === "full-page"
+    ...(captureMode === "full-page"
       ? {
         captureMode: "full-page",
         documentWidth: capture.documentWidth,
         documentHeight: capture.documentHeight
       }
+      : captureMode === "element"
+        ? { captureMode: "element" }
       : { captureMode: "viewport" })
   };
   if (previewScreenshot) {
@@ -611,6 +811,76 @@ function normalizePreviewScreenshotMaxBytes(value) {
     return Math.floor(maxBytes);
   }
   return MAX_PREVIEW_SCREENSHOT_DATA_URL_BYTES;
+}
+
+async function decodeScreenshotDataUrlBitmap(dataUrl) {
+  let blob = null;
+  if (typeof globalThis.fetch === "function") {
+    try {
+      blob = await (await globalThis.fetch(dataUrl)).blob();
+    } catch {
+      blob = null;
+    }
+  }
+  if (!blob) {
+    blob = new globalThis.Blob([dataUrlToBytes(dataUrl)], {
+      type: dataUrlMediaType(dataUrl) || "image/png"
+    });
+  }
+  return globalThis.createImageBitmap(blob);
+}
+
+function screenshotCropRectForBitmap(rect = {}, viewport = {}, bitmap = {}) {
+  const viewportWidth = Number(viewport.width ?? bitmap.width ?? 0);
+  const viewportHeight = Number(viewport.height ?? bitmap.height ?? 0);
+  const scaleX = viewportWidth > 0 ? bitmap.width / viewportWidth : 1;
+  const scaleY = viewportHeight > 0 ? bitmap.height / viewportHeight : 1;
+  const left = Math.max(0, Math.round(Number(rect.x ?? 0) * scaleX));
+  const top = Math.max(0, Math.round(Number(rect.y ?? 0) * scaleY));
+  const right = Math.min(bitmap.width, Math.round((Number(rect.x ?? 0) + Number(rect.width ?? 0)) * scaleX));
+  const bottom = Math.min(bitmap.height, Math.round((Number(rect.y ?? 0) + Number(rect.height ?? 0)) * scaleY));
+
+  return {
+    x: left,
+    y: top,
+    width: Math.max(0, right - left),
+    height: Math.max(0, bottom - top)
+  };
+}
+
+async function blobToDataUrl(blob) {
+  return `data:${blob.type || "image/png"};base64,${bytesToBase64(new Uint8Array(await blob.arrayBuffer()))}`;
+}
+
+function dataUrlToBytes(dataUrl) {
+  const [, payload = ""] = String(dataUrl).split(",");
+  if (typeof atob === "function") {
+    const binary = atob(payload);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return bytes;
+  }
+  return Uint8Array.from(Buffer.from(payload, "base64"));
+}
+
+function dataUrlMediaType(dataUrl) {
+  const match = String(dataUrl).match(/^data:([^;,]+)/);
+  return match?.[1] ?? "";
+}
+
+function bytesToBase64(bytes) {
+  if (typeof btoa === "function") {
+    let binary = "";
+    const chunkSize = 0x8000;
+    for (let index = 0; index < bytes.length; index += chunkSize) {
+      const chunk = bytes.slice(index, index + chunkSize);
+      binary += String.fromCharCode(...chunk);
+    }
+    return btoa(binary);
+  }
+  return Buffer.from(bytes).toString("base64");
 }
 
 async function requestContentResponse(chromeApi, tabId, message) {

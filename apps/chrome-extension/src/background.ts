@@ -1,16 +1,20 @@
 import {
   CAPTURE_ACTIVE_TAB_MESSAGE,
   EXPORT_CONFIRMED_MESSAGE,
+  GET_PENDING_CAPTURE_MESSAGE,
   handleCaptureActiveTab,
   handleConfirmExport,
+  handleGetPendingCapture,
   resolveActiveTab
 } from "./runtime.ts";
 
 export {
   CAPTURE_ACTIVE_TAB_MESSAGE,
   EXPORT_CONFIRMED_MESSAGE,
+  GET_PENDING_CAPTURE_MESSAGE,
   handleCaptureActiveTab,
   handleConfirmExport,
+  handleGetPendingCapture,
   resolveActiveTab
 };
 
@@ -44,6 +48,12 @@ export function registerBackgroundRuntime(chromeApi = globalThis.chrome) {
   chromeApi?.runtime?.onMessage?.addListener?.((message, _sender, sendResponse) => {
     if (message?.type === EXPORT_CONFIRMED_MESSAGE) {
       handleConfirmExport(chromeApi)
+        .then((response) => sendResponse(response));
+      return true;
+    }
+
+    if (message?.type === GET_PENDING_CAPTURE_MESSAGE) {
+      handleGetPendingCapture(chromeApi)
         .then((response) => sendResponse(response));
       return true;
     }

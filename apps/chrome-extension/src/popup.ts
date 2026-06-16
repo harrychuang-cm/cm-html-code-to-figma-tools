@@ -1,6 +1,7 @@
 import {
   CAPTURE_ACTIVE_TAB_MESSAGE,
-  EXPORT_CONFIRMED_MESSAGE
+  EXPORT_CONFIRMED_MESSAGE,
+  GET_PENDING_CAPTURE_MESSAGE
 } from "./runtime.ts";
 import { summarizeDiagnostics } from "@figma-capture/capture-schema";
 import {
@@ -13,6 +14,13 @@ export function connectPopup(documentRef = globalThis.document, chromeApi = glob
   const status = documentRef?.getElementById("capture-status");
   const downloadButton = documentRef?.getElementById("download-button");
   const addBreakpointButton = documentRef?.getElementById("add-breakpoint-button");
+  const captureModeInputs = documentRef?.querySelectorAll?.("input[name='capture-mode']") ?? [];
+
+  for (const input of Array.from(captureModeInputs)) {
+    input.addEventListener?.("change", () => updateCaptureModeUi(documentRef));
+  }
+  updateCaptureModeUi(documentRef);
+  restorePendingPreview(documentRef, chromeApi);
 
   addBreakpointButton?.addEventListener("click", () => {
     const input = documentRef.getElementById("custom-breakpoint-input");
@@ -23,8 +31,9 @@ export function connectPopup(documentRef = globalThis.document, chromeApi = glob
   });
 
   button?.addEventListener("click", async () => {
-    const breakpointWidths = selectedBreakpointWidths(documentRef);
-    if (breakpointWidths.length === 0) {
+    const captureMode = selectedCaptureMode(documentRef);
+    const breakpointWidths = captureMode === "element" ? [] : selectedBreakpointWidths(documentRef);
+    if (captureMode !== "element" && breakpointWidths.length === 0) {
       setCaptureState(documentRef, "error", "Select at least one breakpoint before capturing");
       return;
     }
@@ -32,14 +41,16 @@ export function connectPopup(documentRef = globalThis.document, chromeApi = glob
     setCaptureState(
       documentRef,
       "working",
-      `Capturing ${breakpointWidths.length} breakpoint(s): ${breakpointWidths.join(", ")}px…`
+      captureMode === "element"
+        ? "Select an element on the page…"
+        : `Capturing ${breakpointWidths.length} breakpoint(s): ${breakpointWidths.join(", ")}px…`
     );
     setCaptureProgressVisible(documentRef, true);
     setDownloadEnabled(downloadButton, false);
     try {
       const response = await chromeApi.runtime.sendMessage({
         type: CAPTURE_ACTIVE_TAB_MESSAGE,
-        captureMode: selectedCaptureMode(documentRef),
+        captureMode,
         breakpointWidths
       });
       if (response?.status === "error") {
@@ -75,6 +86,22 @@ export function connectPopup(documentRef = globalThis.document, chromeApi = glob
       setCaptureState(documentRef, "error", error.message);
     }
   });
+}
+
+async function restorePendingPreview(documentRef, chromeApi) {
+  if (typeof chromeApi?.runtime?.sendMessage !== "function") {
+    return;
+  }
+  try {
+    const response = await chromeApi.runtime.sendMessage({ type: GET_PENDING_CAPTURE_MESSAGE });
+    if (response?.status !== "ready" || !response.preview) {
+      return;
+    }
+    renderCapturePreview(documentRef, response.preview);
+    setCaptureState(documentRef, "success", `Captured ${response.tab?.title || response.tab?.url || response.preview.sourceUrl}`);
+  } catch {
+    // Pending preview restoration is opportunistic; normal capture still works.
+  }
 }
 
 function setCaptureState(documentRef, state, message) {
@@ -178,8 +205,29 @@ function setDownloadEnabled(downloadButton, enabled) {
 }
 
 export function selectedCaptureMode(documentRef) {
+  const elementRadio = documentRef?.getElementById?.("capture-mode-element");
+  if (elementRadio?.checked) {
+    return "element";
+  }
   const fullPageRadio = documentRef?.getElementById?.("capture-mode-full-page");
   return fullPageRadio?.checked ? "full-page" : "viewport";
+}
+
+function updateCaptureModeUi(documentRef) {
+  const mode = selectedCaptureMode(documentRef);
+  const button = documentRef?.getElementById?.("capture-button");
+  const breakpointSection = documentRef?.getElementById?.("breakpoint-select");
+  if (button) {
+    button.textContent = mode === "element"
+      ? "Select element"
+      : mode === "full-page"
+        ? "Capture full page"
+        : "Capture viewport";
+  }
+  if (breakpointSection) {
+    breakpointSection.setAttribute?.("data-disabled", mode === "element" ? "true" : "false");
+    breakpointSection.setAttribute?.("aria-disabled", mode === "element" ? "true" : "false");
+  }
 }
 
 export function selectedBreakpointWidths(documentRef) {

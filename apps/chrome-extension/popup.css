@@ -122,7 +122,7 @@ h1 {
   border-radius: var(--radius);
   display: grid;
   gap: 2px;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   padding: 3px;
 }
 
@@ -156,6 +156,10 @@ h1 {
 
 .segment input:focus-visible + span {
   box-shadow: var(--ring);
+}
+
+#breakpoint-select[data-disabled="true"] {
+  opacity: 0.45;
 }
 
 /* Pills */

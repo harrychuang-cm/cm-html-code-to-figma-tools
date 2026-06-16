@@ -132,7 +132,7 @@ test("popup renders runtime error category and disables download", () => {
   assert.equal(elements.get("download-button").disabled, true);
 });
 
-test("popup capture mode defaults to viewport and reads full-page selection", async () => {
+test("popup capture mode defaults to viewport and reads full-page or element selection", async () => {
   const { selectedCaptureMode } = await import("../dist/popup.js");
 
   const noSelection = {
@@ -148,6 +148,13 @@ test("popup capture mode defaults to viewport and reads full-page selection", as
     }
   };
   assert.equal(selectedCaptureMode(fullPageSelected), "full-page");
+
+  const elementSelected = {
+    getElementById(id) {
+      return id === "capture-mode-element" ? { checked: true } : undefined;
+    }
+  };
+  assert.equal(selectedCaptureMode(elementSelected), "element");
 });
 
 test("popup capture click sends selected captureMode in the runtime message", async () => {
@@ -190,10 +197,55 @@ test("popup capture click sends selected captureMode in the runtime message", as
   connectPopup(documentRef, chromeApi);
   await listeners.get("capture-click")();
 
-  assert.equal(sentMessages.length, 1);
-  assert.equal(sentMessages[0].type, "FIGCAPTURE_CAPTURE_ACTIVE_TAB");
-  assert.equal(sentMessages[0].captureMode, "full-page");
-  assert.deepEqual(sentMessages[0].breakpointWidths, [1440]);
+  const captureMessage = sentMessages.find((message) => message.type === "FIGCAPTURE_CAPTURE_ACTIVE_TAB");
+  assert.equal(sentMessages[0].type, "FIGCAPTURE_GET_PENDING_CAPTURE");
+  assert.equal(captureMessage.captureMode, "full-page");
+  assert.deepEqual(captureMessage.breakpointWidths, [1440]);
+});
+
+test("popup element capture does not require or send breakpoint widths", async () => {
+  const { connectPopup } = await import("../dist/popup.js");
+  const listeners = new Map();
+  const elements = new Map([
+    ["capture-button", {
+      textContent: "",
+      addEventListener(type, handler) {
+        listeners.set(`capture-${type}`, handler);
+      }
+    }],
+    ["capture-status", { textContent: "" }],
+    ["download-button", {
+      disabled: true,
+      addEventListener() {}
+    }],
+    ["capture-mode-element", { checked: true }]
+  ]);
+  const documentRef = {
+    getElementById(id) {
+      return elements.get(id);
+    },
+    querySelectorAll() {
+      return [];
+    }
+  };
+  const sentMessages = [];
+  const chromeApi = {
+    runtime: {
+      async sendMessage(message) {
+        sentMessages.push(message);
+        return { status: "error", error: { category: "capture-script-failed", message: "cancelled" } };
+      }
+    }
+  };
+
+  connectPopup(documentRef, chromeApi);
+  await listeners.get("capture-click")();
+
+  assert.equal(elements.get("capture-button").textContent, "Select element");
+  const captureMessage = sentMessages.find((message) => message.type === "FIGCAPTURE_CAPTURE_ACTIVE_TAB");
+  assert.equal(sentMessages[0].type, "FIGCAPTURE_GET_PENDING_CAPTURE");
+  assert.equal(captureMessage.captureMode, "element");
+  assert.deepEqual(captureMessage.breakpointWidths, []);
 });
 
 test("popup selects checked preset and custom-list breakpoint widths, normalized widest first", async () => {
@@ -235,13 +287,13 @@ test("popup capture click is blocked when no breakpoint is selected", async () =
       return [];
     }
   };
-  let sent = 0;
-  const chromeApi = { runtime: { async sendMessage() { sent += 1; return {}; } } };
+  const sentMessages = [];
+  const chromeApi = { runtime: { async sendMessage(message) { sentMessages.push(message); return {}; } } };
 
   connectPopup(documentRef, chromeApi);
   await listeners.get("capture-click")();
 
-  assert.equal(sent, 0);
+  assert.equal(sentMessages.filter((message) => message.type === "FIGCAPTURE_CAPTURE_ACTIVE_TAB").length, 0);
   assert.match(status.textContent, /at least one breakpoint/);
 });
 
