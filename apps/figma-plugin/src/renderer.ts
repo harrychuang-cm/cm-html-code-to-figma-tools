@@ -526,6 +526,7 @@ function numericZIndex(value) {
 
 function extractVisualStyle(node) {
   const styles = node.styles ?? {};
+  const opacity = cssOpacityFromStyles(styles);
   const cornerRadii = {
     topLeft: parseCssNumber(styles.borderTopLeftRadius),
     topRight: parseCssNumber(styles.borderTopRightRadius),
@@ -537,7 +538,8 @@ function extractVisualStyle(node) {
     strokes: cssStrokesFromStyles(styles),
     cornerRadius: Math.max(cornerRadii.topLeft, cornerRadii.topRight, cornerRadii.bottomRight, cornerRadii.bottomLeft),
     cornerRadii,
-    effects: visibleShadow(styles.boxShadow) ? [{ type: "shadow", value: styles.boxShadow }] : [],
+    effects: cssShadowStyleEffects(styles.boxShadow),
+    ...(opacity === null ? {} : { opacity }),
     objectFit: styles.objectFit ?? "",
     transform: styles.transform ?? "",
     transformOrigin: styles.transformOrigin ?? "",
@@ -630,8 +632,52 @@ function cssStrokeSide(width, color, style) {
   };
 }
 
+function cssShadowStyleEffects(value) {
+  return outerCssShadows(value).map((shadow) => ({ type: "shadow", value: shadow }));
+}
+
+function outerCssShadows(value) {
+  if (typeof value !== "string" || value.trim().length === 0 || value.trim() === "none") {
+    return [];
+  }
+  return splitTopLevelCssList(value)
+    .map((shadow) => shadow.trim())
+    .filter((shadow) => shadow.length > 0 && !/\binset\b/i.test(shadow));
+}
+
+function splitTopLevelCssList(value) {
+  const parts = [];
+  const source = String(value ?? "");
+  let depth = 0;
+  let start = 0;
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === "(") {
+      depth += 1;
+    } else if (char === ")") {
+      depth = Math.max(0, depth - 1);
+    } else if (char === "," && depth === 0) {
+      parts.push(source.slice(start, index));
+      start = index + 1;
+    }
+  }
+  parts.push(source.slice(start));
+  return parts;
+}
+
+function cssOpacityFromStyles(styles = {}) {
+  if (styles.opacity === undefined || styles.opacity === "") {
+    return null;
+  }
+  const opacity = Number.parseFloat(styles.opacity);
+  if (!Number.isFinite(opacity) || opacity >= 1) {
+    return null;
+  }
+  return Math.min(1, Math.max(0, opacity));
+}
+
 function visibleShadow(value) {
-  return typeof value === "string" && value.length > 0 && value !== "none";
+  return outerCssShadows(value).length > 0;
 }
 
 function parseCssNumber(value) {

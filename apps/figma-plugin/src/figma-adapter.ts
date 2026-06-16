@@ -1013,6 +1013,8 @@ function applyVisualStyle(node, style = {}) {
 }
 
 function applyNonFillVisualStyle(node, style = {}) {
+  applyNodeOpacity(node, style);
+
   if (style.borderSides?.length > 0) {
     applyBorderSideStrokes(node, style.borderSides);
   } else if (style.strokes?.length > 0) {
@@ -1031,9 +1033,28 @@ function applyNonFillVisualStyle(node, style = {}) {
 
   if (style.effects?.length > 0) {
     node.effects = style.effects
-      .map((effect) => cssShadowToEffect(effect.value))
+      .flatMap((effect) => cssShadowToEffects(effect.value))
       .filter(Boolean);
   }
+}
+
+function applyNodeOpacity(node, style = {}) {
+  const opacity = cssOpacityFromStyle(style);
+  if (opacity === null) {
+    return;
+  }
+  safeSetFigmaProperty(node, "opacity", opacity);
+}
+
+function cssOpacityFromStyle(style = {}) {
+  if (style.opacity === undefined || style.opacity === "") {
+    return null;
+  }
+  const opacity = Number.parseFloat(style.opacity);
+  if (!Number.isFinite(opacity) || opacity >= 1) {
+    return null;
+  }
+  return clamp(opacity, 0, 1);
 }
 
 function applyCornerRadii(node, radii) {
@@ -1047,7 +1068,7 @@ function applyCornerRadii(node, radii) {
 }
 
 function cssShadowToEffect(value) {
-  const shadow = firstOuterCssShadow(value);
+  const [shadow] = outerCssShadows(value);
   if (!shadow) {
     return null;
   }
@@ -1081,13 +1102,19 @@ function cssShadowToEffect(value) {
   };
 }
 
-function firstOuterCssShadow(value) {
+function cssShadowToEffects(value) {
+  return outerCssShadows(value)
+    .map((shadow) => cssShadowToEffect(shadow))
+    .filter(Boolean);
+}
+
+function outerCssShadows(value) {
   if (typeof value !== "string" || value.length === 0 || value === "none") {
-    return "";
+    return [];
   }
   return splitCssArguments(value)
     .map((shadow) => shadow.trim())
-    .find((shadow) => shadow.length > 0 && !/\binset\b/i.test(shadow)) ?? "";
+    .filter((shadow) => shadow.length > 0 && !/\binset\b/i.test(shadow));
 }
 
 function extractCssShadowColor(value) {

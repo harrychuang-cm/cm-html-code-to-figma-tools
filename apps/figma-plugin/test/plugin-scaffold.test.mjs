@@ -706,7 +706,7 @@ test("classic Figma runtime maps browser-ordered CSS box-shadow values to effect
             borderTopRightRadius: "15px",
             borderBottomRightRadius: "15px",
             borderBottomLeftRadius: "15px",
-            boxShadow: "rgba(0, 0, 0, 0.2) 0px 4px 36px 0px"
+            boxShadow: "rgba(0, 0, 0, 0.05) 0px 0px 2px 0px, rgba(0, 0, 0, 0.2) 0px 4px 36px 0px"
           },
           attributes: { class: "chat__area" },
           children: []
@@ -745,15 +745,26 @@ test("classic Figma runtime maps browser-ordered CSS box-shadow values to effect
 
   assert.equal(resultMessage(posted).type, "IMPORT_SUCCESS");
   assert(panel);
-  assert.deepEqual(JSON.parse(JSON.stringify(panel.effects)), [{
-    type: "DROP_SHADOW",
-    color: { r: 0, g: 0, b: 0, a: 0.2 },
-    offset: { x: 0, y: 4 },
-    radius: 36,
-    spread: 0,
-    visible: true,
-    blendMode: "NORMAL"
-  }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(panel.effects)), [
+    {
+      type: "DROP_SHADOW",
+      color: { r: 0, g: 0, b: 0, a: 0.05 },
+      offset: { x: 0, y: 0 },
+      radius: 2,
+      spread: 0,
+      visible: true,
+      blendMode: "NORMAL"
+    },
+    {
+      type: "DROP_SHADOW",
+      color: { r: 0, g: 0, b: 0, a: 0.2 },
+      offset: { x: 0, y: 4 },
+      radius: 36,
+      spread: 0,
+      visible: true,
+      blendMode: "NORMAL"
+    }
+  ]);
 });
 
 test("classic Figma runtime places transparent padded emoji text in the content box", async () => {
@@ -3491,7 +3502,7 @@ test("classic Figma runtime orders auto-layout children by captured visual posit
   );
 });
 
-test("classic Figma runtime keeps transformed labels auto-width and pseudo bar fills transparent", async () => {
+test("classic Figma runtime keeps transformed labels auto-width and pseudo bar opacity fills", async () => {
   const main = await readFile("apps/figma-plugin/dist/code.js", "utf8");
   const posted = [];
 
@@ -3640,7 +3651,9 @@ test("classic Figma runtime keeps transformed labels auto-width and pseudo bar f
   assert.equal(label.textAutoResize, "WIDTH_AND_HEIGHT");
   assert.equal(label.layoutSizingHorizontal, "HUG");
   assert(overlay);
-  assert.equal(overlay.fills.length, 0);
+  assert.equal(overlay.fills.length, 1);
+  assert.equal(overlay.fills[0].type, "GRADIENT_LINEAR");
+  assert.equal(overlay.opacity, 0.2);
   assert.equal(overlay.strokes[0].type, "SOLID");
   assert.equal(overlay.strokeWeight, 0.5);
 });

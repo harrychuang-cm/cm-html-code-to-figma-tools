@@ -2324,6 +2324,7 @@ function explicitCssPadding(styles = {}) {
 function extractVisualStyle(node, context = {}) {
   const styles = node.styles ?? {};
   const borderSides = nativeBorderStrokeSidesFromStyles(styles);
+  const opacity = cssOpacityFromStyles(styles);
   return {
     fills: cssFillsFromStyles(styles),
     strokes: borderSides.length > 0
@@ -2332,7 +2333,8 @@ function extractVisualStyle(node, context = {}) {
     borderSides,
     cornerRadius: cornerRadiusFromStyles(styles),
     cornerRadii: cornerRadiiFromStyles(styles),
-    effects: visibleShadow(styles.boxShadow) ? [{ type: "shadow", value: styles.boxShadow }] : [],
+    effects: cssShadowStyleEffects(styles.boxShadow),
+    ...(opacity === null ? {} : { opacity }),
     objectFit: styles.objectFit ?? "",
     transform: styles.transform ?? "",
     transformOrigin: styles.transformOrigin ?? "",
@@ -2572,9 +2574,6 @@ function cssFillsFromStyles(styles = {}) {
   if (maskedGradientBorderStroke(styles)) {
     return [];
   }
-  if (gradientBorderOverlayFillIsTransparent(styles)) {
-    return [];
-  }
 
   const fills = [];
   if (visibleColor(styles.backgroundColor)) {
@@ -2665,20 +2664,6 @@ function maskedGradientBorderStroke(styles = {}) {
     color: styles.backgroundImage,
     width: Math.max(...widths)
   };
-}
-
-function gradientBorderOverlayFillIsTransparent(styles = {}) {
-  const content = String(styles.content ?? "").trim();
-  if (
-    content !== "\"\"" ||
-    normalizeCssKeyword(styles.position) !== "absolute" ||
-    !visibleCssLinearGradient(styles.backgroundImage) ||
-    visibleColor(styles.backgroundColor)
-  ) {
-    return false;
-  }
-  const sides = visibleBorderSides(styles);
-  return Boolean(uniformBorderStrokeFromSides(sides) && cornerRadiusFromStyles(styles) > 0);
 }
 
 function hasLayeredCssMask(styles = {}) {
@@ -2790,8 +2775,52 @@ function cssStrokeSide(width, color, style) {
   };
 }
 
+function cssShadowStyleEffects(value) {
+  return outerCssShadows(value).map((shadow) => ({ type: "shadow", value: shadow }));
+}
+
+function outerCssShadows(value) {
+  if (typeof value !== "string" || value.trim().length === 0 || value.trim() === "none") {
+    return [];
+  }
+  return splitTopLevelCssList(value)
+    .map((shadow) => shadow.trim())
+    .filter((shadow) => shadow.length > 0 && !/\binset\b/i.test(shadow));
+}
+
+function splitTopLevelCssList(value) {
+  const parts = [];
+  const source = String(value ?? "");
+  let depth = 0;
+  let start = 0;
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === "(") {
+      depth += 1;
+    } else if (char === ")") {
+      depth = Math.max(0, depth - 1);
+    } else if (char === "," && depth === 0) {
+      parts.push(source.slice(start, index));
+      start = index + 1;
+    }
+  }
+  parts.push(source.slice(start));
+  return parts;
+}
+
+function cssOpacityFromStyles(styles = {}) {
+  if (styles.opacity === undefined || styles.opacity === "") {
+    return null;
+  }
+  const opacity = Number.parseFloat(styles.opacity);
+  if (!Number.isFinite(opacity) || opacity >= 1) {
+    return null;
+  }
+  return clamp(opacity, 0, 1);
+}
+
 function visibleShadow(value) {
-  return typeof value === "string" && value.length > 0 && value !== "none";
+  return outerCssShadows(value).length > 0;
 }
 
 function hasUsableBounds(rect) {

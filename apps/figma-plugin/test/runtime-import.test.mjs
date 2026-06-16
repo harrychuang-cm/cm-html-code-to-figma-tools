@@ -201,7 +201,7 @@ test("Figma API adapter maps browser-ordered CSS box-shadow values to effects", 
             borderTopRightRadius: "15px",
             borderBottomRightRadius: "15px",
             borderBottomLeftRadius: "15px",
-            boxShadow: "rgba(0, 0, 0, 0.2) 0px 4px 36px 0px"
+            boxShadow: "rgba(0, 0, 0, 0.05) 0px 0px 2px 0px, rgba(0, 0, 0, 0.2) 0px 4px 36px 0px"
           },
           attributes: { class: "chat__area" },
           children: []
@@ -216,15 +216,26 @@ test("Figma API adapter maps browser-ordered CSS box-shadow values to effects", 
 
   assert.equal(result.status, "success");
   assert(panel);
-  assert.deepEqual(panel.effects, [{
-    type: "DROP_SHADOW",
-    color: { r: 0, g: 0, b: 0, a: 0.2 },
-    offset: { x: 0, y: 4 },
-    radius: 36,
-    spread: 0,
-    visible: true,
-    blendMode: "NORMAL"
-  }]);
+  assert.deepEqual(panel.effects, [
+    {
+      type: "DROP_SHADOW",
+      color: { r: 0, g: 0, b: 0, a: 0.05 },
+      offset: { x: 0, y: 0 },
+      radius: 2,
+      spread: 0,
+      visible: true,
+      blendMode: "NORMAL"
+    },
+    {
+      type: "DROP_SHADOW",
+      color: { r: 0, g: 0, b: 0, a: 0.2 },
+      offset: { x: 0, y: 4 },
+      radius: 36,
+      spread: 0,
+      visible: true,
+      blendMode: "NORMAL"
+    }
+  ]);
 });
 
 test("Figma API adapter falls back to a screenshot crop when a raster asset cannot decode", async () => {

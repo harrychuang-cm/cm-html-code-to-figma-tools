@@ -1749,6 +1749,8 @@
   }
 
   function applyNonFillVisualStyle(node, styles) {
+    applyNodeOpacity(node, styles);
+
     var borderSides = Array.isArray(styles && styles.borderSides)
       ? styles.borderSides
       : nativeBorderStrokeSidesFromStyles(styles || {});
@@ -1778,6 +1780,26 @@
     node.effects = shadowEffectsFromStyle(styles);
   }
 
+  function applyNodeOpacity(node, styles) {
+    var opacity = cssOpacityFromStyle(styles || {});
+    if (opacity === null) {
+      return;
+    }
+    safeSetFigmaProperty(node, "opacity", opacity);
+  }
+
+  function cssOpacityFromStyle(styles) {
+    var opacity;
+    if (!styles || styles.opacity === undefined || styles.opacity === "") {
+      return null;
+    }
+    opacity = parseFloat(styles.opacity);
+    if (!isFinite(opacity) || opacity >= 1) {
+      return null;
+    }
+    return clamp(opacity, 0, 1);
+  }
+
   function applyCornerRadii(node, radii) {
     if (!radii) {
       return;
@@ -1793,22 +1815,18 @@
     var sourceEffects = Array.isArray(safeStyles.effects) ? safeStyles.effects : [];
     var effects = [];
     var index;
-    var effect;
     if (sourceEffects.length > 0) {
       for (index = 0; index < sourceEffects.length; index += 1) {
-        effect = cssShadowToEffect(sourceEffects[index] && sourceEffects[index].value);
-        if (effect) {
-          effects.push(effect);
-        }
+        effects = effects.concat(cssShadowToEffects(sourceEffects[index] && sourceEffects[index].value));
       }
       return effects;
     }
-    effect = cssShadowToEffect(safeStyles.boxShadow);
-    return effect ? [effect] : [];
+    return cssShadowToEffects(safeStyles.boxShadow);
   }
 
   function cssShadowToEffect(value) {
-    var shadow = firstOuterCssShadow(value);
+    var shadows = outerCssShadows(value);
+    var shadow = shadows[0];
     var colorValue;
     var color;
     var lengthSource;
@@ -1848,19 +1866,18 @@
     };
   }
 
-  function firstOuterCssShadow(value) {
-    var shadows;
+  function cssShadowToEffects(value) {
+    var shadows = outerCssShadows(value);
+    var effects = [];
     var index;
-    if (typeof value !== "string" || value.length === 0 || value === "none") {
-      return "";
-    }
-    shadows = splitCssArguments(value);
+    var effect;
     for (index = 0; index < shadows.length; index += 1) {
-      if (shadows[index] && !/\binset\b/i.test(shadows[index])) {
-        return shadows[index].replace(/^\s+|\s+$/g, "");
+      effect = cssShadowToEffect(shadows[index]);
+      if (effect) {
+        effects.push(effect);
       }
     }
-    return "";
+    return effects;
   }
 
   function extractCssShadowColor(value) {
@@ -5367,13 +5384,15 @@
     var safeContext = context || {};
     var borderSides = nativeBorderStrokeSidesFromStyles(styles);
     var stroke = borderSides.length > 0 ? strokeFromBorderSides(borderSides) : cssStrokeFromStyles(styles);
-    return {
+    var opacity = cssOpacityFromStyles(styles);
+    var visualStyle;
+    visualStyle = {
       fills: cssFillsFromStyles(styles),
       strokes: stroke ? [stroke] : [],
       borderSides: borderSides,
       cornerRadius: cornerRadiusFromStyles(styles),
       cornerRadii: cornerRadiiFromStyles(styles),
-      effects: visibleShadow(styles.boxShadow) ? [{ type: "shadow", value: styles.boxShadow }] : [],
+      effects: cssShadowStyleEffects(styles.boxShadow),
       objectFit: styles.objectFit || "",
       transform: styles.transform || "",
       transformOrigin: styles.transformOrigin || "",
@@ -5389,6 +5408,63 @@
         fills: cssTextFillsFromStyles(styles, safeContext.textFillGradient)
       } : null
     };
+    if (opacity !== null) {
+      visualStyle.opacity = opacity;
+    }
+    return visualStyle;
+  }
+
+  function cssOpacityFromStyles(styles) {
+    var safeStyles = styles || {};
+    var opacity;
+    if (safeStyles.opacity === undefined || safeStyles.opacity === "") {
+      return null;
+    }
+    opacity = parseFloat(safeStyles.opacity);
+    if (!isFinite(opacity) || opacity >= 1) {
+      return null;
+    }
+    return clamp(opacity, 0, 1);
+  }
+
+  function cssShadowStyleEffects(value) {
+    var shadows = outerCssShadows(value);
+    return shadows.map(function (shadow) {
+      return { type: "shadow", value: shadow };
+    });
+  }
+
+  function splitTopLevelCssList(value) {
+    var parts = [];
+    var depth = 0;
+    var start = 0;
+    var source = String(value || "");
+    var index;
+    var char;
+    for (index = 0; index < source.length; index += 1) {
+      char = source[index];
+      if (char === "(") {
+        depth += 1;
+      } else if (char === ")") {
+        depth = Math.max(0, depth - 1);
+      } else if (char === "," && depth === 0) {
+        parts.push(source.slice(start, index));
+        start = index + 1;
+      }
+    }
+    parts.push(source.slice(start));
+    return parts;
+  }
+
+  function outerCssShadows(value) {
+    if (typeof value !== "string" || value.replace(/^\s+|\s+$/g, "").length === 0 || value.replace(/^\s+|\s+$/g, "") === "none") {
+      return [];
+    }
+    return splitTopLevelCssList(value).map(function (shadow) {
+      return shadow.replace(/^\s+|\s+$/g, "");
+    }).filter(function (shadow) {
+      return shadow.length > 0 && !/\binset\b/i.test(shadow);
+    });
   }
 
   function visualStyleWithSingleChildClip(node, children, style) {
@@ -5642,9 +5718,6 @@
     if (maskedGradientBorderStroke(safeStyles)) {
       return fills;
     }
-    if (gradientBorderOverlayFillIsTransparent(safeStyles)) {
-      return fills;
-    }
     if (visibleColor(safeStyles.backgroundColor)) {
       fills.push(safeStyles.backgroundColor);
     }
@@ -5746,22 +5819,6 @@
       color: safeStyles.backgroundImage,
       width: Math.max.apply(null, widths)
     };
-  }
-
-  function gradientBorderOverlayFillIsTransparent(styles) {
-    var safeStyles = styles || {};
-    var content = String(safeStyles.content || "").replace(/^\s+|\s+$/g, "");
-    var sides;
-    if (
-      content !== "\"\"" ||
-      normalizeCssKeyword(safeStyles.position) !== "absolute" ||
-      !visibleCssLinearGradient(safeStyles.backgroundImage) ||
-      visibleColor(safeStyles.backgroundColor)
-    ) {
-      return false;
-    }
-    sides = visibleBorderSides(safeStyles);
-    return Boolean(uniformBorderStrokeFromSides(sides) && cornerRadiusFromStyles(safeStyles) > 0);
   }
 
   function hasLayeredCssMask(styles) {
@@ -5918,7 +5975,7 @@
   }
 
   function visibleShadow(value) {
-    return typeof value === "string" && value.length > 0 && value !== "none";
+    return outerCssShadows(value).length > 0;
   }
 
   function createReport(packageData, renderResult) {

@@ -1659,7 +1659,7 @@ test("masked pseudo gradient backgrounds import as gradient strokes", () => {
   assert.equal(model.style.cornerRadius, 20);
 });
 
-test("pseudo gradient border overlays keep transparent fills", () => {
+test("pseudo gradient border overlays keep opacity-backed fills", () => {
   const overlay = node("dom-rating-border-after", "::after", { x: 577.5, y: 4346.66, width: 100, height: 20 }, {
     nodeType: "pseudo",
     styles: {
@@ -1690,12 +1690,35 @@ test("pseudo gradient border overlays keep transparent fills", () => {
   const model = createEditableLayoutNodeModels(packageWithRoot(overlay))[0];
 
   assert.equal(model.type, "RECTANGLE");
-  assert.deepEqual(model.style.fills, []);
+  assert.deepEqual(model.style.fills, [
+    "linear-gradient(270deg, rgb(91, 110, 255) 0%, rgb(0, 40, 131) 100%)"
+  ]);
+  assert.equal(model.style.opacity, 0.2);
   assert.deepEqual(model.style.strokes, [{
     color: "rgb(49, 57, 255)",
     width: 0.5
   }]);
   assert.equal(model.style.cornerRadius, 10);
+});
+
+test("multi-layer CSS box shadows import as separate effects", () => {
+  const card = node("dom-card-cover", "div", { x: 132.5, y: 1327, width: 269, height: 360 }, {
+    styles: {
+      backgroundColor: "rgba(11, 13, 18, 0.6)",
+      boxShadow: "rgba(0, 0, 0, 0.05) 0px 0px 2px 0px, rgba(0, 0, 0, 0.1) 0px 6px 12px 0px",
+      borderTopLeftRadius: "18px",
+      borderTopRightRadius: "18px",
+      borderBottomRightRadius: "18px",
+      borderBottomLeftRadius: "18px"
+    }
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(card))[0];
+
+  assert.equal(model.type, "RECTANGLE");
+  assert.deepEqual(model.style.effects, [
+    { type: "shadow", value: "rgba(0, 0, 0, 0.05) 0px 0px 2px 0px" },
+    { type: "shadow", value: "rgba(0, 0, 0, 0.1) 0px 6px 12px 0px" }
+  ]);
 });
 
 test("rounded video cards keep top-right ranking badges", () => {
