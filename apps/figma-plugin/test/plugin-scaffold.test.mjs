@@ -1470,6 +1470,330 @@ test("classic Figma runtime renders clipped background gradients as text fills",
   assert.equal(Number(rankText.fills[0].gradientStops[0].color.r.toFixed(6)), 0.870588);
 });
 
+test("classic Figma runtime preserves awwrated header CSS background logos and rounded controls", async () => {
+  const main = await readFile("apps/figma-plugin/dist/code.js", "utf8");
+  const posted = [];
+
+  function captureNode(sourceNodeId, tagName, rect, extra = {}) {
+    return {
+      id: `node-${sourceNodeId}`,
+      sourceNodeId,
+      nodeType: extra.nodeType ?? "element",
+      tagName,
+      textContent: extra.textContent ?? "",
+      rect,
+      styles: extra.styles ?? {},
+      attributes: extra.attributes ?? {},
+      ...(extra.assetRef ? { assetRef: extra.assetRef } : {}),
+      children: extra.children ?? []
+    };
+  }
+
+  function createNode(type) {
+    return {
+      type,
+      name: "",
+      children: [],
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0,
+      locked: false,
+      fills: [],
+      strokes: [],
+      effects: [],
+      strokeWeight: 0,
+      cornerRadius: 0,
+      clipsContent: false,
+      pluginData: {},
+      resize(width, height) {
+        this.width = width;
+        this.height = height;
+      },
+      appendChild(child) {
+        this.children.push(child);
+      },
+      setPluginData(key, value) {
+        this.pluginData[key] = value;
+      }
+    };
+  }
+
+  const figma = {
+    currentPage: {
+      children: [],
+      appendChild(child) {
+        this.children.push(child);
+      }
+    },
+    ui: {
+      onmessage: null,
+      postMessage(message) {
+        posted.push(message);
+      }
+    },
+    showUI() {},
+    createFrame() {
+      return createNode("FRAME");
+    },
+    createRectangle() {
+      return createNode("RECTANGLE");
+    },
+    createText() {
+      return createNode("TEXT");
+    },
+    createImage(bytes) {
+      if (!isPng(bytes)) {
+        throw new Error("Unsupported image bytes");
+      }
+      return { hash: `hash-${bytes.length}` };
+    },
+    createNodeFromSvg(svg) {
+      const node = createNode("VECTOR");
+      node.svg = svg;
+      return node;
+    },
+    async loadFontAsync() {}
+  };
+
+  const gradient = "linear-gradient(45deg, rgb(255, 23, 85), rgb(47, 84, 197))";
+  const basePackage = createValidPackage();
+  const root = captureNode("dom-root", "body", { x: 0, y: 0, width: 1440, height: 720 }, {
+    children: [
+      captureNode("dom-netflix", "div", { x: 635.5, y: 20, width: 74, height: 20 }, {
+        assetRef: "assets/netflix.svg",
+        attributes: { assetKind: "svg", assetRole: "css-background" },
+        styles: {
+          backgroundImage: "url(\"https://awwrated.com/images/logo/logo_netflix_light.svg\")",
+          backgroundPosition: "0px 0px",
+          backgroundRepeat: "repeat",
+          backgroundSize: "auto 40px",
+          overflow: "hidden",
+          overflowX: "hidden",
+          overflowY: "hidden"
+        }
+      }),
+      captureNode("dom-disney", "div", { x: 760.5, y: 12.5, width: 64, height: 35 }, {
+        assetRef: "assets/disney.svg",
+        attributes: { assetKind: "svg", assetRole: "css-background" },
+        styles: {
+          backgroundImage: "url(\"https://awwrated.com/images/logo/logo_disneyplus_light.svg\")",
+          backgroundPosition: "0px -35px",
+          backgroundRepeat: "repeat",
+          backgroundSize: "auto 70px",
+          overflow: "hidden",
+          overflowX: "hidden",
+          overflowY: "hidden"
+        }
+      }),
+      captureNode("dom-aww", "div", { x: 20, y: 4, width: 90, height: 46 }, {
+        assetRef: "assets/awwrated.svg",
+        attributes: { class: "aww-logo", assetKind: "svg", assetRole: "css-background" },
+        styles: {
+          backgroundImage: "url(\"https://awwrated.com/images/common/logo_awwrated_light.svg\")",
+          backgroundPosition: "50% 50%",
+          backgroundRepeat: "no-repeat",
+          backgroundSize: "contain"
+        },
+        children: [
+          captureNode("dom-aww-version", "span", { x: 89.5, y: 43, width: 36, height: 8 }, {
+            textContent: "v6.11.0",
+            styles: { color: "rgb(133, 133, 133)", fontSize: "8px", lineHeight: "8px" }
+          })
+        ]
+      }),
+      captureNode("dom-remove-ads", "button", { x: 1144, y: 12, width: 112, height: 36 }, {
+        styles: {
+          backgroundColor: "rgba(0, 0, 0, 0)",
+          backgroundImage: gradient,
+          backgroundClip: "text",
+          webkitBackgroundClip: "text",
+          webkitTextFillColor: "rgba(0, 0, 0, 0)",
+          overflow: "hidden",
+          overflowX: "hidden",
+          overflowY: "hidden"
+        },
+        children: [
+          captureNode("dom-remove-ads-label", "div", { x: 1159, y: 20, width: 82, height: 20 }, {
+            textContent: "享受無廣告",
+            styles: {
+              color: "rgba(255, 255, 255, 0.8)",
+              webkitTextFillColor: "rgba(0, 0, 0, 0)",
+              fontSize: "13px",
+              fontWeight: "700",
+              lineHeight: "20px"
+            }
+          }),
+          captureNode("dom-remove-ads::before", "::before", { x: 1144, y: 12, width: 112, height: 36 }, {
+            nodeType: "pseudo",
+            styles: {
+              position: "absolute",
+              backgroundColor: "rgba(0, 0, 0, 0)",
+              backgroundImage: gradient,
+              maskImage: "linear-gradient(rgb(255, 255, 255) 0px, rgb(255, 255, 255) 0px), linear-gradient(rgb(255, 255, 255) 0px, rgb(255, 255, 255) 0px)",
+              webkitMaskImage: "linear-gradient(rgb(255, 255, 255) 0px, rgb(255, 255, 255) 0px), linear-gradient(rgb(255, 255, 255) 0px, rgb(255, 255, 255) 0px)",
+              maskComposite: "exclude, exclude",
+              webkitMaskComposite: "exclude, exclude",
+              paddingTop: "2.6px",
+              paddingRight: "2.6px",
+              paddingBottom: "2.6px",
+              paddingLeft: "2.6px",
+              borderTopLeftRadius: "20px",
+              borderTopRightRadius: "20px",
+              borderBottomRightRadius: "20px",
+              borderBottomLeftRadius: "20px"
+            }
+          })
+        ]
+      }),
+      captureNode("dom-avatar", "div", { x: 1273, y: 18, width: 24, height: 24 }, {
+        assetRef: "assets/avatar.png",
+        attributes: { class: "avatar", assetKind: "raster", assetRole: "css-background" },
+        styles: {
+          backgroundImage: "url(\"https://awwrated.com/images/avatar/users/avatar-user-red.jpg\")",
+          backgroundRepeat: "no-repeat",
+          backgroundSize: "cover",
+          borderTopLeftRadius: "50%",
+          borderTopRightRadius: "50%",
+          borderBottomRightRadius: "50%",
+          borderBottomLeftRadius: "50%"
+        }
+      }),
+      captureNode("dom-card", "a", { x: 200, y: 120, width: 105, height: 140 }, {
+        assetRef: "assets/poster.png",
+        attributes: { assetKind: "raster", assetRole: "css-background" },
+        styles: {
+          backgroundImage: "url(\"https://cdn.example.com/poster.png\")",
+          backgroundSize: "cover",
+          overflow: "hidden",
+          overflowX: "hidden",
+          overflowY: "hidden",
+          borderTopLeftRadius: "8px",
+          borderTopRightRadius: "8px",
+          borderBottomRightRadius: "8px",
+          borderBottomLeftRadius: "8px"
+        },
+        children: [
+          captureNode("dom-card-title", "div", { x: 210, y: 235, width: 80, height: 16 }, {
+            textContent: "鐵拳教育",
+            styles: { color: "rgb(255, 255, 255)", fontSize: "12px", lineHeight: "16px" }
+          }),
+          captureNode("dom-card-rank", "b", { x: 277, y: 120, width: 28, height: 28 }, {
+            textContent: "1",
+            styles: {
+              position: "absolute",
+              backgroundImage: "linear-gradient(223deg, rgb(0, 63, 255) 0%, rgb(255, 0, 68) 100%)",
+              color: "rgb(255, 255, 255)",
+              fontSize: "14px",
+              fontWeight: "700",
+              lineHeight: "14px",
+              borderTopRightRadius: "8px",
+              borderBottomLeftRadius: "8px"
+            }
+          })
+        ]
+      })
+    ]
+  });
+  const packageData = createValidPackage({
+    ...basePackage,
+    capture: {
+      ...basePackage.capture,
+      root
+    },
+    assets: {
+      "assets/netflix.svg": new TextEncoder().encode("<svg width=\"74px\" height=\"40px\" viewBox=\"0 0 74 40\" xmlns=\"http://www.w3.org/2000/svg\"><rect width=\"74\" height=\"40\" fill=\"white\"/></svg>"),
+      "assets/disney.svg": new TextEncoder().encode("<svg width=\"37px\" height=\"40px\" viewBox=\"0 0 37 40\" xmlns=\"http://www.w3.org/2000/svg\"><rect width=\"37\" height=\"40\" fill=\"white\"/></svg>"),
+      "assets/awwrated.svg": new TextEncoder().encode("<svg width=\"252px\" height=\"161px\" viewBox=\"0 0 252 161\" xmlns=\"http://www.w3.org/2000/svg\"><rect width=\"252\" height=\"161\" fill=\"white\"/></svg>"),
+      "assets/avatar.png": pngHeaderBytes(24, 24),
+      "assets/poster.png": pngHeaderBytes(105, 140)
+    }
+  });
+
+  vm.runInNewContext(main, {
+    figma,
+    Uint8Array,
+    Uint32Array,
+    ArrayBuffer,
+    DataView,
+    Error,
+    JSON,
+    Math,
+    Number,
+    Object,
+    Promise,
+    String,
+    Boolean,
+    Array,
+    isFinite,
+    parseFloat
+  });
+  await figma.ui.onmessage({
+    type: "IMPORT_PACKAGE",
+    filename: "awwrated-header.figcapture",
+    bytes: packFigcapture(packageData)
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const success = resultMessage(posted);
+  assert.equal(success.type, "IMPORT_SUCCESS");
+
+  const accurateFrame = figma.currentPage.children.find((frame) => frame.name.includes("Editable Accurate"));
+  const nodes = flattenNodes(accurateFrame.children);
+  const netflixLogo = nodes.find((node) => node.pluginData.sourceNodeId === "dom-netflix");
+  const disneyLogo = nodes.find((node) => node.pluginData.sourceNodeId === "dom-disney");
+  const awwLogoBackground = nodes.find((node) => node.pluginData.sourceNodeId === "dom-aww::background-image");
+  const border = nodes.find((node) => node.pluginData.sourceNodeId === "dom-remove-ads::before");
+  const removeAdsText = nodes.find((node) => node.type === "TEXT" && node.characters === "享受無廣告");
+  const avatar = nodes.find((node) => node.pluginData.sourceNodeId === "dom-avatar");
+  const card = nodes.find((node) => node.pluginData.sourceNodeId === "dom-card");
+  const cardBackground = nodes.find((node) => node.pluginData.sourceNodeId === "dom-card::background-image");
+  const rankFrame = nodes.find((node) => node.pluginData.sourceNodeId === "dom-card-rank");
+
+  assert(netflixLogo);
+  assert.equal(netflixLogo.type, "FRAME");
+  assert.equal(netflixLogo.width, 74);
+  assert.equal(netflixLogo.height, 20);
+  assert.equal(netflixLogo.children[0].width, 74);
+  assert.equal(netflixLogo.children[0].height, 40);
+  assert.equal(netflixLogo.pluginData.assetRole, "css-background");
+
+  assert(disneyLogo);
+  assert.equal(disneyLogo.type, "FRAME");
+  assert.equal(disneyLogo.width, 64);
+  assert.equal(disneyLogo.height, 35);
+  assert(Math.abs(disneyLogo.children[0].width - 64.75) < 0.01);
+  assert.equal(disneyLogo.children[0].height, 70);
+  assert.equal(disneyLogo.children[0].y, -35);
+
+  assert(awwLogoBackground);
+  assert.equal(awwLogoBackground.pluginData.assetRole, "css-background");
+
+  assert(border);
+  assert.equal(border.fills.length, 0);
+  assert.equal(border.strokes[0].type, "GRADIENT_LINEAR");
+  assert.equal(border.strokeWeight, 2.6);
+  assert.equal(border.cornerRadius, 20);
+
+  assert(removeAdsText);
+  assert.equal(removeAdsText.fills[0].type, "GRADIENT_LINEAR");
+
+  assert(avatar);
+  assert.equal(avatar.cornerRadius >= 12, true);
+  assert.equal(avatar.pluginData.assetRole, "css-background");
+
+  assert(card);
+  assert.equal(card.cornerRadius, 8);
+  assert.equal(card.clipsContent, true);
+  assert(cardBackground);
+  assert.equal(cardBackground.cornerRadius, 8);
+  assert.equal(cardBackground.pluginData.assetRole, "css-background");
+  assert(rankFrame);
+  assert.equal(rankFrame.x, 77);
+  assert.equal(rankFrame.y, 0);
+  assert(rankFrame.children.some((node) => node.type === "TEXT" && node.characters === "1"));
+});
+
 test("classic Figma runtime keeps editable layers when an image asset is unsupported", async () => {
   const main = await readFile("apps/figma-plugin/dist/code.js", "utf8");
   const posted = [];

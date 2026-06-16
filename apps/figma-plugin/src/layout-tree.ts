@@ -8,7 +8,8 @@ export function createEditableLayoutNodeModels(packageData) {
     parentRect: { x: 0, y: 0, width: 0, height: 0 },
     fallbackReasons,
     backdropColor: null,
-    clippedAncestor: false
+    clippedAncestor: false,
+    textFillGradient: null
   });
 
   if (!rootModel) {
@@ -187,6 +188,7 @@ function createModel(node, context) {
     ? node.styles.backgroundColor
     : context.backdropColor;
   const hasClippedAncestor = Boolean(context.clippedAncestor || shouldClipContent(node));
+  const textFillGradient = textFillGradientFromStyles(node.styles) || context.textFillGradient || null;
   let absoluteRect = geometryAdjustedAbsoluteRect(node, normalizeRect(node.rect));
   let rect = relativeRect(absoluteRect, context.parentRect);
   let children = (node.children ?? [])
@@ -194,7 +196,8 @@ function createModel(node, context) {
       parentRect: absoluteRect,
       fallbackReasons: context.fallbackReasons,
       backdropColor: inheritedBackdropColor,
-      clippedAncestor: hasClippedAncestor
+      clippedAncestor: hasClippedAncestor,
+      textFillGradient
     }))
     .filter(Boolean);
   const visibleChildrenRect = visibleChildrenBoundsForTransparentTransformedWrapper(node, absoluteRect, children);
@@ -214,7 +217,7 @@ function createModel(node, context) {
 
   if (node.textContent && children.length > 0) {
     const mixedContent = prepareMixedDirectTextContent(node, absoluteRect, children);
-    const textModel = createDirectTextModel(mixedContent.node, absoluteRect, mixedContent.children);
+    const textModel = createDirectTextModel(mixedContent.node, absoluteRect, mixedContent.children, context);
     const mixedChildren = [
       ...insertMixedContentTextChild(mixedContent.children, textModel, node),
       ...borderDecorations
@@ -230,10 +233,10 @@ function createModel(node, context) {
 
   if (node.textContent) {
     if (isDirectTableCellTextNode(node)) {
-      return createTableCellTextModel(node, rect, absoluteRect, borderDecorations);
+      return createTableCellTextModel(node, rect, absoluteRect, borderDecorations, context);
     }
     if (shouldPreserveTransparentPaddedInteractiveTextFrame(node, rect)) {
-      return createTransparentPaddedTextFrameModel(node, rect, absoluteRect, borderDecorations);
+      return createTransparentPaddedTextFrameModel(node, rect, absoluteRect, borderDecorations, context);
     }
     const textGeometry = hasVisualBoxStyle(node.styles)
       ? { rect, absoluteRect }
@@ -242,7 +245,8 @@ function createModel(node, context) {
       node,
       textGeometry.rect,
       textGeometry.absoluteRect,
-      inferTextAutoResize(node, textGeometry.rect)
+      inferTextAutoResize(node, textGeometry.rect),
+      context
     );
     if (hasVisualBoxStyle(node.styles)) {
       const backingPadding = explicitCssPadding(node.styles);
@@ -259,7 +263,7 @@ function createModel(node, context) {
         : { x: 0, y: 0, width: rect.width, height: rect.height };
       return baseModel(node, "FRAME", rect, absoluteRect, {
         name: `Text Background / ${node.textContent.slice(0, 32)}`,
-        style: extractVisualStyle(node),
+        style: extractVisualStyle(node, context),
         autoLayout: shouldUsePaddedBacking && borderDecorations.length === 0
           ? textBackingAutoLayout(backingPadding, backingTextAutoResize)
           : null,
@@ -283,7 +287,7 @@ function createModel(node, context) {
       assetRef: node.fallbackRef,
       fallbackReason: context.fallbackReasons.get(node.sourceNodeId) ?? "raster fallback",
       assetKind: assetKindForNode(node),
-      style: extractVisualStyle(node),
+      style: extractVisualStyle(node, context),
       children: []
     });
   }
@@ -295,7 +299,7 @@ function createModel(node, context) {
     ];
     const autoLayout = inferAutoLayout(node, frameChildren);
     return baseModel(node, "FRAME", rect, absoluteRect, {
-      style: extractVisualStyle(node),
+      style: extractVisualStyle(node, context),
       autoLayout,
       clipsContent: shouldClipContent(node),
       children: [
@@ -310,7 +314,7 @@ function createModel(node, context) {
       assetRef: node.assetRef ?? null,
       assetKind: assetKindForNode(node),
       assetRole: assetRoleForNode(node),
-      style: imageVisualStyleForNode(node),
+      style: imageVisualStyleForNode(node, context),
       children: []
     });
   }
@@ -321,10 +325,11 @@ function createModel(node, context) {
       ...borderDecorations
     ];
     const autoLayout = inferAutoLayout(node, frameChildren);
+    const style = visualStyleWithSingleChildClip(node, frameChildren, visualStyleForNode(node, context));
     return baseModel(node, "FRAME", rect, absoluteRect, {
-      style: extractVisualStyle(node),
+      style,
       autoLayout,
-      clipsContent: shouldClipContent(node),
+      clipsContent: shouldClipContent(node) || shouldMirrorSingleChildClip(node, frameChildren, style),
       children: orderedChildrenForAutoLayout(frameChildren, autoLayout)
     });
   }
@@ -335,7 +340,7 @@ function createModel(node, context) {
 
   if (borderDecorations.length > 0) {
     return baseModel(node, "FRAME", rect, absoluteRect, {
-      style: extractVisualStyle(node),
+      style: extractVisualStyle(node, context),
       autoLayout: null,
       clipsContent: shouldClipContent(node),
       children: borderDecorations
@@ -343,7 +348,7 @@ function createModel(node, context) {
   }
 
   return baseModel(node, "RECTANGLE", rect, absoluteRect, {
-    style: extractVisualStyle(node),
+    style: extractVisualStyle(node, context),
     children: []
   });
 }
@@ -605,29 +610,30 @@ function baseModel(node, type, rect, absoluteRect, overrides = {}) {
   };
 }
 
-function createTextModel(node, rect, absoluteRect, textAutoResize) {
+function createTextModel(node, rect, absoluteRect, textAutoResize, context = {}) {
   const geometry = normalizeTallHugTextGeometry(node, rect, absoluteRect, textAutoResize);
   return baseModel(node, "TEXT", geometry.rect, geometry.absoluteRect, {
     text: node.textContent,
     textAutoResize,
     ...textLayoutSizingForAutoResize(textAutoResize),
-    style: extractVisualStyle(node),
+    style: extractVisualStyle(node, context),
     children: []
   });
 }
 
-function createTableCellTextModel(node, rect, absoluteRect, borderDecorations) {
+function createTableCellTextModel(node, rect, absoluteRect, borderDecorations, context = {}) {
   const padding = explicitCssPadding(node.styles) ?? zeroPadding();
   const textAutoResize = tableCellTextAutoResize(node, rect);
   const textModel = createTextModel(
     node,
     tableCellTextRect(rect, padding, node.styles, textAutoResize),
     tableCellTextAbsoluteRect(absoluteRect, rect, padding, node.styles, textAutoResize),
-    textAutoResize
+    textAutoResize,
+    context
   );
   return baseModel(node, "FRAME", rect, absoluteRect, {
     name: `Table Cell / ${String(node.textContent ?? "").slice(0, 32)}`,
-    style: extractVisualStyle(node),
+    style: extractVisualStyle(node, context),
     autoLayout: borderDecorations.length === 0
       ? tableCellAutoLayout(padding, node)
       : null,
@@ -635,7 +641,7 @@ function createTableCellTextModel(node, rect, absoluteRect, borderDecorations) {
   });
 }
 
-function createTransparentPaddedTextFrameModel(node, rect, absoluteRect, borderDecorations) {
+function createTransparentPaddedTextFrameModel(node, rect, absoluteRect, borderDecorations, context = {}) {
   const padding = explicitCssPadding(node.styles) ?? zeroPadding();
   const contentRect = contentRectFromPadding(rect, padding);
   const contentAbsoluteRect = {
@@ -653,12 +659,13 @@ function createTransparentPaddedTextFrameModel(node, rect, absoluteRect, borderD
     textNode,
     contentRect,
     contentAbsoluteRect,
-    textAutoResize
+    textAutoResize,
+    context
   );
 
   return baseModel(node, "FRAME", rect, absoluteRect, {
     name: `Text Wrapper / ${String(node.textContent ?? "").slice(0, 32)}`,
-    style: extractVisualStyle(node),
+    style: extractVisualStyle(node, context),
     autoLayout: borderDecorations.length === 0
       ? textBackingAutoLayout(padding, textAutoResize)
       : null,
@@ -839,7 +846,7 @@ function classTokens(className) {
   return new Set(String(className ?? "").split(/\s+/).filter(Boolean));
 }
 
-function createDirectTextModel(node, parentAbsoluteRect, children) {
+function createDirectTextModel(node, parentAbsoluteRect, children, context = {}) {
   const absoluteRect = inferDirectTextRect(node, parentAbsoluteRect, children);
   const rect = relativeRect(absoluteRect, parentAbsoluteRect);
   const styles = { ...(node.styles ?? {}) };
@@ -852,7 +859,7 @@ function createDirectTextModel(node, parentAbsoluteRect, children) {
     rect: absoluteRect,
     styles
   };
-  return createTextModel(textNode, rect, absoluteRect, inferTextContentAutoResize(textNode, rect));
+  return createTextModel(textNode, rect, absoluteRect, inferTextContentAutoResize(textNode, rect), context);
 }
 
 function prepareMixedDirectTextContent(node, parentAbsoluteRect, children) {
@@ -2189,7 +2196,7 @@ function explicitCssPadding(styles = {}) {
   };
 }
 
-function extractVisualStyle(node) {
+function extractVisualStyle(node, context = {}) {
   const styles = node.styles ?? {};
   const borderSides = nativeBorderStrokeSidesFromStyles(styles);
   return {
@@ -2212,24 +2219,27 @@ function extractVisualStyle(node) {
       lineHeight: styles.lineHeight ?? "",
       color: textColorFromStyles(styles),
       textAlign: styles.textAlign ?? "",
-      fills: cssTextFillsFromStyles(styles)
+      fills: cssTextFillsFromStyles(styles, context.textFillGradient)
     } : null
   };
 }
 
-function imageVisualStyleForNode(node) {
-  const style = extractVisualStyle(node);
+function imageVisualStyleForNode(node, context = {}) {
+  const style = extractVisualStyle(node, context);
   if (assetRoleForNode(node) !== "css-background") {
     return style;
   }
   return {
     ...style,
-    imageScaleMode: cssBackgroundImageScaleMode(node.styles)
+    imageScaleMode: cssBackgroundImageScaleMode(node.styles),
+    backgroundSize: node.styles?.backgroundSize ?? "",
+    backgroundPosition: node.styles?.backgroundPosition ?? "",
+    backgroundRepeat: node.styles?.backgroundRepeat ?? ""
   };
 }
 
 function visualStyleForNode(node, context) {
-  const style = extractVisualStyle(node);
+  const style = extractVisualStyle(node, context);
   if (!shouldApplyTextOverlayBackdrop(node, context, style)) {
     return style;
   }
@@ -2237,6 +2247,37 @@ function visualStyleForNode(node, context) {
     ...style,
     fills: [context.backdropColor]
   };
+}
+
+function visualStyleWithSingleChildClip(node, children, style) {
+  if (!shouldMirrorSingleChildClip(node, children, style)) {
+    return style;
+  }
+  return {
+    ...style,
+    cornerRadius: children[0].style.cornerRadius
+  };
+}
+
+function shouldMirrorSingleChildClip(node, children, style = {}) {
+  if ((children?.length ?? 0) !== 1 || hasModelVisualStyle(style)) {
+    return false;
+  }
+  const child = children[0];
+  if (!child || child.type !== "IMAGE" || !(child.style?.cornerRadius > 0)) {
+    return false;
+  }
+  if (!rectsMatchWithinTolerance(normalizeRect(node.rect), child.absoluteRect, 1)) {
+    return false;
+  }
+  const tagName = normalizeCssKeyword(node.tagName);
+  const classes = classTokens(node.attributes?.class);
+  return tagName === "picture" ||
+    classes.has("avatar") ||
+    classes.has("image") ||
+    classes.has("thumb") ||
+    classes.has("cover") ||
+    classes.has("poster");
 }
 
 function shouldApplyTextOverlayBackdrop(node, context, style) {
@@ -2415,10 +2456,28 @@ function cssFillsFromStyles(styles = {}) {
   return fills;
 }
 
-function cssTextFillsFromStyles(styles = {}) {
-  return isBackgroundClippedToText(styles) && visibleCssLinearGradient(styles.backgroundImage)
-    ? [styles.backgroundImage]
+function cssTextFillsFromStyles(styles = {}, inheritedTextFillGradient = null) {
+  const ownGradient = textFillGradientFromStyles(styles);
+  if (ownGradient) {
+    return [ownGradient];
+  }
+  return inheritedTextFillGradient && hasTransparentWebkitTextFill(styles)
+    ? [inheritedTextFillGradient]
     : [];
+}
+
+function textFillGradientFromStyles(styles = {}) {
+  return isBackgroundClippedToText(styles) && visibleCssLinearGradient(styles.backgroundImage)
+    ? styles.backgroundImage
+    : "";
+}
+
+function hasTransparentWebkitTextFill(styles = {}) {
+  const value = normalizeCssKeyword(styles.webkitTextFillColor);
+  return value === "transparent" ||
+    value === "rgba(0, 0, 0, 0)" ||
+    value === "rgba(0,0,0,0)" ||
+    /\/\s*0\)?$/.test(value);
 }
 
 function isBackgroundClippedToText(styles = {}) {

@@ -1035,6 +1035,45 @@ test("background-clipped linear-gradient text imports as text fill without backi
   assert.equal(model.style.text.color, "rgb(149, 149, 149)");
 });
 
+test("ancestor background-clipped gradient imports as descendant text fill", () => {
+  const gradient = "linear-gradient(45deg, rgb(255, 23, 85), rgb(47, 84, 197))";
+  const button = node("dom-remove-ads", "button", { x: 1144, y: 12, width: 112, height: 36 }, {
+    attributes: { class: "button-remove-ads" },
+    styles: {
+      backgroundColor: "rgba(0, 0, 0, 0)",
+      backgroundImage: gradient,
+      backgroundClip: "text",
+      webkitBackgroundClip: "text",
+      webkitTextFillColor: "rgba(0, 0, 0, 0)",
+      color: "rgba(255, 255, 255, 0.8)",
+      overflow: "hidden",
+      overflowX: "hidden",
+      overflowY: "hidden"
+    },
+    children: [
+      node("dom-remove-ads-content", "div", { x: 1159, y: 20, width: 82, height: 20 }, {
+        textContent: "享受無廣告",
+        styles: {
+          backgroundColor: "rgba(0, 0, 0, 0)",
+          backgroundImage: "none",
+          color: "rgba(255, 255, 255, 0.8)",
+          webkitTextFillColor: "rgba(0, 0, 0, 0)",
+          fontSize: "13px",
+          lineHeight: "20px"
+        }
+      })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(button))[0];
+  const label = model.children[0];
+
+  assert.equal(model.type, "FRAME");
+  assert.deepEqual(model.style.fills, []);
+  assert.equal(label.type, "TEXT");
+  assert.equal(label.text, "享受無廣告");
+  assert.deepEqual(label.style.text.fills, [gradient]);
+});
+
 test("visible pseudo-element decoration imports as a rectangle child", () => {
   const tab = node("dom-tab-active", "div", { x: 100, y: 20, width: 64, height: 60 }, {
     attributes: { class: "nav__cate nav__item--active" },
@@ -1452,6 +1491,8 @@ test("CSS background image assets with children import as background layers", ()
     },
     styles: {
       backgroundImage: "url(\"https://cdn.example.com/logo.svg\")",
+      backgroundPosition: "50% 50%",
+      backgroundRepeat: "no-repeat",
       backgroundSize: "100% auto"
     },
     children: [
@@ -1471,6 +1512,9 @@ test("CSS background image assets with children import as background layers", ()
   assert.equal(model.children[0].layoutPositioning, "ABSOLUTE");
   assert.deepEqual(model.children[0].rect, { x: 0, y: 0, width: 90, height: 46 });
   assert.equal(model.children[0].style.imageScaleMode, "FILL");
+  assert.equal(model.children[0].style.backgroundPosition, "50% 50%");
+  assert.equal(model.children[0].style.backgroundRepeat, "no-repeat");
+  assert.equal(model.children[0].style.backgroundSize, "100% auto");
   assert.equal(model.children[1].type, "TEXT");
   assert.equal(model.children[1].text, "v6.11.0");
 });
@@ -1492,6 +1536,43 @@ test("missing CSS background image assets fall back to screenshot crop layers", 
   assert.equal(model.children[0].assetKind, "svg");
   assert.equal(model.children[0].assetRole, "css-background");
   assert.equal(model.children[0].fallbackReason, "missing css background asset");
+});
+
+test("transparent avatar picture wrappers mirror child image radius and clipping", () => {
+  const avatar = node("dom-avatar", "picture", { x: 232.5, y: 763, width: 24, height: 24 }, {
+    attributes: { class: "avatar" },
+    styles: {
+      display: "block",
+      overflow: "visible",
+      backgroundColor: "rgba(0, 0, 0, 0)"
+    },
+    children: [
+      node("dom-avatar-img", "img", { x: 232.5, y: 763, width: 24, height: 24 }, {
+        assetRef: "assets/avatar.jpg",
+        attributes: {
+          alt: "awwrated | 咖啡上癮症患者",
+          assetKind: "raster"
+        },
+        styles: {
+          display: "inline",
+          overflow: "clip",
+          overflowX: "clip",
+          overflowY: "clip",
+          borderTopLeftRadius: "12px",
+          borderTopRightRadius: "12px",
+          borderBottomRightRadius: "12px",
+          borderBottomLeftRadius: "12px"
+        }
+      })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(avatar))[0];
+
+  assert.equal(model.type, "FRAME");
+  assert.equal(model.style.cornerRadius, 12);
+  assert.equal(model.clipsContent, true);
+  assert.equal(model.children[0].type, "IMAGE");
+  assert.equal(model.children[0].style.cornerRadius, 12);
 });
 
 test("masked pseudo gradient backgrounds import as gradient strokes", () => {
@@ -1520,6 +1601,62 @@ test("masked pseudo gradient backgrounds import as gradient strokes", () => {
     width: 2.6
   }]);
   assert.equal(model.style.cornerRadius, 20);
+});
+
+test("rounded video cards keep top-right ranking badges", () => {
+  const card = node("dom-video-card", "a", { x: 142.5, y: 223, width: 105, height: 140 }, {
+    assetRef: "assets/poster.jpg",
+    attributes: {
+      assetKind: "raster",
+      assetRole: "css-background"
+    },
+    styles: {
+      overflow: "hidden",
+      overflowX: "hidden",
+      overflowY: "hidden",
+      borderTopLeftRadius: "8px",
+      borderTopRightRadius: "8px",
+      borderBottomRightRadius: "8px",
+      borderBottomLeftRadius: "8px",
+      backgroundImage: "url(\"https://cdn.example.com/poster.jpg\")",
+      backgroundSize: "cover"
+    },
+    children: [
+      text("dom-card-title", "鐵拳教育", { x: 152.5, y: 337, width: 85, height: 16 }, {
+        color: "rgb(255, 255, 255)",
+        fontSize: "12px",
+        lineHeight: "16px"
+      }),
+      node("dom-card-rank", "b", { x: 219.5, y: 223, width: 28, height: 28 }, {
+        textContent: "1",
+        styles: {
+          display: "flex",
+          position: "absolute",
+          backgroundColor: "rgba(0, 0, 0, 0)",
+          backgroundImage: "linear-gradient(223deg, rgb(0, 63, 255) 0%, rgb(255, 0, 68) 100%)",
+          color: "rgb(255, 255, 255)",
+          fontSize: "14px",
+          fontWeight: "700",
+          lineHeight: "14px",
+          borderTopRightRadius: "8px",
+          borderBottomLeftRadius: "8px"
+        }
+      })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(card))[0];
+  const rank = model.children.find((child) => child.sourceNodeId === "dom-card-rank");
+
+  assert.equal(model.type, "FRAME");
+  assert.equal(model.style.cornerRadius, 8);
+  assert.equal(model.clipsContent, true);
+  assert(rank);
+  assert.equal(rank.rect.x, 77);
+  assert.equal(rank.rect.y, 0);
+  assert.equal(rank.children[0].type, "TEXT");
+  assert.equal(rank.children[0].text, "1");
+  assert.equal(rank.children[0].style.text.color, "rgb(255, 255, 255)");
+  assert.deepEqual(rank.children[0].style.text.fills, []);
 });
 
 test("visible borders and outlines become editable stroke styles", () => {

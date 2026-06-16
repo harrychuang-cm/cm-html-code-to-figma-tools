@@ -875,6 +875,7 @@
         textContent: model.text,
         sourceNodeId: model.sourceNodeId,
         styles: model.styles || {},
+        textStyle: model.style && model.style.text || null,
         textAutoResize: model.textAutoResize || "HEIGHT",
         layoutSizingHorizontal: model.layoutSizingHorizontal,
         layoutSizingVertical: model.layoutSizingVertical
@@ -904,7 +905,7 @@
 
     layer = createRectNode(model.name, {
       rect: model.rect,
-      styles: model.styles || {}
+      styles: model.style || model.styles || {}
     });
     writeNodeMetadata(layer, "sourceNodeId", model.sourceNodeId);
     writeNodeMetadata(layer, "cssZIndex", model.cssZIndex);
@@ -979,7 +980,14 @@
     var screenshotFallback;
     var canUseScreenshotCropFallback = false;
     var aspectMismatchReason;
-    if (isSvgAsset(assetRef, assetKind, imageBytes) && typeof figma.createNodeFromSvg === "function") {
+    if (imageBytes.length > 0 && isSvgAsset(assetRef, assetKind, imageBytes) && typeof figma.createNodeFromSvg === "function") {
+      var svgText = decodeUtf8(imageBytes);
+      if (shouldCropAmbiguousCssBackgroundSvg(style || {}, rect, svgText)) {
+        screenshotFallback = createScreenshotCropFallbackNode(name, rect, locked, assetRef, sourceNodeId, cssZIndex, absoluteRect, packageData, "css background SVG sizing unavailable");
+        if (screenshotFallback) {
+          return screenshotFallback;
+        }
+      }
       try {
         return createSvgImageNode(name, imageBytes, rect, locked, assetRef, style || {}, sourceNodeId, cssZIndex);
       } catch (error) {
@@ -1004,7 +1012,9 @@
       try {
         image = figma.createImage(imageBytes);
         node.fills = [imagePaintForStyle(style || {}, image.hash)];
+        applyNonFillVisualStyle(node, style || {});
         writeNodeMetadata(node, "assetRef", assetRef);
+        writeNodeMetadata(node, "assetRole", style && style.assetRole);
         writeNodeMetadata(node, "fallbackReason", reason);
         writeNodeMetadata(node, "imageHash", image.hash);
         return node;
@@ -1259,7 +1269,10 @@
     var svgNode = figma.createNodeFromSvg(svgText);
     var safeRect = rect || {};
     var rotation = rotationFromTransform(style && style.transform);
-    var fitted = fittedSvgRect(safeRect, svgIntrinsicSize(svgText), shouldPreserveSvgAspectRatio(svgText));
+    var intrinsic = svgIntrinsicSize(svgText);
+    var fitted = style && style.assetRole === "css-background"
+      ? cssBackgroundSvgRect(safeRect, intrinsic, style || {})
+      : fittedSvgRect(safeRect, intrinsic, shouldPreserveSvgAspectRatio(svgText));
     var rectWidth = Math.max(0, Number(safeRect.width) || 0);
     var rectHeight = Math.max(0, Number(safeRect.height) || 0);
     var requiresWrapper = rotation !== 0 ||
@@ -1277,6 +1290,7 @@
       writeNodeMetadata(svgNode, "cssZIndex", cssZIndex);
       writeNodeMetadata(svgNode, "assetRef", assetRef);
       writeNodeMetadata(svgNode, "assetKind", "svg");
+      writeNodeMetadata(svgNode, "assetRole", style && style.assetRole);
       return svgNode;
     }
 
@@ -1290,6 +1304,7 @@
     writeNodeMetadata(frame, "cssZIndex", cssZIndex);
     writeNodeMetadata(frame, "assetRef", assetRef);
     writeNodeMetadata(frame, "assetKind", "svg");
+    writeNodeMetadata(frame, "assetRole", style && style.assetRole);
 
     var placed = rotatedFittedSvgRect(safeRect, fitted, rotation);
     svgNode.x = placed.x;
@@ -1299,6 +1314,7 @@
     svgNode.name = name + " / Vector";
     writeNodeMetadata(svgNode, "assetRef", assetRef);
     writeNodeMetadata(svgNode, "assetKind", "svg");
+    writeNodeMetadata(svgNode, "assetRole", style && style.assetRole);
     frame.appendChild(svgNode);
     return frame;
   }
@@ -1368,6 +1384,158 @@
 
   function shouldPreserveSvgAspectRatio(svgText) {
     return !/preserveAspectRatio\s*=\s*["']none["']/i.test(String(svgText || ""));
+  }
+
+  function cssBackgroundSvgRect(rect, intrinsic, style) {
+    var width = Math.max(0, Number((rect || {}).width) || 0);
+    var height = Math.max(0, Number((rect || {}).height) || 0);
+    var intrinsicSize = intrinsic && intrinsic.width > 0 && intrinsic.height > 0
+      ? intrinsic
+      : { width: width, height: height };
+    var target = cssBackgroundRenderedSize(
+      firstCssLayer(style && style.backgroundSize),
+      intrinsicSize,
+      { width: width, height: height }
+    );
+    var position = cssBackgroundPositionOffset(
+      firstCssLayer(style && style.backgroundPosition),
+      { width: width, height: height },
+      target
+    );
+    return {
+      x: position.x,
+      y: position.y,
+      width: target.width,
+      height: target.height
+    };
+  }
+
+  function shouldCropAmbiguousCssBackgroundSvg(style, rect, svgText) {
+    var width;
+    var height;
+    var intrinsic;
+    var widthMatches;
+    var heightCovers;
+    if (!style || style.assetRole !== "css-background" || hasCapturedCssBackgroundSizing(style)) {
+      return false;
+    }
+    width = Math.max(0, Number((rect || {}).width) || 0);
+    height = Math.max(0, Number((rect || {}).height) || 0);
+    intrinsic = svgIntrinsicSize(svgText);
+    if (!intrinsic || intrinsic.width <= 0 || intrinsic.height <= 0 || width <= 0 || height <= 0) {
+      return false;
+    }
+    widthMatches = Math.abs(intrinsic.width - width) <= 1;
+    heightCovers = intrinsic.height >= height - 1;
+    return !(widthMatches && heightCovers);
+  }
+
+  function hasCapturedCssBackgroundSizing(style) {
+    return Boolean(
+      String(style && style.backgroundSize || "").replace(/^\s+|\s+$/g, "") ||
+      String(style && style.backgroundPosition || "").replace(/^\s+|\s+$/g, "") ||
+      String(style && style.backgroundRepeat || "").replace(/^\s+|\s+$/g, "")
+    );
+  }
+
+  function cssBackgroundRenderedSize(value, intrinsic, container) {
+    var normalized = String(value || "").replace(/^\s+|\s+$/g, "").toLowerCase();
+    var scale;
+    var parts;
+    var first;
+    var second;
+    var width;
+    var height;
+    if (!normalized || normalized === "auto") {
+      return {
+        width: round(intrinsic.width),
+        height: round(intrinsic.height)
+      };
+    }
+    if (normalized === "contain" || normalized === "cover") {
+      scale = normalized === "cover"
+        ? Math.max(container.width / intrinsic.width, container.height / intrinsic.height)
+        : Math.min(container.width / intrinsic.width, container.height / intrinsic.height);
+      return {
+        width: round(intrinsic.width * scale),
+        height: round(intrinsic.height * scale)
+      };
+    }
+    parts = normalized.split(/\s+/).filter(Boolean);
+    first = cssBackgroundSizeComponent(parts[0], container.width);
+    second = cssBackgroundSizeComponent(parts[1], container.height);
+    width = first === null ? intrinsic.width : first;
+    height = second === null ? intrinsic.height : second;
+    if (first !== null && second === null) {
+      height = intrinsic.height * (width / intrinsic.width);
+    } else if (first === null && second !== null) {
+      width = intrinsic.width * (height / intrinsic.height);
+    }
+    return {
+      width: round(width),
+      height: round(height)
+    };
+  }
+
+  function cssBackgroundSizeComponent(value, reference) {
+    var normalized = String(value || "").replace(/^\s+|\s+$/g, "").toLowerCase();
+    var percentage;
+    var number;
+    if (!normalized || normalized === "auto") {
+      return null;
+    }
+    if (normalized.slice(-1) === "%") {
+      percentage = parseFloat(normalized);
+      return isFinite(percentage) ? reference * percentage / 100 : null;
+    }
+    number = numberFromCss(normalized);
+    return number > 0 ? number : null;
+  }
+
+  function cssBackgroundPositionOffset(value, container, image) {
+    var normalized = String(value || "").replace(/^\s+|\s+$/g, "").toLowerCase();
+    var parts;
+    var xToken;
+    var yToken;
+    if (!normalized) {
+      return { x: 0, y: 0 };
+    }
+    parts = normalized.split(/\s+/).filter(Boolean);
+    xToken = parts[0] || "0%";
+    yToken = parts[1] || (isVerticalPositionKeyword(xToken) ? "0%" : "50%");
+    return {
+      x: round(cssBackgroundPositionAxisOffset(xToken, container.width, image.width, "x")),
+      y: round(cssBackgroundPositionAxisOffset(yToken, container.height, image.height, "y"))
+    };
+  }
+
+  function cssBackgroundPositionAxisOffset(token, containerSize, imageSize, axis) {
+    var normalized = String(token || "").replace(/^\s+|\s+$/g, "").toLowerCase();
+    var percentage;
+    if (normalized === "center") {
+      return (containerSize - imageSize) / 2;
+    }
+    if (normalized === "right" && axis === "x" || normalized === "bottom" && axis === "y") {
+      return containerSize - imageSize;
+    }
+    if (normalized === "left" || normalized === "top") {
+      return 0;
+    }
+    if (normalized.slice(-1) === "%") {
+      percentage = parseFloat(normalized);
+      return isFinite(percentage) ? (containerSize - imageSize) * percentage / 100 : 0;
+    }
+    return numberFromCss(normalized);
+  }
+
+  function isVerticalPositionKeyword(value) {
+    var normalized = String(value || "").replace(/^\s+|\s+$/g, "").toLowerCase();
+    return normalized === "top" || normalized === "bottom";
+  }
+
+  function firstCssLayer(value) {
+    var layers = splitCssArguments(String(value || ""));
+    return layers[0] ? layers[0].replace(/^\s+|\s+$/g, "") : "";
   }
 
   function fittedSvgRect(rect, intrinsic, preserveAspectRatio) {
@@ -1560,17 +1728,21 @@
   }
 
   function applyVisualStyle(node, styles) {
+    node.fills = withBoundColors(fillPaintArray(styles));
+    applyNonFillVisualStyle(node, styles);
+  }
+
+  function applyNonFillVisualStyle(node, styles) {
     var borderSides = Array.isArray(styles && styles.borderSides)
       ? styles.borderSides
       : nativeBorderStrokeSidesFromStyles(styles || {});
     var stroke = Array.isArray(styles && styles.strokes) && styles.strokes.length > 0
       ? styles.strokes[0]
       : cssStrokeFromStyles(styles);
-    node.fills = withBoundColors(fillPaintArray(styles));
     if (borderSides.length > 0) {
       applyBorderSideStrokes(node, borderSides);
     } else if (stroke) {
-      node.strokes = withBoundColors(paintArray(stroke.color));
+      node.strokes = withBoundColors([cssFillToPaint(stroke.color)].filter(Boolean));
       node.strokeWeight = stroke.width;
       bindNodeNumber(node, "strokeWeight", stroke.width);
     } else {
@@ -1683,7 +1855,9 @@
 
   function setTextLayer(layer, captureNode, fontSubstitutions) {
     var styles = captureNode.styles || {};
-    var requestedFonts = fontNamesFromStyles(styles, captureNode.textContent);
+    var textStyle = captureNode.textStyle || {};
+    var resolvedStyles = Object.assign({}, styles, textStyle);
+    var requestedFonts = fontNamesFromStyles(resolvedStyles, captureNode.textContent);
 
     return loadFontWithFallback(requestedFonts).then(function (loadedFont) {
         var fontName = loadedFont.fontName;
@@ -1698,23 +1872,25 @@
         }
         layer.fontName = fontName;
         layer.characters = captureNode.textContent || "";
-        if (numberFromCss(styles.fontSize) > 0) {
-          layer.fontSize = numberFromCss(styles.fontSize);
-          bindNodeNumber(layer, "fontSize", numberFromCss(styles.fontSize));
+        if (numberFromCss(resolvedStyles.fontSize) > 0) {
+          layer.fontSize = numberFromCss(resolvedStyles.fontSize);
+          bindNodeNumber(layer, "fontSize", numberFromCss(resolvedStyles.fontSize));
         }
-        if (numberFromCss(styles.lineHeight) > 0) {
+        if (numberFromCss(resolvedStyles.lineHeight) > 0) {
           try {
             layer.lineHeight = {
               unit: "PIXELS",
-              value: numberFromCss(styles.lineHeight)
+              value: numberFromCss(resolvedStyles.lineHeight)
             };
           } catch (error) {
             // Keep importing text even when line-height cannot be set.
           }
         }
-        var textFills = textFillPaintArray(styles);
-        layer.fills = withBoundColors(textFills.length > 0 ? textFills : paintArray(textColorFromStyles(styles)));
-        applyTextAlignment(layer, styles.textAlign);
+        var textFills = Array.isArray(textStyle.fills) && textStyle.fills.length > 0
+          ? textStyle.fills.map(function (fill) { return cssFillToPaint(fill); }).filter(Boolean)
+          : textFillPaintArray(styles);
+        layer.fills = withBoundColors(textFills.length > 0 ? textFills : paintArray(textStyle.color || textColorFromStyles(styles)));
+        applyTextAlignment(layer, textStyle.textAlign || styles.textAlign);
         applyTextResizeAndLayoutSizing(layer, captureNode);
       });
   }
@@ -2031,7 +2207,8 @@
       parentRect: { x: 0, y: 0, width: 0, height: 0 },
       fallbackReasons: createFallbackReasonLookup(packageData),
       backdropColor: null,
-      clippedAncestor: false
+      clippedAncestor: false,
+      textFillGradient: null
     });
     var semanticNaming;
     if (!rootModel) {
@@ -2619,7 +2796,9 @@
     var visibleChildrenRect;
     var inheritedBackdropColor;
     var hasClippedAncestor;
+    var textFillGradient;
     var textGeometry;
+    var autoLayout;
 
     if (!node) {
       return null;
@@ -2629,6 +2808,7 @@
       ? node.styles.backgroundColor
       : context.backdropColor;
     hasClippedAncestor = Boolean(context.clippedAncestor || shouldClipContent(node));
+    textFillGradient = textFillGradientFromStyles(node.styles) || context.textFillGradient || null;
     absoluteRect = geometryAdjustedAbsoluteRect(node, normalizeModelRect(node.rect));
     rect = relativeModelRect(absoluteRect, context.parentRect);
     nodeChildren = node.children || [];
@@ -2637,7 +2817,8 @@
         parentRect: absoluteRect,
         fallbackReasons: context.fallbackReasons,
         backdropColor: inheritedBackdropColor,
-        clippedAncestor: hasClippedAncestor
+        clippedAncestor: hasClippedAncestor,
+        textFillGradient: textFillGradient
       });
       if (childModel) {
         children.push(childModel);
@@ -2661,10 +2842,10 @@
 
     if (node.textContent && children.length > 0) {
       var mixedContent = prepareMixedDirectTextContent(node, absoluteRect, children);
-      childModel = createDirectTextModel(mixedContent.node, absoluteRect, mixedContent.children);
+      childModel = createDirectTextModel(mixedContent.node, absoluteRect, mixedContent.children, context);
       children = insertMixedContentTextChild(mixedContent.children, childModel, node);
       children = children.concat(borderDecorations);
-      model = baseLayoutModel(node, "FRAME", rect, absoluteRect, children);
+      model = baseLayoutModel(node, "FRAME", rect, absoluteRect, children, context);
       applyTextOverlayBackdrop(model, node, context);
       model.autoLayout = inferAutoLayout(node, children);
       model.children = orderedChildrenForAutoLayout(children, model.autoLayout);
@@ -2674,10 +2855,10 @@
 
     if (node.textContent) {
       if (isDirectTableCellTextNode(node)) {
-        return createTableCellTextModel(node, rect, absoluteRect, borderDecorations);
+        return createTableCellTextModel(node, rect, absoluteRect, borderDecorations, context);
       }
       if (shouldPreserveTransparentPaddedInteractiveTextFrame(node, rect)) {
-        return createTransparentPaddedTextFrameModel(node, rect, absoluteRect, borderDecorations);
+        return createTransparentPaddedTextFrameModel(node, rect, absoluteRect, borderDecorations, context);
       }
       textGeometry = hasVisualBoxStyle(node.styles)
         ? { rect: rect, absoluteRect: absoluteRect }
@@ -2686,7 +2867,8 @@
         node,
         textGeometry.rect,
         textGeometry.absoluteRect,
-        inferTextAutoResize(node, textGeometry.rect)
+        inferTextAutoResize(node, textGeometry.rect),
+        context
       );
       if (hasVisualBoxStyle(node.styles)) {
         var backingPadding = explicitCssPadding(node.styles);
@@ -2704,7 +2886,7 @@
         childModel.textAutoResize = backingTextAutoResize;
         childModel.layoutSizingHorizontal = textLayoutSizingHorizontal(backingTextAutoResize);
         childModel.layoutSizingVertical = textLayoutSizingVertical(backingTextAutoResize);
-        model = baseLayoutModel(node, "FRAME", rect, absoluteRect, [childModel].concat(borderDecorations));
+        model = baseLayoutModel(node, "FRAME", rect, absoluteRect, [childModel].concat(borderDecorations), context);
         model.name = "Text Background / " + String(node.textContent || "").slice(0, 32);
         model.autoLayout = shouldUsePaddedBacking && borderDecorations.length === 0
           ? textBackingAutoLayout(backingPadding, backingTextAutoResize)
@@ -2718,26 +2900,43 @@
     }
 
     if (node.fallbackRef) {
-      model = baseLayoutModel(node, "FALLBACK_IMAGE", rect, absoluteRect, []);
+      model = baseLayoutModel(node, "FALLBACK_IMAGE", rect, absoluteRect, [], context);
       model.assetRef = node.fallbackRef;
       model.assetKind = assetKindForNode(node);
       model.fallbackReason = context.fallbackReasons[node.sourceNodeId] || "raster fallback";
       return model;
     }
 
-    if (node.assetRef || node.tagName === "img") {
-      model = baseLayoutModel(node, "IMAGE", rect, absoluteRect, []);
+    if (shouldCreateBackgroundImageLayer(node, children)) {
+      children = reparentAbsoluteOverlaysIntoStackingHosts(children).concat(borderDecorations);
+      autoLayout = inferAutoLayout(node, children);
+      model = baseLayoutModel(node, "FRAME", rect, absoluteRect, [
+        createBackgroundImageModel(node, rect, absoluteRect, context)
+      ].concat(orderedChildrenForAutoLayout(children, autoLayout)), context);
+      model.autoLayout = autoLayout;
+      model.clipsContent = shouldClipContent(node);
+      return model;
+    }
+
+    if (node.assetRef || node.tagName === "img" || hasCssImageUrl(node.styles)) {
+      model = baseLayoutModel(node, "IMAGE", rect, absoluteRect, [], context);
       model.assetRef = node.assetRef || null;
       model.assetKind = assetKindForNode(node);
+      model.assetRole = assetRoleForNode(node);
+      if (!node.assetRef && hasCssImageUrl(node.styles)) {
+        model.fallbackReason = "missing css background asset";
+      }
+      model.style = imageVisualStyleForNode(node, context);
       return model;
     }
 
     if (children.length > 0) {
       children = reparentAbsoluteOverlaysIntoStackingHosts(children).concat(borderDecorations);
-      model = baseLayoutModel(node, "FRAME", rect, absoluteRect, children);
+      model = baseLayoutModel(node, "FRAME", rect, absoluteRect, children, context);
+      model.style = visualStyleWithSingleChildClip(node, children, model.style);
       model.autoLayout = inferAutoLayout(node, children);
       model.children = orderedChildrenForAutoLayout(children, model.autoLayout);
-      model.clipsContent = shouldClipContent(node);
+      model.clipsContent = shouldClipContent(node) || shouldMirrorSingleChildClip(node, children, model.style);
       return model;
     }
 
@@ -2746,13 +2945,13 @@
     }
 
     if (borderDecorations.length > 0) {
-      model = baseLayoutModel(node, "FRAME", rect, absoluteRect, borderDecorations);
+      model = baseLayoutModel(node, "FRAME", rect, absoluteRect, borderDecorations, context);
       model.autoLayout = null;
       model.clipsContent = shouldClipContent(node);
       return model;
     }
 
-    return baseLayoutModel(node, "RECTANGLE", rect, absoluteRect, []);
+    return baseLayoutModel(node, "RECTANGLE", rect, absoluteRect, [], context);
   }
 
   function createBorderDecorationModels(node, rect, absoluteRect) {
@@ -2793,6 +2992,27 @@
       });
     }
     return models;
+  }
+
+  function createBackgroundImageModel(node, rect, absoluteRect, context) {
+    var model = baseLayoutModel(node, "IMAGE", {
+      x: 0,
+      y: 0,
+      width: rect.width,
+      height: rect.height
+    }, absoluteRect, [], context || {});
+    model.id = node.sourceNodeId + "::background-image";
+    model.sourceNodeId = node.sourceNodeId + "::background-image";
+    model.name = "Background image";
+    model.layoutPositioning = "ABSOLUTE";
+    model.assetRef = node.assetRef || null;
+    model.assetKind = assetKindForNode(node);
+    model.assetRole = assetRoleForNode(node);
+    if (!node.assetRef) {
+      model.fallbackReason = "missing css background asset";
+    }
+    model.style = imageVisualStyleForNode(node, context || {});
+    return model;
   }
 
   function geometryAdjustedAbsoluteRect(node, absoluteRect) {
@@ -3015,7 +3235,7 @@
     return { x: 0, y: 0, width: side.width, height: rect.height };
   }
 
-  function baseLayoutModel(node, type, rect, absoluteRect, children) {
+  function baseLayoutModel(node, type, rect, absoluteRect, children, context) {
     var model = {
       id: node.sourceNodeId,
       type: type,
@@ -3024,7 +3244,7 @@
       pseudoType: node.nodeType === "pseudo" ? node.tagName : undefined,
       rect: rect,
       absoluteRect: absoluteRect,
-      style: extractVisualStyle(node),
+      style: extractVisualStyle(node, context || {}),
       styles: node.styles || {},
       children: children
     };
@@ -3037,9 +3257,9 @@
     return model;
   }
 
-  function createTextModel(node, rect, absoluteRect, textAutoResize) {
+  function createTextModel(node, rect, absoluteRect, textAutoResize, context) {
     var geometry = normalizeTallHugTextGeometry(node, rect, absoluteRect, textAutoResize);
-    var model = baseLayoutModel(node, "TEXT", geometry.rect, geometry.absoluteRect, []);
+    var model = baseLayoutModel(node, "TEXT", geometry.rect, geometry.absoluteRect, [], context || {});
     model.text = node.textContent;
     model.textAutoResize = textAutoResize;
     model.layoutSizingHorizontal = textLayoutSizingHorizontal(textAutoResize);
@@ -3047,16 +3267,17 @@
     return model;
   }
 
-  function createTableCellTextModel(node, rect, absoluteRect, borderDecorations) {
+  function createTableCellTextModel(node, rect, absoluteRect, borderDecorations, context) {
     var padding = explicitCssPadding(node.styles) || zeroPadding();
     var textAutoResize = tableCellTextAutoResize(node, rect);
     var textModel = createTextModel(
       node,
       tableCellTextRect(rect, padding, node.styles || {}, textAutoResize),
       tableCellTextAbsoluteRect(absoluteRect, rect, padding, node.styles || {}, textAutoResize),
-      textAutoResize
+      textAutoResize,
+      context || {}
     );
-    var model = baseLayoutModel(node, "FRAME", rect, absoluteRect, [textModel].concat(borderDecorations));
+    var model = baseLayoutModel(node, "FRAME", rect, absoluteRect, [textModel].concat(borderDecorations), context || {});
     model.name = "Table Cell / " + String(node.textContent || "").slice(0, 32);
     model.autoLayout = borderDecorations.length === 0
       ? tableCellAutoLayout(padding, node)
@@ -3064,7 +3285,7 @@
     return model;
   }
 
-  function createTransparentPaddedTextFrameModel(node, rect, absoluteRect, borderDecorations) {
+  function createTransparentPaddedTextFrameModel(node, rect, absoluteRect, borderDecorations, context) {
     var padding = explicitCssPadding(node.styles) || zeroPadding();
     var contentRect = contentRectFromPadding(rect, padding);
     var contentAbsoluteRect = {
@@ -3089,9 +3310,10 @@
       textNode,
       contentRect,
       contentAbsoluteRect,
-      textAutoResize
+      textAutoResize,
+      context || {}
     );
-    model = baseLayoutModel(node, "FRAME", rect, absoluteRect, [textModel].concat(borderDecorations));
+    model = baseLayoutModel(node, "FRAME", rect, absoluteRect, [textModel].concat(borderDecorations), context || {});
     model.name = "Text Wrapper / " + String(node.textContent || "").slice(0, 32);
     model.autoLayout = borderDecorations.length === 0
       ? textBackingAutoLayout(padding, textAutoResize)
@@ -3284,7 +3506,7 @@
     return tokens;
   }
 
-  function createDirectTextModel(node, parentAbsoluteRect, children) {
+  function createDirectTextModel(node, parentAbsoluteRect, children, context) {
     var absoluteRect = inferDirectTextRect(node, parentAbsoluteRect, children);
     var rect = relativeModelRect(absoluteRect, parentAbsoluteRect);
     var textNode = {};
@@ -3302,7 +3524,7 @@
     textNode.children = [];
     textNode.rect = absoluteRect;
     textNode.styles = textStyles;
-    return createTextModel(textNode, rect, absoluteRect, inferTextContentAutoResize(textNode, rect));
+    return createTextModel(textNode, rect, absoluteRect, inferTextContentAutoResize(textNode, rect), context || {});
   }
 
   function prepareMixedDirectTextContent(node, parentAbsoluteRect, children) {
@@ -4985,8 +5207,9 @@
     };
   }
 
-  function extractVisualStyle(node) {
+  function extractVisualStyle(node, context) {
     var styles = node.styles || {};
+    var safeContext = context || {};
     var borderSides = nativeBorderStrokeSidesFromStyles(styles);
     var stroke = borderSides.length > 0 ? strokeFromBorderSides(borderSides) : cssStrokeFromStyles(styles);
     return {
@@ -5007,9 +5230,42 @@
         lineHeight: styles.lineHeight || "",
         color: textColorFromStyles(styles),
         textAlign: styles.textAlign || "",
-        fills: cssTextFillsFromStyles(styles)
+        fills: cssTextFillsFromStyles(styles, safeContext.textFillGradient)
       } : null
     };
+  }
+
+  function visualStyleWithSingleChildClip(node, children, style) {
+    if (!shouldMirrorSingleChildClip(node, children, style)) {
+      return style;
+    }
+    return Object.assign({}, style, {
+      cornerRadius: children[0].style.cornerRadius
+    });
+  }
+
+  function shouldMirrorSingleChildClip(node, children, style) {
+    var child;
+    var tagName;
+    var classes;
+    if (!children || children.length !== 1 || hasModelVisualStyle(style || {})) {
+      return false;
+    }
+    child = children[0];
+    if (!child || child.type !== "IMAGE" || !(child.style && child.style.cornerRadius > 0)) {
+      return false;
+    }
+    if (!rectsMatchWithinTolerance(normalizeModelRect(node.rect), child.absoluteRect, 1)) {
+      return false;
+    }
+    tagName = normalizeCssKeyword(node.tagName);
+    classes = classTokens(node.attributes && node.attributes.class);
+    return tagName === "picture" ||
+      classes.avatar ||
+      classes.image ||
+      classes.thumb ||
+      classes.cover ||
+      classes.poster;
   }
 
   function applyTextOverlayBackdrop(model, node, context) {
@@ -5139,11 +5395,80 @@
     if (node.attributes && node.attributes.assetKind) {
       return node.attributes.assetKind;
     }
+    if (cssImageUrlFromStyles(node.styles) && /\.svg(?:[?#]|$)/i.test(cssImageUrlFromStyles(node.styles))) {
+      return "svg";
+    }
     ref = node.assetRef || node.fallbackRef || "";
     if (String(ref).toLowerCase().slice(-4) === ".svg") {
       return "svg";
     }
     return "raster";
+  }
+
+  function assetRoleForNode(node) {
+    if (typeof (node.attributes && node.attributes.assetRole) === "string") {
+      return node.attributes.assetRole;
+    }
+    return hasCssImageUrl(node.styles) ? "css-background" : "";
+  }
+
+  function imageVisualStyleForNode(node, context) {
+    var style = extractVisualStyle(node, context || {});
+    if (assetRoleForNode(node) !== "css-background") {
+      return style;
+    }
+    style.imageScaleMode = cssBackgroundImageScaleMode(node.styles || {});
+    style.assetRole = "css-background";
+    style.backgroundSize = node.styles && node.styles.backgroundSize || "";
+    style.backgroundPosition = node.styles && node.styles.backgroundPosition || "";
+    style.backgroundRepeat = node.styles && node.styles.backgroundRepeat || "";
+    return style;
+  }
+
+  function cssBackgroundImageScaleMode(styles) {
+    var backgroundSize = String(styles && styles.backgroundSize || "").replace(/^\s+|\s+$/g, "").toLowerCase();
+    if (backgroundSize.indexOf("contain") >= 0) {
+      return "FIT";
+    }
+    return "FILL";
+  }
+
+  function shouldCreateBackgroundImageLayer(node, children) {
+    return node.tagName !== "img" &&
+      node.tagName !== "svg" &&
+      !node.textContent &&
+      children.length > 0 &&
+      (Boolean(node.assetRef) || hasCssImageUrl(node.styles));
+  }
+
+  function hasCssImageUrl(styles) {
+    return Boolean(cssImageUrlFromStyles(styles || {}));
+  }
+
+  function cssImageUrlFromStyles(styles) {
+    return firstCssImageUrl(
+      styles && styles.content,
+      styles && styles.maskImage,
+      styles && styles.webkitMaskImage,
+      styles && styles.backgroundImage
+    );
+  }
+
+  function firstCssImageUrl() {
+    var index;
+    var value;
+    var match;
+    for (index = 0; index < arguments.length; index += 1) {
+      value = arguments[index];
+      if (typeof value !== "string" || value.length === 0 || value === "none") {
+        continue;
+      }
+      match = value.match(/url\((?:"([^"]+)"|'([^']+)'|([^)]*))\)/i);
+      if (match) {
+        return (match[1] || match[2] || match[3] || "").replace(/^\s+|\s+$/g, "");
+      }
+    }
+    return "";
   }
 
   function visibleColor(value) {
@@ -5157,6 +5482,9 @@
     if (isBackgroundClippedToText(safeStyles)) {
       return fills;
     }
+    if (maskedGradientBorderStroke(safeStyles)) {
+      return fills;
+    }
     if (visibleColor(safeStyles.backgroundColor)) {
       fills.push(safeStyles.backgroundColor);
     }
@@ -5166,11 +5494,30 @@
     return fills;
   }
 
-  function cssTextFillsFromStyles(styles) {
+  function cssTextFillsFromStyles(styles, inheritedTextFillGradient) {
+    var safeStyles = styles || {};
+    var ownGradient = textFillGradientFromStyles(safeStyles);
+    if (ownGradient) {
+      return [ownGradient];
+    }
+    return inheritedTextFillGradient && hasTransparentWebkitTextFill(safeStyles)
+      ? [inheritedTextFillGradient]
+      : [];
+  }
+
+  function textFillGradientFromStyles(styles) {
     var safeStyles = styles || {};
     return isBackgroundClippedToText(safeStyles) && visibleCssLinearGradient(safeStyles.backgroundImage)
-      ? [safeStyles.backgroundImage]
-      : [];
+      ? safeStyles.backgroundImage
+      : "";
+  }
+
+  function hasTransparentWebkitTextFill(styles) {
+    var value = normalizeCssKeyword(styles && styles.webkitTextFillColor);
+    return value === "transparent" ||
+      value === "rgba(0, 0, 0, 0)" ||
+      value === "rgba(0,0,0,0)" ||
+      /\/\s*0\)?$/.test(value);
   }
 
   function isBackgroundClippedToText(styles) {
@@ -5204,14 +5551,47 @@
 
   function cssStrokeFromStyles(styles) {
     var safeStyles = styles || {};
+    var maskedGradientStroke = maskedGradientBorderStroke(safeStyles);
     var sides = visibleBorderSides(safeStyles);
     var borderStroke = uniformBorderStrokeFromSides(sides) || legacyTopBorderStroke(safeStyles, sides);
     var outlineStroke;
+    if (maskedGradientStroke) {
+      return maskedGradientStroke;
+    }
     if (borderStroke) {
       return borderStroke;
     }
     outlineStroke = cssStrokeSide(safeStyles.outlineWidth, safeStyles.outlineColor, safeStyles.outlineStyle);
     return outlineStroke;
+  }
+
+  function maskedGradientBorderStroke(styles) {
+    var safeStyles = styles || {};
+    var padding;
+    var widths;
+    if (!visibleCssLinearGradient(safeStyles.backgroundImage) || !hasLayeredCssMask(safeStyles)) {
+      return null;
+    }
+    padding = explicitCssPadding(safeStyles);
+    if (!padding) {
+      return null;
+    }
+    widths = [padding.top, padding.right, padding.bottom, padding.left].filter(function (value) {
+      return value > 0;
+    });
+    if (widths.length === 0) {
+      return null;
+    }
+    return {
+      color: safeStyles.backgroundImage,
+      width: Math.max.apply(null, widths)
+    };
+  }
+
+  function hasLayeredCssMask(styles) {
+    var mask = String(styles && styles.maskImage || "") + ", " + String(styles && styles.webkitMaskImage || "");
+    var matches = mask.match(/(?:linear-gradient|radial-gradient|url)\(/gi) || [];
+    return matches.length >= 2;
   }
 
   function borderDecorationSides(styles) {
