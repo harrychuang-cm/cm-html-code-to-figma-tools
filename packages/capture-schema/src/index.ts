@@ -82,6 +82,9 @@ export function validateManifest(value) {
   if ("deviceLabel" in value && typeof value.deviceLabel !== "string") {
     errors.push(error(ERROR_CODES.INVALID_FIELD, "deviceLabel must be a string", "manifest.deviceLabel"));
   }
+  if ("includeScreenshot" in value && typeof value.includeScreenshot !== "boolean") {
+    errors.push(error(ERROR_CODES.INVALID_FIELD, "includeScreenshot must be a boolean", "manifest.includeScreenshot"));
+  }
 
   if (
     "captureMode" in value &&

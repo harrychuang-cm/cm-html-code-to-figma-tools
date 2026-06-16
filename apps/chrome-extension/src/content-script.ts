@@ -96,6 +96,9 @@
   const SELECT_ELEMENT_MESSAGE = "FIGCAPTURE_SELECT_ELEMENT";
   const CAPTURE_STATUS_MESSAGE = "FIGCAPTURE_CAPTURE_STATUS";
   const EXPORT_CONFIRMED_MESSAGE = "FIGCAPTURE_EXPORT_CONFIRMED";
+  const ADD_ELEMENT_SELECTION_MESSAGE = "FIGCAPTURE_ADD_ELEMENT_SELECTION";
+  const REMOVE_ELEMENT_SELECTION_MESSAGE = "FIGCAPTURE_REMOVE_ELEMENT_SELECTION";
+  const CLEAR_ELEMENT_SELECTIONS_MESSAGE = "FIGCAPTURE_CLEAR_ELEMENT_SELECTIONS";
   const SELECTED_ELEMENT_ATTRIBUTE = "data-figcapture-selection-id";
   const OVERLAY_HOST_ATTRIBUTE = "data-figcapture-overlay-host";
   let pinnedHiddenRecords = [];
@@ -216,95 +219,162 @@
     return { pinnedCount: pinnedHiddenRecords.length };
   }
 
-  function selectElementFromPage(documentRef = document, windowRef = window) {
+  function selectElementFromPage(documentRef = document, windowRef = window, runtimeRef = chrome?.runtime) {
     activeSelectionController?.cancel?.();
     dismissCaptureStatusPanel();
 
-    return new Promise((resolve, reject) => {
-      const overlay = createSelectionOverlay(documentRef);
-      const state = {
-        currentElement: null,
-        resolved: false
-      };
-      const cleanup = () => {
-        documentRef.removeEventListener?.("pointermove", onPointerMove, true);
-        documentRef.removeEventListener?.("click", onClick, true);
-        documentRef.removeEventListener?.("keydown", onKeyDown, true);
-        windowRef.removeEventListener?.("scroll", onScroll, true);
-        overlay.highlight.remove?.();
-        overlay.panel.remove?.();
-        cleanupOverlayHost(documentRef);
-        if (activeSelectionController?.cancel === cancel) {
-          activeSelectionController = null;
-        }
-      };
-      const finish = (element) => {
-        const rect = normalizeRect(element.getBoundingClientRect());
-        if (rect.width <= 0 || rect.height <= 0) {
-          reject(new Error("Selected element has no visible size"));
-          cleanup();
-          return;
-        }
-        cleanupSelectedElement();
-        const selection = createElementSelection(element, rect, windowRef);
-        element.setAttribute?.(SELECTED_ELEMENT_ATTRIBUTE, selection.id);
-        selectedElementRecord = { id: selection.id, element };
-        state.resolved = true;
-        cleanup();
-        resolve({ selection });
-      };
-      function cancel(message = "Element selection cancelled") {
-        if (state.resolved) {
-          return;
-        }
-        state.resolved = true;
-        cleanup();
-        reject(new Error(message));
+    const overlay = createSelectionOverlay(documentRef);
+    const state = {
+      currentElement: null,
+      selectedItems: [],
+      capturing: false,
+      closed: false
+    };
+    const cleanup = () => {
+      documentRef.removeEventListener?.("pointermove", onPointerMove, true);
+      documentRef.removeEventListener?.("click", onClick, true);
+      documentRef.removeEventListener?.("keydown", onKeyDown, true);
+      windowRef.removeEventListener?.("scroll", onScroll, true);
+      overlay.highlight.remove?.();
+      overlay.panel.remove?.();
+      cleanupOverlayHost(documentRef);
+      cleanupSelectedElement();
+      if (activeSelectionController?.cancel === cancel) {
+        activeSelectionController = null;
       }
-      function onPointerMove(event) {
-        const element = selectableEventElement(event, overlay, documentRef);
-        if (!element) {
-          return;
-        }
-        state.currentElement = element;
-        updateSelectionOverlay(overlay.highlight, element, windowRef);
-        positionFloatingPanel(overlay.panel, normalizeRect(element.getBoundingClientRect()), windowRef);
+    };
+    async function cancel() {
+      if (state.closed) {
+        return;
       }
-      function onClick(event) {
-        const element = state.currentElement ?? selectableEventElement(event, overlay, documentRef);
-        if (!element) {
-          return;
-        }
-        event.preventDefault?.();
-        event.stopPropagation?.();
-        event.stopImmediatePropagation?.();
-        finish(element);
+      state.closed = true;
+      try {
+        await runtimeRef?.sendMessage?.({ type: CLEAR_ELEMENT_SELECTIONS_MESSAGE });
+      } catch {
+        // The page overlay can still be dismissed if the background worker is gone.
       }
-      function onKeyDown(event) {
-        if (event.key === "Escape") {
-          event.preventDefault?.();
-          event.stopPropagation?.();
-          cancel();
-        }
+      cleanup();
+    }
+    async function addElement(element) {
+      if (state.capturing || state.closed) {
+        return;
       }
-      function onScroll() {
-        if (state.currentElement) {
-          updateSelectionOverlay(overlay.highlight, state.currentElement, windowRef);
-          positionFloatingPanel(overlay.panel, normalizeRect(state.currentElement.getBoundingClientRect()), windowRef);
-        }
+      const rect = normalizeRect(element.getBoundingClientRect());
+      if (rect.width <= 0 || rect.height <= 0) {
+        return;
       }
 
-      activeSelectionController = { cancel };
-      overlay.cancelButton?.addEventListener?.("click", (event) => {
+      state.capturing = true;
+      setSelectionTrayBusy(overlay, true);
+      cleanupSelectedElement();
+      const selection = createElementSelection(element, rect, windowRef);
+      element.setAttribute?.(SELECTED_ELEMENT_ATTRIBUTE, selection.id);
+      selectedElementRecord = { id: selection.id, element };
+
+      const previousVisibility = overlay.host.style.visibility;
+      overlay.host.style.visibility = "hidden";
+      try {
+        const response = await runtimeRef?.sendMessage?.({
+          type: ADD_ELEMENT_SELECTION_MESSAGE,
+          selection
+        });
+        if (response?.status === "error") {
+          markSelectionTrayError(overlay);
+          return;
+        }
+        if (response?.item) {
+          state.selectedItems.push(response.item);
+          renderSelectionTray(overlay, state, runtimeRef);
+        }
+      } catch {
+        markSelectionTrayError(overlay);
+      } finally {
+        overlay.host.style.visibility = previousVisibility;
+        cleanupSelectedElement(selection.id);
+        state.capturing = false;
+        setSelectionTrayBusy(overlay, false);
+        renderSelectionTray(overlay, state, runtimeRef);
+      }
+    }
+    async function downloadSelected() {
+      if (state.closed || state.capturing || state.selectedItems.length === 0) {
+        return;
+      }
+      state.capturing = true;
+      setSelectionTrayBusy(overlay, true);
+      try {
+        const response = await runtimeRef?.sendMessage?.({ type: EXPORT_CONFIRMED_MESSAGE });
+        if (response?.status === "error") {
+          markSelectionTrayError(overlay);
+          return;
+        }
+        state.closed = true;
+        cleanup();
+      } catch {
+        markSelectionTrayError(overlay);
+      } finally {
+        state.capturing = false;
+        setSelectionTrayBusy(overlay, false);
+        if (!state.closed) {
+          renderSelectionTray(overlay, state, runtimeRef);
+        }
+      }
+    }
+    function onPointerMove(event) {
+      const element = selectableEventElement(event, overlay, documentRef);
+      if (!element) {
+        return;
+      }
+      state.currentElement = element;
+      updateSelectionOverlay(overlay.highlight, element, windowRef);
+    }
+    function onClick(event) {
+      if (isOverlayEvent(event, documentRef)) {
+        return;
+      }
+      const element = state.currentElement ?? selectableEventElement(event, overlay, documentRef);
+      if (!element) {
+        return;
+      }
+      event.preventDefault?.();
+      event.stopPropagation?.();
+      event.stopImmediatePropagation?.();
+      addElement(element);
+    }
+    function onKeyDown(event) {
+      if (event.key === "Escape") {
         event.preventDefault?.();
         event.stopPropagation?.();
         cancel();
-      });
-      documentRef.addEventListener?.("pointermove", onPointerMove, true);
-      documentRef.addEventListener?.("click", onClick, true);
-      documentRef.addEventListener?.("keydown", onKeyDown, true);
-      windowRef.addEventListener?.("scroll", onScroll, true);
+      }
+    }
+    function onScroll() {
+      if (state.currentElement) {
+        updateSelectionOverlay(overlay.highlight, state.currentElement, windowRef);
+      }
+    }
+
+    activeSelectionController = { cancel };
+    overlay.cancelButton?.addEventListener?.("click", (event) => {
+      event.preventDefault?.();
+      event.stopPropagation?.();
+      cancel();
     });
+    overlay.downloadButton?.addEventListener?.("click", (event) => {
+      event.preventDefault?.();
+      event.stopPropagation?.();
+      downloadSelected();
+    });
+    overlay.panel?.addEventListener?.("click", (event) => {
+      event.stopPropagation?.();
+    });
+    documentRef.addEventListener?.("pointermove", onPointerMove, true);
+    documentRef.addEventListener?.("click", onClick, true);
+    documentRef.addEventListener?.("keydown", onKeyDown, true);
+    windowRef.addEventListener?.("scroll", onScroll, true);
+    renderSelectionTray(overlay, state, runtimeRef);
+
+    return { selecting: true };
   }
 
   function createSelectionOverlay(documentRef) {
@@ -330,12 +400,13 @@
       top: "16px",
       transform: "translateX(-50%)",
       zIndex: "2147483647",
-      pointerEvents: "none",
+      pointerEvents: "auto",
       alignItems: "center",
       display: "flex",
-      gap: "12px",
-      maxWidth: "min(560px, calc(100vw - 32px))",
-      padding: "10px 12px",
+      gap: "8px",
+      maxWidth: "min(720px, calc(100vw - 32px))",
+      minHeight: "64px",
+      padding: "8px",
       border: "1px solid rgba(255, 255, 255, 0.14)",
       borderRadius: "10px",
       background: "rgba(17, 24, 39, 0.94)",
@@ -345,23 +416,188 @@
       WebkitFontSmoothing: "antialiased",
       userSelect: "none"
     });
-    const copy = documentRef.createElement("div");
-    copy.style.minWidth = "0";
-    copy.style.flex = "1";
-    copy.innerHTML = [
-      "<strong style=\"display:block;font-size:13px;font-weight:650;margin:0 0 2px;\">Select element</strong>",
-      "<span style=\"color:rgba(255,255,255,.74);\">Hover a container, then click to capture. Esc cancels.</span>"
-    ].join("");
+    const thumbnailList = documentRef.createElement("div");
+    thumbnailList.setAttribute?.("data-figcapture-selection-overlay", "thumbnail-list");
+    Object.assign(thumbnailList.style, {
+      alignItems: "center",
+      display: "flex",
+      flex: "1",
+      gap: "8px",
+      minWidth: "52px",
+      maxWidth: "min(480px, calc(100vw - 210px))",
+      overflowX: "auto",
+      pointerEvents: "auto",
+      scrollbarWidth: "none"
+    });
+    const emptySlot = documentRef.createElement("div");
+    emptySlot.setAttribute?.("aria-hidden", "true");
+    Object.assign(emptySlot.style, {
+      alignItems: "center",
+      border: "1px dashed rgba(255,255,255,.26)",
+      borderRadius: "6px",
+      color: "rgba(255,255,255,.44)",
+      display: "flex",
+      flex: "0 0 52px",
+      font: "600 18px/1 -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",
+      height: "52px",
+      justifyContent: "center",
+      width: "52px"
+    });
+    emptySlot.textContent = "+";
+    thumbnailList.appendChild(emptySlot);
+
+    const downloadButton = documentRef.createElement("button");
+    downloadButton.type = "button";
+    downloadButton.textContent = "Download";
+    downloadButton.disabled = true;
+    Object.assign(downloadButton.style, panelButtonStyle("primary"));
     const cancelButton = documentRef.createElement("button");
     cancelButton.type = "button";
     cancelButton.textContent = "Cancel";
     Object.assign(cancelButton.style, panelButtonStyle("secondary"));
-    panel.appendChild(copy);
+    panel.appendChild(thumbnailList);
+    panel.appendChild(downloadButton);
     panel.appendChild(cancelButton);
 
     host.appendChild?.(highlight);
     host.appendChild?.(panel);
-    return { highlight, panel, cancelButton };
+    return { host, highlight, panel, thumbnailList, emptySlot, downloadButton, cancelButton };
+  }
+
+  function renderSelectionTray(overlay, state, runtimeRef = chrome?.runtime) {
+    if (!overlay?.thumbnailList) {
+      return;
+    }
+    overlay.thumbnailList.replaceChildren?.();
+    if (state.selectedItems.length === 0) {
+      overlay.thumbnailList.appendChild?.(overlay.emptySlot);
+    } else {
+      for (const item of state.selectedItems) {
+        overlay.thumbnailList.appendChild?.(createSelectionThumbnail(overlay.thumbnailList.ownerDocument, item, async () => {
+          try {
+            const response = await runtimeRef?.sendMessage?.({
+              type: REMOVE_ELEMENT_SELECTION_MESSAGE,
+              itemId: item.id
+            });
+            if (response?.status === "error") {
+              markSelectionTrayError(overlay);
+              return;
+            }
+            state.selectedItems = Array.isArray(response?.items)
+              ? response.items
+              : state.selectedItems.filter((entry) => entry.id !== item.id);
+            renderSelectionTray(overlay, state, runtimeRef);
+          } catch {
+            markSelectionTrayError(overlay);
+          }
+        }));
+      }
+    }
+    if (overlay.downloadButton) {
+      overlay.downloadButton.disabled = state.selectedItems.length === 0 || state.capturing;
+      overlay.downloadButton.style.opacity = overlay.downloadButton.disabled ? "0.45" : "1";
+    }
+  }
+
+  function createSelectionThumbnail(documentRef, item, onRemove) {
+    const tile = documentRef.createElement("div");
+    tile.setAttribute?.("data-figcapture-selection-overlay", "thumbnail");
+    Object.assign(tile.style, {
+      border: "1px solid rgba(255,255,255,.24)",
+      borderRadius: "6px",
+      flex: "0 0 52px",
+      height: "52px",
+      overflow: "hidden",
+      pointerEvents: "auto",
+      position: "relative",
+      width: "52px"
+    });
+
+    if (item?.screenshotDataUrl) {
+      const image = documentRef.createElement("img");
+      image.alt = item?.selector ?? "Selected element";
+      image.src = item.screenshotDataUrl;
+      Object.assign(image.style, {
+        display: "block",
+        height: "100%",
+        objectFit: "cover",
+        width: "100%"
+      });
+      tile.appendChild(image);
+    } else {
+      const placeholder = documentRef.createElement("div");
+      placeholder.textContent = selectedElementNumberLabel(item?.label);
+      Object.assign(placeholder.style, {
+        alignItems: "center",
+        background: "rgba(59,108,246,.18)",
+        color: "rgba(255,255,255,.86)",
+        display: "flex",
+        font: "700 14px/1 -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",
+        height: "100%",
+        justifyContent: "center",
+        width: "100%"
+      });
+      tile.appendChild(placeholder);
+    }
+
+    const removeButton = documentRef.createElement("button");
+    removeButton.type = "button";
+    removeButton.textContent = "x";
+    removeButton.setAttribute?.("aria-label", `Remove ${item?.label ?? "selected element"}`);
+    Object.assign(removeButton.style, {
+      alignItems: "center",
+      appearance: "none",
+      background: "rgba(15, 23, 42, 0.84)",
+      border: "1px solid rgba(255,255,255,.30)",
+      borderRadius: "999px",
+      color: "#fff",
+      cursor: "pointer",
+      display: "flex",
+      font: "700 10px/1 -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",
+      height: "18px",
+      justifyContent: "center",
+      padding: "0",
+      pointerEvents: "auto",
+      position: "absolute",
+      right: "3px",
+      top: "3px",
+      width: "18px"
+    });
+    removeButton.addEventListener?.("click", (event) => {
+      event.preventDefault?.();
+      event.stopPropagation?.();
+      onRemove();
+    });
+    tile.appendChild(removeButton);
+    return tile;
+  }
+
+  function selectedElementNumberLabel(label = "") {
+    const match = String(label).match(/\d+$/);
+    return match ? match[0] : "";
+  }
+
+  function setSelectionTrayBusy(overlay, busy) {
+    if (overlay?.downloadButton) {
+      overlay.downloadButton.disabled = busy || overlay.downloadButton.disabled;
+      overlay.downloadButton.style.cursor = busy ? "wait" : "pointer";
+    }
+    if (overlay?.panel) {
+      overlay.panel.style.opacity = busy ? "0.72" : "1";
+    }
+  }
+
+  function markSelectionTrayError(overlay) {
+    if (!overlay?.panel) {
+      return;
+    }
+    overlay.panel.style.border = "1px solid rgba(239, 68, 68, 0.70)";
+    const timer = window.setTimeout ?? setTimeout;
+    timer(() => {
+      if (overlay.panel?.style) {
+        overlay.panel.style.border = "1px solid rgba(255, 255, 255, 0.14)";
+      }
+    }, 900);
   }
 
   function selectableEventElement(event, overlay, documentRef) {
@@ -377,6 +613,12 @@
       return null;
     }
     return target;
+  }
+
+  function isOverlayEvent(event, documentRef) {
+    const path = typeof event.composedPath === "function" ? event.composedPath() : [];
+    const target = path.find((item) => isElementNode(item)) ?? event.target;
+    return isElementNode(target) && Boolean(target.closest?.("[data-figcapture-selection-overlay]"));
   }
 
   function updateSelectionOverlay(highlight, element, windowRef) {
@@ -515,7 +757,7 @@
       top: "16px",
       transform: "translateX(-50%)",
       zIndex: "2147483647",
-      pointerEvents: "none",
+      pointerEvents: "auto",
       display: "flex",
       alignItems: "center",
       gap: "12px",

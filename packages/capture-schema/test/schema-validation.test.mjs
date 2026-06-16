@@ -125,6 +125,17 @@ test("invalid captureMode is rejected", () => {
   assert.equal(validation.errors[0].path, "manifest.captureMode");
 });
 
+test("invalid includeScreenshot metadata is rejected", () => {
+  const packageData = createValidPackage();
+  const validation = validateManifest({
+    ...packageData.manifest,
+    includeScreenshot: "false"
+  });
+
+  assert.equal(validation.ok, false);
+  assert.equal(validation.errors[0].path, "manifest.includeScreenshot");
+});
+
 test("full-page manifest requires positive document dimensions", () => {
   const packageData = createValidPackage();
   const validation = validateManifest({

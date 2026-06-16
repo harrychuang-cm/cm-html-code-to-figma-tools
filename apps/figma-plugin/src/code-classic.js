@@ -350,7 +350,11 @@
         if (!importMessage || importMessage.type !== IMPORT_PACKAGE) {
           return null;
         }
-        return importBytes(toUint8Array(importMessage.bytes), importMessage.matchVariables !== false);
+        return importBytes(
+          toUint8Array(importMessage.bytes),
+          importMessage.matchVariables !== false,
+          importMessage.importScreenshot !== false
+        );
       })
       .then(function (result) {
         if (!result) {
@@ -397,7 +401,8 @@
         type: IMPORT_PACKAGE,
         filename: IMPORT_TRANSFER.filename,
         bytes: assembleImportTransferBytes(),
-        matchVariables: IMPORT_TRANSFER.matchVariables
+        matchVariables: IMPORT_TRANSFER.matchVariables,
+        importScreenshot: IMPORT_TRANSFER.importScreenshot
       };
       IMPORT_TRANSFER = null;
       return {
@@ -431,6 +436,7 @@
       totalBytes: totalBytes,
       totalChunks: totalChunks,
       matchVariables: message.matchVariables !== false,
+      importScreenshot: message.importScreenshot !== false,
       chunks: chunks,
       received: received,
       receivedChunks: 0,
@@ -492,7 +498,7 @@
     return bytes;
   }
 
-  function importBytes(bytes, matchVariables) {
+  function importBytes(bytes, matchVariables, importScreenshot) {
     var captures = readCaptureBundle(bytes);
     captures.sort(function (a, b) {
       return b.width - a.width;
@@ -540,9 +546,9 @@
             label: "Rendering " + progress.captureDesc,
             message: "Building layers — " + progress.captureDesc
           });
-          return renderPackage(item.entry.packageData, state.originX, item.models, progress).then(function (renderResult) {
+          return renderPackage(item.entry.packageData, state.originX, item.models, progress, importScreenshot).then(function (renderResult) {
             reports.push(createReport(item.entry.packageData, renderResult));
-            state.originX += 2 * (captureFrameSize(item.entry.packageData.manifest).width + 80);
+            state.originX += renderResult.frames.length * (captureFrameSize(item.entry.packageData.manifest).width + 80);
           });
         });
       });
@@ -700,10 +706,11 @@
     }
   }
 
-  function renderPackage(packageData, originX, providedModels, progress) {
-    var frames = createFrames(packageData, originX || 0);
-    var sourceFrame = frames[0];
-    var accurateFrame = frames[1];
+  function renderPackage(packageData, originX, providedModels, progress, importScreenshot) {
+    var includeSourceScreenshot = shouldImportSourceScreenshot(packageData, importScreenshot);
+    var frames = createFrames(packageData, originX || 0, includeSourceScreenshot);
+    var sourceFrame = includeSourceScreenshot ? frames[0] : null;
+    var accurateFrame = includeSourceScreenshot ? frames[1] : frames[0];
     var layoutModels = providedModels || createEditableLayoutNodeModels(packageData);
     var autoLayoutSummary = summarizeAutoLayoutModels(layoutModels);
     var semanticNamingSummary = summarizeSemanticNamingModels(layoutModels);
@@ -711,10 +718,12 @@
     var fontSubstitutions = [];
     var index;
 
-    var frameSize = captureFrameSize(packageData.manifest);
-    var sourceScreenshotNodes = createSourceScreenshotNodes(packageData, frameSize);
-    for (index = 0; index < sourceScreenshotNodes.length; index += 1) {
-      sourceFrame.appendChild(sourceScreenshotNodes[index]);
+    if (sourceFrame) {
+      var frameSize = captureFrameSize(packageData.manifest);
+      var sourceScreenshotNodes = createSourceScreenshotNodes(packageData, frameSize);
+      for (index = 0; index < sourceScreenshotNodes.length; index += 1) {
+        sourceFrame.appendChild(sourceScreenshotNodes[index]);
+      }
     }
 
     for (index = 0; index < layoutModels.length; index += 1) {
@@ -834,8 +843,12 @@
     return y >= frameSize.height - 1 ? models : [];
   }
 
-  function createFrames(packageData, originX) {
-    var roles = ["Source Screenshot", "Editable Accurate"];
+  function shouldImportSourceScreenshot(packageData, importScreenshot) {
+    return importScreenshot !== false && (!packageData.manifest || packageData.manifest.includeScreenshot !== false);
+  }
+
+  function createFrames(packageData, originX, includeSourceScreenshot) {
+    var roles = includeSourceScreenshot ? ["Source Screenshot", "Editable Accurate"] : ["Editable Accurate"];
     var title = packageData.capture.title || titleFromUrl(packageData.manifest.sourceUrl);
     var frameSize = captureFrameSize(packageData.manifest);
     var width = frameSize.width;

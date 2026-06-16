@@ -1366,6 +1366,31 @@ test("plugin runtime bridge imports a valid package and posts success report", a
   assert.equal(posted[0].report.createdFrameCount, 2);
 });
 
+test("plugin runtime bridge can import without the source screenshot frame", async () => {
+  const posted = [];
+  const figmaApi = {
+    ...createMockFigmaApi(),
+    showUI() {},
+    ui: {
+      postMessage(message) {
+        posted.push(message);
+      },
+      onmessage: null
+    }
+  };
+  assert.equal(registerFigmaPluginRuntime(figmaApi), true);
+
+  await figmaApi.ui.onmessage(createImportPackageMessage(
+    "dashboard.figcapture",
+    packFigcapture(createRuntimePackage()),
+    { importScreenshot: false }
+  ));
+
+  assert.equal(posted.length, 1);
+  assert.equal(posted[0].type, "IMPORT_SUCCESS");
+  assert.equal(posted[0].report.createdFrameCount, 1);
+});
+
 test("plugin runtime bridge imports package chunks after reassembly", async () => {
   const posted = [];
   const figmaApi = {
@@ -1426,6 +1451,7 @@ test("plugin UI bridge sends .figcapture files as bounded chunks", async () => {
     chunkSize: 4,
     transferId: "ui-transfer",
     matchVariables: false,
+    importScreenshot: false,
     onProgress(item) {
       progress.push(item);
     }
@@ -1444,6 +1470,8 @@ test("plugin UI bridge sends .figcapture files as bounded chunks", async () => {
     "IMPORT_PACKAGE_TRANSFER_CHUNK",
     "IMPORT_PACKAGE_TRANSFER_END"
   ]);
+  assert.equal(posted[0].message.pluginMessage.matchVariables, false);
+  assert.equal(posted[0].message.pluginMessage.importScreenshot, false);
   assert.deepEqual(posted
     .filter((entry) => entry.message.pluginMessage.type === "IMPORT_PACKAGE_TRANSFER_CHUNK")
     .map((entry) => Array.from(entry.message.pluginMessage.bytes)), [
@@ -1600,4 +1628,22 @@ test("import reads a legacy single-capture package as one breakpoint", async () 
   assert.equal(result.captures.length, 1);
   assert.equal(result.captures[0].renderResult.frames[0].x, 0);
   assert.equal(result.report.createdFrameCount, 2);
+});
+
+test("import omits the source frame when source screenshot import is disabled", async () => {
+  const figmaApi = createMockFigmaApi();
+  const packageData = createRuntimePackage();
+
+  const result = await importPackageBytes(packFigcapture(packageData), {
+    figmaApi,
+    importScreenshot: false
+  });
+
+  assert.equal(result.status, "success");
+  assert.equal(result.captures.length, 1);
+  assert.equal(result.renderResult.frames.length, 1);
+  assert.match(result.renderResult.frames[0].name, /Editable Accurate$/);
+  assert.equal(result.renderResult.sourceScreenshotLayer, undefined);
+  assert.deepEqual(result.renderResult.sourceScreenshotLayers, []);
+  assert.equal(result.report.createdFrameCount, 1);
 });

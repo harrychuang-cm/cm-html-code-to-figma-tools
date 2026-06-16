@@ -7,6 +7,7 @@ import {
   buildConfirmedExportPackage,
   buildMultiCaptureExportPackage,
   createScreenshotCropFallbackProvider,
+  dataUrlToBytes,
   downloadFigcaptureArchive,
   inspectArchiveFileNames
 } from "../dist/capture-package.js";

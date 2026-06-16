@@ -3,10 +3,13 @@ import test from "node:test";
 import { createEmptyDiagnostics } from "../../../packages/capture-schema/dist/index.js";
 import { captureElementTree } from "../dist/capture-core.js";
 import {
+  ADD_ELEMENT_SELECTION_MESSAGE,
   CAPTURE_ACTIVE_TAB_MESSAGE,
   CAPTURE_STATUS_MESSAGE,
+  CLEAR_ELEMENT_SELECTIONS_MESSAGE,
   EXPORT_CONFIRMED_MESSAGE,
   GET_PENDING_CAPTURE_MESSAGE,
+  REMOVE_ELEMENT_SELECTION_MESSAGE,
   RUNTIME_ERROR_CATEGORIES,
   createChromeCaptureRuntime,
   handleCaptureActiveTab,
@@ -285,10 +288,13 @@ test("confirmed export maps package generation and download failures", async () 
 });
 
 test("runtime message constants remain stable", () => {
+  assert.equal(ADD_ELEMENT_SELECTION_MESSAGE, "FIGCAPTURE_ADD_ELEMENT_SELECTION");
   assert.equal(CAPTURE_ACTIVE_TAB_MESSAGE, "FIGCAPTURE_CAPTURE_ACTIVE_TAB");
   assert.equal(CAPTURE_STATUS_MESSAGE, "FIGCAPTURE_CAPTURE_STATUS");
+  assert.equal(CLEAR_ELEMENT_SELECTIONS_MESSAGE, "FIGCAPTURE_CLEAR_ELEMENT_SELECTIONS");
   assert.equal(EXPORT_CONFIRMED_MESSAGE, "FIGCAPTURE_EXPORT_CONFIRMED");
   assert.equal(GET_PENDING_CAPTURE_MESSAGE, "FIGCAPTURE_GET_PENDING_CAPTURE");
+  assert.equal(REMOVE_ELEMENT_SELECTION_MESSAGE, "FIGCAPTURE_REMOVE_ELEMENT_SELECTION");
 });
 
 test("content runtime page metrics, scroll, and pinned hiding respond with expected shapes", async () => {
@@ -999,12 +1005,54 @@ test("viewport capture mode keeps existing behavior without full-page messages",
   assert.equal(calls.length, 0);
 });
 
-test("element capture selects one DOM node and captures the matching clipped screenshot", async () => {
+test("element capture starts a multi-select session on the page", async () => {
+  const calls = [];
+  let pending = "previous";
+  const runtime = createChromeCaptureRuntime({
+    chromeApi: {
+      tabs: {
+        async query() {
+          return [{ id: 42, url: "https://app.example.com/cards", title: "Cards" }];
+        }
+      }
+    },
+    contentRequest: async (_api, _tabId, message) => {
+      calls.push(message);
+      assert.equal(message.type, "FIGCAPTURE_SELECT_ELEMENT");
+      return { status: "success", selecting: true };
+    },
+    getPending: () => pending,
+    setPending: (value) => {
+      pending = value;
+    }
+  });
+
+  const response = await runtime.captureActiveTab({
+    captureMode: "element",
+    breakpointWidths: [1440, 375]
+  });
+
+  assert.equal(response.status, "selecting");
+  assert.deepEqual(calls.map((call) => call.type), ["FIGCAPTURE_SELECT_ELEMENT"]);
+  assert.equal(pending.multiCapture, true);
+  assert.equal(pending.elementSelection, true);
+  assert.deepEqual(pending.breakpoints, []);
+});
+
+test("adding an element selection captures DOM, clipped screenshot, and appends a thumbnail item", async () => {
   const calls = [];
   const shots = [];
   let visibleScreenshots = 0;
+  let pending = {
+    tab: { id: 42, url: "https://app.example.com/cards", title: "Cards" },
+    multiCapture: true,
+    elementSelection: true,
+    breakpoints: [],
+    preview: null
+  };
   const selection = {
     id: "selection-1",
+    selector: "article.card",
     rect: { x: 100, y: 200, width: 320, height: 180 },
     documentRect: { x: 100, y: 600, width: 320, height: 180 },
     viewport: { width: 1440, height: 900, devicePixelRatio: 2, scrollX: 0, scrollY: 400 }
@@ -1037,16 +1085,10 @@ test("element capture selects one DOM node and captures the matching clipped scr
     },
     contentRequest: async (_api, _tabId, message) => {
       calls.push(message);
-      if (message.type === "FIGCAPTURE_SELECT_ELEMENT") {
-        return { status: "success", selection };
-      }
       if (message.type === "FIGCAPTURE_COLLECT_DOM") {
         assert.equal(message.mode, "element");
         assert.equal(message.selection.id, "selection-1");
         return { status: "success", capture };
-      }
-      if (message.type === "FIGCAPTURE_CAPTURE_STATUS") {
-        return { status: "success", shown: true };
       }
       throw new Error(`Unexpected message ${message.type}`);
     },
@@ -1063,39 +1105,41 @@ test("element capture selects one DOM node and captures the matching clipped scr
       async detach() {}
     }),
     packageBuilder: fakePackageBuilder,
-    getPending: () => null,
-    setPending: () => {}
+    getPending: () => pending,
+    setPending: (value) => {
+      pending = value;
+    }
   });
 
-  const response = await runtime.captureActiveTab({
-    captureMode: "element",
-    breakpointWidths: [1440, 375]
-  });
+  const response = await runtime.addElementSelection(
+    { id: 42, url: capture.sourceUrl, title: capture.title },
+    selection
+  );
 
-  assert.deepEqual(calls.map((call) => call.type), [
-    "FIGCAPTURE_SELECT_ELEMENT",
-    "FIGCAPTURE_COLLECT_DOM",
-    "FIGCAPTURE_CAPTURE_STATUS"
-  ]);
-  assert.deepEqual(calls.at(-1), {
-    type: "FIGCAPTURE_CAPTURE_STATUS",
-    state: "ready",
-    title: "Element capture ready",
-    message: "Download now, or open the extension popup to preview it."
-  });
+  assert.deepEqual(calls.map((call) => call.type), ["FIGCAPTURE_COLLECT_DOM"]);
   assert.deepEqual(shots, [{
     clip: { x: 100, y: 600, width: 320, height: 180, scale: 1 },
     captureBeyondViewport: true
   }]);
   assert.equal(visibleScreenshots, 0);
   assert.equal(response.status, "ready");
-  assert.equal(response.preview.captureMode, "element");
-  assert.deepEqual(response.preview.viewport, {
+  assert.equal(response.count, 1);
+  assert.equal(response.item.id, "selection-1");
+  assert.equal(response.item.label, "Element 1");
+  assert.equal(response.item.selector, "article.card");
+  assert.equal(response.item.screenshotDataUrl, "data:image/png;base64,element-cdp");
+  assert.equal(pending.multiCapture, true);
+  assert.equal(pending.elementSelection, true);
+  assert.equal(pending.breakpoints.length, 1);
+  assert.equal(pending.breakpoints[0].id, "selection-1");
+  assert.equal(pending.breakpoints[0].label, "Element 1");
+  assert.equal(pending.preview.elementSelection, true);
+  assert.equal(pending.preview.captureMode, "element");
+  assert.deepEqual(pending.preview.viewport, {
     width: 320,
     height: 180,
     devicePixelRatio: 2,
     scrollX: 0,
     scrollY: 400
   });
-  assert.equal(response.preview.screenshotDataUrl, "data:image/png;base64,element-cdp");
 });

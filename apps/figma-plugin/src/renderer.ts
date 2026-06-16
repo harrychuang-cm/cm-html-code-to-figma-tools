@@ -21,8 +21,9 @@ export function createFrameModels(packageData, options = {}) {
   const height = size.height;
   const originX = options.originX ?? 0;
   const title = packageData.capture.title || titleFromUrl(packageData.manifest.sourceUrl);
+  const roles = frameRolesForPackage(packageData, options);
 
-  return FRAME_ROLES.map((role, index) => ({
+  return roles.map((role, index) => ({
     role,
     name: `${title} / ${width}x${height} / ${role}`,
     width,
@@ -30,6 +31,12 @@ export function createFrameModels(packageData, options = {}) {
     x: originX + index * (width + FRAME_GAP),
     y: 0
   }));
+}
+
+export function frameRolesForPackage(packageData = {}, options = {}) {
+  return shouldImportSourceScreenshot(packageData, options)
+    ? FRAME_ROLES
+    : ["Editable Accurate"];
 }
 
 export function captureFrameSize(manifest = {}) {
@@ -42,14 +49,15 @@ export function captureFrameSize(manifest = {}) {
 export function renderThreeFrames(adapter, packageData, options = {}) {
   const models = createFrameModels(packageData, options);
   const frames = models.map((model) => adapter.createFrame(model));
-  const sourceFrame = frames[0];
-  const screenshotLayers = createSourceScreenshotLayerModels(packageData)
+  const sourceFrame = frameForRole(models, frames, "Source Screenshot");
+  const editableFrame = frameForRole(models, frames, "Editable Accurate");
+  const screenshotLayers = createSourceScreenshotLayerModels(packageData, options)
     .map((model) => adapter.createImageLayer(model));
 
-  for (const screenshotLayer of screenshotLayers) {
+  for (const screenshotLayer of sourceFrame ? screenshotLayers : []) {
     adapter.appendChild(sourceFrame, screenshotLayer);
   }
-  const editableResult = renderEditableAccurate(adapter, frames[1], packageData);
+  const editableResult = renderEditableAccurate(adapter, editableFrame, packageData);
 
   return {
     frames,
@@ -64,16 +72,17 @@ export function renderThreeFrames(adapter, packageData, options = {}) {
 export async function renderThreeFramesAsync(adapter, packageData, options = {}) {
   const models = createFrameModels(packageData, options);
   const frames = await Promise.all(models.map((model) => maybeAsync(adapter.createFrame(model))));
-  const sourceFrame = frames[0];
+  const sourceFrame = frameForRole(models, frames, "Source Screenshot");
+  const editableFrame = frameForRole(models, frames, "Editable Accurate");
   const screenshotLayers = [];
-  for (const model of createSourceScreenshotLayerModels(packageData)) {
+  for (const model of createSourceScreenshotLayerModels(packageData, options)) {
     screenshotLayers.push(await maybeAsync(adapter.createImageLayer(model)));
   }
 
-  for (const screenshotLayer of screenshotLayers) {
+  for (const screenshotLayer of sourceFrame ? screenshotLayers : []) {
     adapter.appendChild(sourceFrame, screenshotLayer);
   }
-  const editableResult = await renderEditableAccurateAsync(adapter, frames[1], packageData);
+  const editableResult = await renderEditableAccurateAsync(adapter, editableFrame, packageData);
 
   return {
     frames,
@@ -86,7 +95,19 @@ export async function renderThreeFramesAsync(adapter, packageData, options = {})
   };
 }
 
-function createSourceScreenshotLayerModels(packageData) {
+function frameForRole(models, frames, role) {
+  const index = models.findIndex((model) => model.role === role);
+  return index >= 0 ? frames[index] : undefined;
+}
+
+function shouldImportSourceScreenshot(packageData = {}, options = {}) {
+  return options.importScreenshot !== false && packageData.manifest?.includeScreenshot !== false;
+}
+
+function createSourceScreenshotLayerModels(packageData, options = {}) {
+  if (!shouldImportSourceScreenshot(packageData, options)) {
+    return [];
+  }
   const tiled = createSourceScreenshotTileLayerModels(packageData);
   if (tiled.length > 0) {
     return tiled;

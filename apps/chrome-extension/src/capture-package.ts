@@ -128,7 +128,9 @@ export async function buildMultiCaptureExportPackage(breakpoints, options = {}) 
 
   const bytes = packMultiCaptureFigcapture({ captures });
   const title = captures[0].packageData.capture.title || "capture";
-  const widthsLabel = captures.map((entry) => entry.width).join("-");
+  const widthsLabel = captures.every((entry) => entry.packageData.capture.captureMode === "element")
+    ? "elements"
+    : captures.map((entry) => entry.width).join("-");
 
   return {
     filename: `${safeName(title)}-${widthsLabel}.figcapture`,

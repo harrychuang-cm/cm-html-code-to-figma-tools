@@ -57,6 +57,11 @@ export function connectPopup(documentRef = globalThis.document, chromeApi = glob
         renderRuntimeError(documentRef, response.error);
         return;
       }
+      if (response?.status === "selecting") {
+        setCaptureProgressVisible(documentRef, false);
+        setCaptureState(documentRef, "working", "Select elements on the page");
+        return;
+      }
       setCaptureProgressVisible(documentRef, false);
       setCaptureState(documentRef, "success", `Captured ${response.tab.title || response.tab.url}`);
       if (response.preview) {

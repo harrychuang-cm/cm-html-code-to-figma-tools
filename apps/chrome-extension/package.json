@@ -1,6 +1,6 @@
 {
   "name": "@figma-capture/chrome-extension",
-  "version": "0.1.87",
+  "version": "0.1.95",
   "type": "module",
   "main": "dist/background.js",
   "scripts": {

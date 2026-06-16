@@ -25,7 +25,8 @@ export function createImportPackageMessage(filename, bytes, options = {}) {
     type: IMPORT_PACKAGE,
     filename,
     bytes: toUint8Array(bytes),
-    matchVariables: options.matchVariables !== false
+    matchVariables: options.matchVariables !== false,
+    importScreenshot: options.importScreenshot !== false
   };
 }
 
@@ -41,7 +42,8 @@ export function createImportPackageTransferMessages(filename, bytes, options = {
     totalBytes: packageBytes.byteLength,
     totalChunks,
     chunkSize,
-    matchVariables: options.matchVariables !== false
+    matchVariables: options.matchVariables !== false,
+    importScreenshot: options.importScreenshot !== false
   }];
 
   for (let index = 0; index < totalChunks; index += 1) {
@@ -215,7 +217,8 @@ export function createImportPackageTransferReceiver() {
       if (message?.type === IMPORT_PACKAGE_TRANSFER_END) {
         assertActiveTransfer(transfer, message);
         const completed = createImportPackageMessage(transfer.filename, assembleTransferBytes(transfer), {
-          matchVariables: transfer.matchVariables
+          matchVariables: transfer.matchVariables,
+          importScreenshot: transfer.importScreenshot
         });
         transfer = null;
         return {
@@ -258,6 +261,7 @@ function createTransferState(message) {
     totalBytes,
     totalChunks,
     matchVariables: message.matchVariables !== false,
+    importScreenshot: message.importScreenshot !== false,
     chunks: new Array(totalChunks),
     received: new Array(totalChunks).fill(false),
     receivedChunks: 0,

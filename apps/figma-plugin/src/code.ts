@@ -9,7 +9,7 @@ import {
   isImportPackageTransferMessage
 } from "./message-bridge.ts";
 import { createFigmaApiAdapter } from "./figma-adapter.ts";
-import { renderThreeFramesAsync, captureFrameSize, FRAME_ROLES, FRAME_GAP } from "./renderer.ts";
+import { renderThreeFramesAsync, captureFrameSize, FRAME_GAP } from "./renderer.ts";
 import { createImportReport } from "./report.ts";
 
 export function describePluginRuntime() {
@@ -48,7 +48,10 @@ export async function importPackageBytes(bytes, options = {}) {
       viewport: fallbackViewport,
       fallbackFont: options.fallbackFont
     });
-    const renderResult = await renderThreeFramesAsync(adapter, packageData, { originX });
+    const renderResult = await renderThreeFramesAsync(adapter, packageData, {
+      originX,
+      importScreenshot: options.importScreenshot !== false
+    });
     rendered.push({
       width: entry.width,
       label: entry.label,
@@ -57,7 +60,7 @@ export async function importPackageBytes(bytes, options = {}) {
       renderResult,
       report: createImportReport(packageData, renderResult)
     });
-    originX += FRAME_ROLES.length * (captureFrameSize(packageData.manifest).width + FRAME_GAP);
+    originX += renderResult.frames.length * (captureFrameSize(packageData.manifest).width + FRAME_GAP);
   }
 
   const primary = rendered[0];
@@ -71,6 +74,9 @@ export async function importPackageBytes(bytes, options = {}) {
 }
 
 function sortCapturesByWidthDescending(captures) {
+  if (captures.every((entry) => entry.packageData?.capture?.captureMode === "element")) {
+    return [...captures];
+  }
   return [...captures].sort((a, b) => b.width - a.width);
 }
 
@@ -137,7 +143,8 @@ export function registerFigmaPluginRuntime(figmaApi = globalThis.figma, options 
 
       const result = await importPackageBytes(importMessage.bytes, {
         figmaApi,
-        fallbackFont: options.fallbackFont
+        fallbackFont: options.fallbackFont,
+        importScreenshot: importMessage.importScreenshot !== false
       });
       if (result.status === "error") {
         figmaApi.ui.postMessage(createImportErrorMessage(result.error));

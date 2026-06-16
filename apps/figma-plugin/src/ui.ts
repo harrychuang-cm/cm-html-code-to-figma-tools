@@ -29,8 +29,10 @@ export function connectFigmaPluginUi(
     showProgress(documentRef, { phase: "reading", message: "Reading file", indeterminate: true });
     try {
       const matchVariables = readMatchVariables(documentRef);
+      const importScreenshot = readImportScreenshot(documentRef);
       await postImportPackageFile(parentWindow, file, {
         matchVariables,
+        importScreenshot,
         onProgress(progress) {
           renderProgress(documentRef, {
             phase: "transferring",
@@ -209,6 +211,11 @@ function setStatusState(documentRef, state, message) {
 
 function readMatchVariables(documentRef) {
   const toggle = documentRef?.getElementById?.("match-variables");
+  return toggle ? toggle.checked !== false : true;
+}
+
+function readImportScreenshot(documentRef) {
+  const toggle = documentRef?.getElementById?.("import-screenshot");
   return toggle ? toggle.checked !== false : true;
 }
 

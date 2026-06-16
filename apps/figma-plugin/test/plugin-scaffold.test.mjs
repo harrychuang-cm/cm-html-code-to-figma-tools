@@ -219,6 +219,21 @@ test("classic Figma runtime imports chunked package transfers", async () => {
   assert(posted.some((message) => message.type === "IMPORT_PROGRESS" && message.phase === "receiving"));
   assert.equal(resultMessage(posted).type, "IMPORT_SUCCESS");
   assert.equal(resultMessage(posted).report.createdFrameCount, 2);
+
+  const beforeNoScreenshotImport = posted.length;
+  const noScreenshotMessages = createImportPackageTransferMessages(
+    "dashboard.figcapture",
+    packFigcapture(createValidPackage()),
+    { chunkSize: 19, transferId: "classic-transfer-no-source", importScreenshot: false }
+  );
+  for (const message of noScreenshotMessages) {
+    await figma.ui.onmessage(message);
+  }
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const noScreenshotResult = resultMessage(posted.slice(beforeNoScreenshotImport));
+  assert.equal(noScreenshotResult.type, "IMPORT_SUCCESS");
+  assert.equal(noScreenshotResult.report.createdFrameCount, 1);
 });
 
 test("classic Figma runtime omits transparent viewport-clipped table spacers", async () => {

@@ -32,6 +32,7 @@ export interface CaptureManifest {
   scrollX: number;
   scrollY: number;
   deviceLabel?: string;
+  includeScreenshot?: boolean;
   captureMode?: "viewport" | "full-page" | "element";
   documentWidth?: number;
   documentHeight?: number;

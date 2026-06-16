@@ -1,20 +1,32 @@
 import {
+  ADD_ELEMENT_SELECTION_MESSAGE,
   CAPTURE_ACTIVE_TAB_MESSAGE,
+  CLEAR_ELEMENT_SELECTIONS_MESSAGE,
   EXPORT_CONFIRMED_MESSAGE,
   GET_PENDING_CAPTURE_MESSAGE,
+  REMOVE_ELEMENT_SELECTION_MESSAGE,
+  handleAddElementSelection,
+  handleClearElementSelections,
   handleCaptureActiveTab,
   handleConfirmExport,
   handleGetPendingCapture,
+  handleRemoveElementSelection,
   resolveActiveTab
 } from "./runtime.ts";
 
 export {
+  ADD_ELEMENT_SELECTION_MESSAGE,
   CAPTURE_ACTIVE_TAB_MESSAGE,
+  CLEAR_ELEMENT_SELECTIONS_MESSAGE,
   EXPORT_CONFIRMED_MESSAGE,
   GET_PENDING_CAPTURE_MESSAGE,
+  REMOVE_ELEMENT_SELECTION_MESSAGE,
+  handleAddElementSelection,
+  handleClearElementSelections,
   handleCaptureActiveTab,
   handleConfirmExport,
   handleGetPendingCapture,
+  handleRemoveElementSelection,
   resolveActiveTab
 };
 
@@ -45,7 +57,30 @@ export function assertLocalFirstManifest(manifest) {
 }
 
 export function registerBackgroundRuntime(chromeApi = globalThis.chrome) {
-  chromeApi?.runtime?.onMessage?.addListener?.((message, _sender, sendResponse) => {
+  chromeApi?.runtime?.onMessage?.addListener?.((message, sender, sendResponse) => {
+    if (message?.type === ADD_ELEMENT_SELECTION_MESSAGE) {
+      handleAddElementSelection(chromeApi, {
+        tab: sender?.tab,
+        selection: message?.selection
+      })
+        .then((response) => sendResponse(response));
+      return true;
+    }
+
+    if (message?.type === REMOVE_ELEMENT_SELECTION_MESSAGE) {
+      handleRemoveElementSelection(chromeApi, {
+        itemId: message?.itemId
+      })
+        .then((response) => sendResponse(response));
+      return true;
+    }
+
+    if (message?.type === CLEAR_ELEMENT_SELECTIONS_MESSAGE) {
+      handleClearElementSelections(chromeApi)
+        .then((response) => sendResponse(response));
+      return true;
+    }
+
     if (message?.type === EXPORT_CONFIRMED_MESSAGE) {
       handleConfirmExport(chromeApi)
         .then((response) => sendResponse(response));

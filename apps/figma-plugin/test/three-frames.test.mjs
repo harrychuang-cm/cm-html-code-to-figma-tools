@@ -33,6 +33,39 @@ test("mocked Figma API creates source and editable frames with locked source scr
   assert.equal(result.autoLayoutFrameEnabled, false);
 });
 
+test("importing without source screenshot omits the source frame", () => {
+  const adapter = createMemoryFigmaAdapter();
+  const packageData = createValidPackage();
+  const models = createFrameModels(packageData, { importScreenshot: false });
+  const result = renderThreeFrames(adapter, packageData, { importScreenshot: false });
+
+  assert.deepEqual(models.map((model) => model.role), ["Editable Accurate"]);
+  assert.equal(result.frames.length, 1);
+  assert.equal(result.frames[0].role, "Editable Accurate");
+  assert.equal(result.sourceScreenshotLayer, undefined);
+  assert.deepEqual(result.sourceScreenshotLayers, []);
+});
+
+test("legacy packages without exported screenshot omit the source frame", () => {
+  const adapter = createMemoryFigmaAdapter();
+  const base = createValidPackage();
+  const packageData = {
+    ...base,
+    manifest: {
+      ...base.manifest,
+      includeScreenshot: false
+    }
+  };
+  const models = createFrameModels(packageData);
+  const result = renderThreeFrames(adapter, packageData);
+
+  assert.deepEqual(models.map((model) => model.role), ["Editable Accurate"]);
+  assert.equal(result.frames.length, 1);
+  assert.equal(result.frames[0].role, "Editable Accurate");
+  assert.equal(result.sourceScreenshotLayer, undefined);
+  assert.deepEqual(result.sourceScreenshotLayers, []);
+});
+
 test("full-page manifests create document-sized frames and screenshot layer", () => {
   const base = createValidPackage();
   const packageData = {

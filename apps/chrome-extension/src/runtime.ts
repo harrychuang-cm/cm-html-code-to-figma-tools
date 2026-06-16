@@ -1,4 +1,4 @@
-import { summarizeDiagnostics } from "@figma-capture/capture-schema";
+import { createEmptyDiagnostics, summarizeDiagnostics } from "@figma-capture/capture-schema";
 import {
   buildConfirmedExportPackage,
   buildMultiCaptureExportPackage,
@@ -23,6 +23,9 @@ export const SCROLL_TO_MESSAGE = "FIGCAPTURE_SCROLL_TO";
 export const SET_PINNED_HIDDEN_MESSAGE = "FIGCAPTURE_SET_PINNED_HIDDEN";
 export const SELECT_ELEMENT_MESSAGE = "FIGCAPTURE_SELECT_ELEMENT";
 export const CAPTURE_STATUS_MESSAGE = "FIGCAPTURE_CAPTURE_STATUS";
+export const ADD_ELEMENT_SELECTION_MESSAGE = "FIGCAPTURE_ADD_ELEMENT_SELECTION";
+export const REMOVE_ELEMENT_SELECTION_MESSAGE = "FIGCAPTURE_REMOVE_ELEMENT_SELECTION";
+export const CLEAR_ELEMENT_SELECTIONS_MESSAGE = "FIGCAPTURE_CLEAR_ELEMENT_SELECTIONS";
 
 export const MAX_FULL_PAGE_HEIGHT = 20000;
 export const MAX_FULL_PAGE_SEGMENTS = 25;
@@ -322,6 +325,131 @@ export function createChromeCaptureRuntime(options = {}) {
     return captureViewportOnce(tab, screenshot);
   }
 
+  async function startElementSelection(tab) {
+    setPending({
+      tab,
+      multiCapture: true,
+      elementSelection: true,
+      breakpoints: [],
+      preview: null
+    });
+    try {
+      await contentRequest(chromeApi, tab.id, { type: SELECT_ELEMENT_MESSAGE });
+    } catch (error) {
+      setPending(null);
+      throw error;
+    }
+    return {
+      status: "selecting",
+      localFirst: true,
+      tab
+    };
+  }
+
+  function elementSelectionBreakpoints() {
+    const pending = getPending();
+    if (!pending?.elementSelection || !Array.isArray(pending.breakpoints)) {
+      return [];
+    }
+    return pending.breakpoints;
+  }
+
+  function relabelElementBreakpoints(breakpoints) {
+    return breakpoints.map((entry, index) => ({
+      ...entry,
+      width: elementSelectionSortWidth(index),
+      label: `Element ${index + 1}`
+    }));
+  }
+
+  function elementSelectionSortWidth(index) {
+    return 1000000 - index;
+  }
+
+  async function addElementSelection(tab, rawSelection) {
+    const activeTab = tab?.id ? tab : await resolveActiveTab(chromeApi);
+    const selection = normalizeElementSelection(rawSelection);
+    const single = await captureElementSelection(activeTab, selection, visibleScreenshot);
+    const thumbnailDataUrl = await createSquareThumbnailDataUrl(single.screenshotDataUrl)
+      .catch(() => single.screenshotDataUrl);
+    const breakpoints = relabelElementBreakpoints([
+      ...elementSelectionBreakpoints(),
+      {
+        id: selection.id,
+        selection,
+        capture: single.capture,
+        screenshotDataUrl: single.screenshotDataUrl,
+        thumbnailDataUrl,
+        truncationWarning: null
+      }
+    ]);
+    const preview = createElementSelectionPreview(activeTab, breakpoints, previewScreenshotMaxBytes);
+
+    setPending({
+      tab: activeTab,
+      multiCapture: true,
+      elementSelection: true,
+      breakpoints,
+      preview
+    });
+
+    return {
+      status: "ready",
+      item: elementSelectionItem(breakpoints.at(-1), previewScreenshotMaxBytes),
+      count: breakpoints.length
+    };
+  }
+
+  async function captureElementSelection(tab, selection, screenshot) {
+    const domResponse = await contentRequest(chromeApi, tab.id, {
+      type: CAPTURE_DOM_MESSAGE,
+      mode: "element",
+      selection
+    });
+    if (!domResponse?.capture) {
+      throw runtimeError(
+        RUNTIME_ERROR_CATEGORIES.CAPTURE_SCRIPT_FAILED,
+        "Content runtime did not return selected element capture data"
+      );
+    }
+
+    const screenshotDataUrl = await captureElementScreenshot(tab, selection, screenshot);
+    return { capture: domResponse.capture, screenshotDataUrl };
+  }
+
+  function removeElementSelection(itemId) {
+    const pending = getPending();
+    if (!pending?.elementSelection || !Array.isArray(pending.breakpoints)) {
+      return { status: "ready", count: 0, items: [] };
+    }
+
+    const breakpoints = relabelElementBreakpoints(
+      pending.breakpoints.filter((entry) => entry.id !== itemId)
+    );
+    const preview = breakpoints.length > 0
+      ? createElementSelectionPreview(pending.tab, breakpoints, previewScreenshotMaxBytes)
+      : null;
+    setPending({
+      ...pending,
+      breakpoints,
+      preview
+    });
+
+    return {
+      status: "ready",
+      count: breakpoints.length,
+      items: breakpoints.map((entry) => elementSelectionItem(entry, previewScreenshotMaxBytes))
+    };
+  }
+
+  function clearElementSelections() {
+    const pending = getPending();
+    if (pending?.elementSelection) {
+      setPending(null);
+    }
+    return { status: "cleared" };
+  }
+
   async function captureBreakpoints(tab, widths, captureMode) {
     const session = emulationFactory(chromeApi, tab.id);
     const screenshot = screenshotFor(session);
@@ -425,28 +553,24 @@ export function createChromeCaptureRuntime(options = {}) {
         return captureBreakpoints(tab, widths, captureMode);
       }
 
+      if (captureMode === "element") {
+        return startElementSelection(tab);
+      }
+
       try {
         const single = await captureOnce(tab, captureMode);
         const result = await buildPreviewResult(tab, single.capture, single.screenshotDataUrl, single.truncationWarning);
-        if (captureMode === "element") {
-          await notifyCaptureStatus(tab, {
-            state: "ready",
-            title: "Element capture ready",
-            message: "Download now, or open the extension popup to preview it."
-          });
-        }
         return result;
       } catch (error) {
-        if (captureMode === "element") {
-          await notifyCaptureStatus(tab, {
-            state: "error",
-            title: "Element capture failed",
-            message: error?.message ?? "Could not capture the selected element."
-          });
-        }
         throw error;
       }
     },
+
+    addElementSelection,
+
+    removeElementSelection,
+
+    clearElementSelections,
 
     async confirmExport() {
       const pending = getPending();
@@ -762,6 +886,41 @@ export async function handleCaptureActiveTab(chromeApi = globalThis.chrome, opti
   }
 }
 
+export async function handleAddElementSelection(chromeApi = globalThis.chrome, options = {}) {
+  try {
+    return await createChromeCaptureRuntime({ chromeApi, ...options })
+      .addElementSelection(options.tab, options.selection);
+  } catch (error) {
+    return {
+      status: "error",
+      error: toRuntimeErrorPayload(error, RUNTIME_ERROR_CATEGORIES.CAPTURE_SCRIPT_FAILED)
+    };
+  }
+}
+
+export async function handleRemoveElementSelection(chromeApi = globalThis.chrome, options = {}) {
+  try {
+    return createChromeCaptureRuntime({ chromeApi, ...options })
+      .removeElementSelection(options.itemId);
+  } catch (error) {
+    return {
+      status: "error",
+      error: toRuntimeErrorPayload(error, RUNTIME_ERROR_CATEGORIES.CAPTURE_SCRIPT_FAILED)
+    };
+  }
+}
+
+export async function handleClearElementSelections(chromeApi = globalThis.chrome, options = {}) {
+  try {
+    return createChromeCaptureRuntime({ chromeApi, ...options }).clearElementSelections();
+  } catch (error) {
+    return {
+      status: "error",
+      error: toRuntimeErrorPayload(error, RUNTIME_ERROR_CATEGORIES.CAPTURE_SCRIPT_FAILED)
+    };
+  }
+}
+
 export async function handleConfirmExport(chromeApi = globalThis.chrome, options = {}) {
   try {
     return await createChromeCaptureRuntime({ chromeApi, ...options }).confirmExport();
@@ -817,6 +976,84 @@ export function createPreviewPayload(capture, screenshotDataUrl, diagnostics, ta
     payload.screenshotUrl = previewScreenshot;
   }
   return payload;
+}
+
+function createElementSelectionPreview(tab, breakpoints, previewScreenshotMaxBytes) {
+  const first = breakpoints[0];
+  const diagnostics = createEmptyDiagnostics();
+  return {
+    ...createPreviewPayload(first.capture, first.screenshotDataUrl, diagnostics, tab, {
+      previewScreenshotMaxBytes
+    }),
+    multiCapture: true,
+    elementSelection: true,
+    breakpoints: breakpoints.map((entry) => ({
+      id: entry.id,
+      width: entry.width,
+      label: entry.label,
+      viewport: {
+        width: entry.capture.viewport.width,
+        height: entry.capture.viewport.height
+      },
+      captureMode: entry.capture.captureMode ?? "element",
+      diagnostics,
+      diagnosticsSummary: summarizeDiagnostics(diagnostics)
+    }))
+  };
+}
+
+function elementSelectionItem(entry, previewScreenshotMaxBytes) {
+  const screenshotDataUrl = boundedPreviewScreenshotDataUrl(
+    entry.thumbnailDataUrl ?? entry.screenshotDataUrl,
+    { previewScreenshotMaxBytes }
+  );
+  return {
+    id: entry.id,
+    label: entry.label,
+    selector: entry.selection?.selector ?? entry.capture?.root?.tagName ?? "element",
+    screenshotDataUrl: screenshotDataUrl ?? undefined
+  };
+}
+
+export async function createSquareThumbnailDataUrl(screenshotDataUrl, size = 72) {
+  if (
+    typeof screenshotDataUrl !== "string" ||
+    !screenshotDataUrl.startsWith("data:image/") ||
+    typeof globalThis.createImageBitmap !== "function" ||
+    typeof globalThis.OffscreenCanvas !== "function" ||
+    typeof globalThis.Blob !== "function"
+  ) {
+    return screenshotDataUrl;
+  }
+
+  const bitmap = await decodeScreenshotDataUrlBitmap(screenshotDataUrl);
+  if (!bitmap?.width || !bitmap?.height) {
+    return screenshotDataUrl;
+  }
+
+  const canvasSize = Math.max(1, Number(size) || 72);
+  const canvas = new globalThis.OffscreenCanvas(canvasSize, canvasSize);
+  const context = canvas.getContext("2d");
+  if (!context) {
+    return screenshotDataUrl;
+  }
+
+  const sourceSize = Math.min(bitmap.width, bitmap.height);
+  const sourceX = Math.max(0, Math.floor((bitmap.width - sourceSize) / 2));
+  const sourceY = Math.max(0, Math.floor((bitmap.height - sourceSize) / 2));
+  context.drawImage(
+    bitmap,
+    sourceX,
+    sourceY,
+    sourceSize,
+    sourceSize,
+    0,
+    0,
+    canvasSize,
+    canvasSize
+  );
+  const blob = await canvas.convertToBlob({ type: "image/png" });
+  return blobToDataUrl(blob);
 }
 
 function boundedPreviewScreenshotDataUrl(screenshotDataUrl, options = {}) {

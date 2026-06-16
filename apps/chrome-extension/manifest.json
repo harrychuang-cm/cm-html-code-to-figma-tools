@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Production UI to Figma Capture",
-  "version": "0.1.87",
+  "version": "0.1.95",
   "description": "Capture viewports, full pages, or selected elements into a local .figcapture package.",
   "permissions": [
     "activeTab",
