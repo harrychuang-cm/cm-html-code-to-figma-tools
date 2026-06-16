@@ -273,21 +273,37 @@
   }
 
   function bindCornerRadius(node, value) {
+    bindCornerRadii(node, {
+      topLeft: value,
+      topRight: value,
+      bottomRight: value,
+      bottomLeft: value
+    });
+  }
+
+  function bindCornerRadii(node, radii) {
     var fields = ["topLeftRadius", "topRightRadius", "bottomLeftRadius", "bottomRightRadius"];
-    var variable;
     var bound = false;
     var index;
+    var field;
+    var value;
+    var variable;
     if (!VARIABLE_INDEX || !VARIABLE_INDEX.hasFloats || !node || typeof node.setBoundVariable !== "function") {
       return;
     }
-    if (typeof value !== "number" || !isFinite(value) || value <= 0) {
-      return;
-    }
-    variable = lookupFloatVariable(value);
-    if (!variable) {
+    if (!radii) {
       return;
     }
     for (index = 0; index < fields.length; index += 1) {
+      field = fields[index];
+      value = Number(radii[field.replace("Radius", "")]);
+      if (!(value > 0) || !isFinite(value)) {
+        continue;
+      }
+      variable = lookupFloatVariable(value);
+      if (!variable) {
+        continue;
+      }
       try {
         node.setBoundVariable(fields[index], variable);
         bound = true;
@@ -1752,8 +1768,24 @@
     node.cornerRadius = Number(styles && styles.cornerRadius) > 0
       ? Number(styles.cornerRadius)
       : cornerRadiusFromStyles(styles);
-    bindCornerRadius(node, node.cornerRadius);
+    applyCornerRadii(node, styles && styles.cornerRadii);
+    bindCornerRadii(node, styles && styles.cornerRadii || {
+      topLeft: node.cornerRadius,
+      topRight: node.cornerRadius,
+      bottomRight: node.cornerRadius,
+      bottomLeft: node.cornerRadius
+    });
     node.effects = shadowEffectsFromStyle(styles);
+  }
+
+  function applyCornerRadii(node, radii) {
+    if (!radii) {
+      return;
+    }
+    safeSetFigmaProperty(node, "topLeftRadius", Number(radii.topLeft) || 0);
+    safeSetFigmaProperty(node, "topRightRadius", Number(radii.topRight) || 0);
+    safeSetFigmaProperty(node, "bottomRightRadius", Number(radii.bottomRight) || 0);
+    safeSetFigmaProperty(node, "bottomLeftRadius", Number(radii.bottomLeft) || 0);
   }
 
   function shadowEffectsFromStyle(styles) {
@@ -2878,18 +2910,20 @@
           : null;
         var backingTextAutoResize = shouldUsePaddedBacking
           ? inferPaddedBackingTextAutoResize(node, backingContentRect)
-          : "HEIGHT";
+          : model.textAutoResize;
+        var shouldUseBackingAutoLayout = borderDecorations.length === 0 &&
+          (shouldUsePaddedBacking || backingTextAutoResize === "WIDTH_AND_HEIGHT");
         childModel = model;
         childModel.rect = shouldUsePaddedBacking
           ? backingContentRect
-          : { x: 0, y: 0, width: rect.width, height: rect.height };
+          : { x: 0, y: 0, width: childModel.rect.width, height: childModel.rect.height };
         childModel.textAutoResize = backingTextAutoResize;
         childModel.layoutSizingHorizontal = textLayoutSizingHorizontal(backingTextAutoResize);
         childModel.layoutSizingVertical = textLayoutSizingVertical(backingTextAutoResize);
         model = baseLayoutModel(node, "FRAME", rect, absoluteRect, [childModel].concat(borderDecorations), context);
         model.name = "Text Background / " + String(node.textContent || "").slice(0, 32);
-        model.autoLayout = shouldUsePaddedBacking && borderDecorations.length === 0
-          ? textBackingAutoLayout(backingPadding, backingTextAutoResize)
+        model.autoLayout = shouldUseBackingAutoLayout
+          ? textBackingAutoLayout(backingPadding || zeroPadding(), backingTextAutoResize)
           : null;
       }
       return model;
@@ -4477,10 +4511,24 @@
   }
 
   function inferTextAutoResize(node, rect) {
-    if (hasVisualBoxStyle(node.styles)) {
-      return "HEIGHT";
+    var styles = node.styles || {};
+    if (hasVisualBoxStyle(styles)) {
+      return shouldUseHugTextInVisualBacking(node, rect, styles)
+        ? "WIDTH_AND_HEIGHT"
+        : "HEIGHT";
     }
     return inferTextContentAutoResize(node, rect);
+  }
+
+  function shouldUseHugTextInVisualBacking(node, rect, styles) {
+    if (String(node.textContent || "").indexOf("\n") >= 0) {
+      return false;
+    }
+    if (isClippedSingleLineText(node, rect, styles) || isOverflowClippedTextBox(node, rect, styles)) {
+      return false;
+    }
+    return isCenteredSingleLineTextBox(node, styles, rect) &&
+      fitsEstimatedSingleLineText(node, rect, styles);
   }
 
   function inferTextContentAutoResize(node, rect) {
@@ -4733,7 +4781,7 @@
     return (
       isSynthesizedDirectTextNode(node) ||
       isInteractiveSingleLineTextElement(node) ||
-      isCenteredSingleLineTextBox(node, styles)
+      isCenteredSingleLineTextBox(node, styles, rect)
     ) &&
       fitsEstimatedSingleLineText(node, rect, styles);
   }
@@ -4757,14 +4805,18 @@
       role === "menuitem";
   }
 
-  function isCenteredSingleLineTextBox(node, styles) {
+  function isCenteredSingleLineTextBox(node, styles, rect) {
     var display = normalizeCssKeyword(styles.display);
     var textAlign = normalizeCssKeyword(styles.textAlign);
     var whiteSpace = normalizeCssKeyword(styles.whiteSpace);
-    return textAlign === "center" &&
+    var hasHeight = numberFromCss(styles.height) > 0 || Number(rect && rect.height) > 0;
+    var flexCentered = (display === "flex" || display === "inline-flex") &&
+      normalizeCssKeyword(styles.justifyContent) === "center" &&
+      normalizeCssKeyword(styles.alignItems) === "center";
+    var textCentered = textAlign === "center" &&
       (display === "inline-block" || display === "block" || display === "inline-flex") &&
-      numberFromCss(styles.height) > 0 &&
       whiteSpace !== "normal";
+    return hasHeight && (flexCentered || textCentered);
   }
 
   function fitsEstimatedSingleLineText(node, rect, styles) {
@@ -5217,6 +5269,7 @@
       strokes: stroke ? [stroke] : [],
       borderSides: borderSides,
       cornerRadius: cornerRadiusFromStyles(styles),
+      cornerRadii: cornerRadiiFromStyles(styles),
       effects: visibleShadow(styles.boxShadow) ? [{ type: "shadow", value: styles.boxShadow }] : [],
       objectFit: styles.objectFit || "",
       transform: styles.transform || "",
@@ -5240,7 +5293,8 @@
       return style;
     }
     return Object.assign({}, style, {
-      cornerRadius: children[0].style.cornerRadius
+      cornerRadius: children[0].style.cornerRadius,
+      cornerRadii: children[0].style.cornerRadii
     });
   }
 
@@ -5677,13 +5731,18 @@
   }
 
   function cornerRadiusFromStyles(styles) {
+    var radii = cornerRadiiFromStyles(styles);
+    return Math.max(radii.topLeft, radii.topRight, radii.bottomRight, radii.bottomLeft);
+  }
+
+  function cornerRadiiFromStyles(styles) {
     var safeStyles = styles || {};
-    return Math.max(
-      numberFromCss(safeStyles.borderTopLeftRadius),
-      numberFromCss(safeStyles.borderTopRightRadius),
-      numberFromCss(safeStyles.borderBottomRightRadius),
-      numberFromCss(safeStyles.borderBottomLeftRadius)
-    );
+    return {
+      topLeft: numberFromCss(safeStyles.borderTopLeftRadius),
+      topRight: numberFromCss(safeStyles.borderTopRightRadius),
+      bottomRight: numberFromCss(safeStyles.borderBottomRightRadius),
+      bottomLeft: numberFromCss(safeStyles.borderBottomLeftRadius)
+    };
   }
 
   function addVisibleBorderSide(sides, side, width, color, style) {

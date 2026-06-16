@@ -1632,6 +1632,8 @@ test("rounded video cards keep top-right ranking badges", () => {
         styles: {
           display: "flex",
           position: "absolute",
+          alignItems: "center",
+          justifyContent: "center",
           backgroundColor: "rgba(0, 0, 0, 0)",
           backgroundImage: "linear-gradient(223deg, rgb(0, 63, 255) 0%, rgb(255, 0, 68) 100%)",
           color: "rgb(255, 255, 255)",
@@ -1653,8 +1655,18 @@ test("rounded video cards keep top-right ranking badges", () => {
   assert(rank);
   assert.equal(rank.rect.x, 77);
   assert.equal(rank.rect.y, 0);
+  assert.deepEqual(rank.style.cornerRadii, {
+    topLeft: 0,
+    topRight: 8,
+    bottomRight: 0,
+    bottomLeft: 8
+  });
+  assert.equal(rank.autoLayout.primaryAxisAlignItems, "CENTER");
+  assert.equal(rank.autoLayout.counterAxisAlignItems, "CENTER");
   assert.equal(rank.children[0].type, "TEXT");
   assert.equal(rank.children[0].text, "1");
+  assert.equal(rank.children[0].layoutSizingHorizontal, "HUG");
+  assert.equal(rank.children[0].layoutSizingVertical, "HUG");
   assert.equal(rank.children[0].style.text.color, "rgb(255, 255, 255)");
   assert.deepEqual(rank.children[0].style.text.fills, []);
 });

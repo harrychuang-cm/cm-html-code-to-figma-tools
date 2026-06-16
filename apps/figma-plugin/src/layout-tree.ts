@@ -256,16 +256,23 @@ function createModel(node, context) {
         : null;
       const backingTextAutoResize = shouldUsePaddedBacking
         ? inferPaddedBackingTextAutoResize(node, backingContentRect)
-        : "HEIGHT";
+        : textModel.textAutoResize;
       const backingTextSizing = textLayoutSizingForAutoResize(backingTextAutoResize);
       const childRect = shouldUsePaddedBacking
         ? backingContentRect
-        : { x: 0, y: 0, width: rect.width, height: rect.height };
+        : {
+            x: 0,
+            y: 0,
+            width: textModel.rect.width,
+            height: textModel.rect.height
+          };
+      const shouldUseBackingAutoLayout = borderDecorations.length === 0 &&
+        (shouldUsePaddedBacking || backingTextAutoResize === "WIDTH_AND_HEIGHT");
       return baseModel(node, "FRAME", rect, absoluteRect, {
         name: `Text Background / ${node.textContent.slice(0, 32)}`,
         style: extractVisualStyle(node, context),
-        autoLayout: shouldUsePaddedBacking && borderDecorations.length === 0
-          ? textBackingAutoLayout(backingPadding, backingTextAutoResize)
+        autoLayout: shouldUseBackingAutoLayout
+          ? textBackingAutoLayout(backingPadding ?? zeroPadding(), backingTextAutoResize)
           : null,
         children: [{
           ...textModel,
@@ -1587,10 +1594,24 @@ function hasModelVisualStyle(style = {}) {
 }
 
 function inferTextAutoResize(node, rect) {
-  if (hasVisualBoxStyle(node.styles)) {
-    return "HEIGHT";
+  const styles = node.styles ?? {};
+  if (hasVisualBoxStyle(styles)) {
+    return shouldUseHugTextInVisualBacking(node, rect, styles)
+      ? "WIDTH_AND_HEIGHT"
+      : "HEIGHT";
   }
   return inferTextContentAutoResize(node, rect);
+}
+
+function shouldUseHugTextInVisualBacking(node, rect, styles) {
+  if (String(node.textContent ?? "").includes("\n")) {
+    return false;
+  }
+  if (isClippedSingleLineText(node, rect, styles) || isOverflowClippedTextBox(node, rect, styles)) {
+    return false;
+  }
+  return isCenteredSingleLineTextBox(node, styles, rect) &&
+    fitsEstimatedSingleLineText(node, rect, styles);
 }
 
 function inferTextContentAutoResize(node, rect) {
@@ -1810,7 +1831,7 @@ function shouldNormalizeTallSingleLineHugGeometry(node, rect, styles) {
   return (
     isSynthesizedDirectTextNode(node) ||
     isInteractiveSingleLineTextElement(node) ||
-    isCenteredSingleLineTextBox(node, styles)
+    isCenteredSingleLineTextBox(node, styles, rect)
   ) &&
     fitsEstimatedSingleLineText(node, rect, styles);
 }
@@ -1834,14 +1855,18 @@ function isInteractiveSingleLineTextElement(node) {
     role === "menuitem";
 }
 
-function isCenteredSingleLineTextBox(node, styles) {
+function isCenteredSingleLineTextBox(node, styles, rect = null) {
   const display = normalizeCssKeyword(styles.display);
   const textAlign = normalizeCssKeyword(styles.textAlign);
   const whiteSpace = normalizeCssKeyword(styles.whiteSpace);
-  return textAlign === "center" &&
+  const hasHeight = parseCssNumber(styles.height) > 0 || Number(rect?.height) > 0;
+  const flexCentered = (display === "flex" || display === "inline-flex") &&
+    normalizeCssKeyword(styles.justifyContent) === "center" &&
+    normalizeCssKeyword(styles.alignItems) === "center";
+  const textCentered = textAlign === "center" &&
     (display === "inline-block" || display === "block" || display === "inline-flex") &&
-    parseCssNumber(styles.height) > 0 &&
     whiteSpace !== "normal";
+  return hasHeight && (flexCentered || textCentered);
 }
 
 function fitsEstimatedSingleLineText(node, rect, styles) {
@@ -2206,6 +2231,7 @@ function extractVisualStyle(node, context = {}) {
       : cssStrokesFromStyles(styles),
     borderSides,
     cornerRadius: cornerRadiusFromStyles(styles),
+    cornerRadii: cornerRadiiFromStyles(styles),
     effects: visibleShadow(styles.boxShadow) ? [{ type: "shadow", value: styles.boxShadow }] : [],
     objectFit: styles.objectFit ?? "",
     transform: styles.transform ?? "",
@@ -2255,7 +2281,8 @@ function visualStyleWithSingleChildClip(node, children, style) {
   }
   return {
     ...style,
-    cornerRadius: children[0].style.cornerRadius
+    cornerRadius: children[0].style.cornerRadius,
+    cornerRadii: children[0].style.cornerRadii
   };
 }
 
@@ -2600,12 +2627,17 @@ function strokeFromBorderSides(sides) {
 }
 
 function cornerRadiusFromStyles(styles = {}) {
-  return Math.max(
-    parseCssNumber(styles.borderTopLeftRadius),
-    parseCssNumber(styles.borderTopRightRadius),
-    parseCssNumber(styles.borderBottomRightRadius),
-    parseCssNumber(styles.borderBottomLeftRadius)
-  );
+  const radii = cornerRadiiFromStyles(styles);
+  return Math.max(radii.topLeft, radii.topRight, radii.bottomRight, radii.bottomLeft);
+}
+
+function cornerRadiiFromStyles(styles = {}) {
+  return {
+    topLeft: parseCssNumber(styles.borderTopLeftRadius),
+    topRight: parseCssNumber(styles.borderTopRightRadius),
+    bottomRight: parseCssNumber(styles.borderBottomRightRadius),
+    bottomLeft: parseCssNumber(styles.borderBottomLeftRadius)
+  };
 }
 
 function legacyTopBorderStroke(styles = {}, sides = visibleBorderSides(styles)) {

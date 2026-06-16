@@ -1027,12 +1027,23 @@ function applyNonFillVisualStyle(node, style = {}) {
   if (style.cornerRadius > 0) {
     node.cornerRadius = style.cornerRadius;
   }
+  applyCornerRadii(node, style.cornerRadii);
 
   if (style.effects?.length > 0) {
     node.effects = style.effects
       .map((effect) => cssShadowToEffect(effect.value))
       .filter(Boolean);
   }
+}
+
+function applyCornerRadii(node, radii) {
+  if (!radii) {
+    return;
+  }
+  safeSetFigmaProperty(node, "topLeftRadius", Number(radii.topLeft) || 0);
+  safeSetFigmaProperty(node, "topRightRadius", Number(radii.topRight) || 0);
+  safeSetFigmaProperty(node, "bottomRightRadius", Number(radii.bottomRight) || 0);
+  safeSetFigmaProperty(node, "bottomLeftRadius", Number(radii.bottomLeft) || 0);
 }
 
 function cssShadowToEffect(value) {

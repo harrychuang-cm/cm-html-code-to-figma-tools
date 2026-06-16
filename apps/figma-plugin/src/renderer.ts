@@ -526,15 +526,17 @@ function numericZIndex(value) {
 
 function extractVisualStyle(node) {
   const styles = node.styles ?? {};
+  const cornerRadii = {
+    topLeft: parseCssNumber(styles.borderTopLeftRadius),
+    topRight: parseCssNumber(styles.borderTopRightRadius),
+    bottomRight: parseCssNumber(styles.borderBottomRightRadius),
+    bottomLeft: parseCssNumber(styles.borderBottomLeftRadius)
+  };
   return {
     fills: visibleColor(styles.backgroundColor) ? [styles.backgroundColor] : [],
     strokes: cssStrokesFromStyles(styles),
-    cornerRadius: Math.max(
-      parseCssNumber(styles.borderTopLeftRadius),
-      parseCssNumber(styles.borderTopRightRadius),
-      parseCssNumber(styles.borderBottomRightRadius),
-      parseCssNumber(styles.borderBottomLeftRadius)
-    ),
+    cornerRadius: Math.max(cornerRadii.topLeft, cornerRadii.topRight, cornerRadii.bottomRight, cornerRadii.bottomLeft),
+    cornerRadii,
     effects: visibleShadow(styles.boxShadow) ? [{ type: "shadow", value: styles.boxShadow }] : [],
     objectFit: styles.objectFit ?? "",
     transform: styles.transform ?? "",

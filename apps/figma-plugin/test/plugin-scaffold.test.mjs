@@ -1681,7 +1681,10 @@ test("classic Figma runtime preserves awwrated header CSS background logos and r
           captureNode("dom-card-rank", "b", { x: 277, y: 120, width: 28, height: 28 }, {
             textContent: "1",
             styles: {
+              display: "flex",
               position: "absolute",
+              alignItems: "center",
+              justifyContent: "center",
               backgroundImage: "linear-gradient(223deg, rgb(0, 63, 255) 0%, rgb(255, 0, 68) 100%)",
               color: "rgb(255, 255, 255)",
               fontSize: "14px",
@@ -1791,7 +1794,16 @@ test("classic Figma runtime preserves awwrated header CSS background logos and r
   assert(rankFrame);
   assert.equal(rankFrame.x, 77);
   assert.equal(rankFrame.y, 0);
+  assert.equal(rankFrame.topLeftRadius, 0);
+  assert.equal(rankFrame.topRightRadius, 8);
+  assert.equal(rankFrame.bottomRightRadius, 0);
+  assert.equal(rankFrame.bottomLeftRadius, 8);
+  assert.equal(rankFrame.primaryAxisAlignItems, "CENTER");
+  assert.equal(rankFrame.counterAxisAlignItems, "CENTER");
   assert(rankFrame.children.some((node) => node.type === "TEXT" && node.characters === "1"));
+  const rankText = rankFrame.children.find((node) => node.type === "TEXT" && node.characters === "1");
+  assert.equal(rankText.layoutSizingHorizontal, "HUG");
+  assert.equal(rankText.layoutSizingVertical, "HUG");
 });
 
 test("classic Figma runtime keeps editable layers when an image asset is unsupported", async () => {
