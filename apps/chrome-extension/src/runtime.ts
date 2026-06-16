@@ -22,6 +22,7 @@ export const PAGE_METRICS_MESSAGE = "FIGCAPTURE_PAGE_METRICS";
 export const SCROLL_TO_MESSAGE = "FIGCAPTURE_SCROLL_TO";
 export const SET_PINNED_HIDDEN_MESSAGE = "FIGCAPTURE_SET_PINNED_HIDDEN";
 export const SELECT_ELEMENT_MESSAGE = "FIGCAPTURE_SELECT_ELEMENT";
+export const CAPTURE_STATUS_MESSAGE = "FIGCAPTURE_CAPTURE_STATUS";
 
 export const MAX_FULL_PAGE_HEIGHT = 20000;
 export const MAX_FULL_PAGE_SEGMENTS = 25;
@@ -424,8 +425,27 @@ export function createChromeCaptureRuntime(options = {}) {
         return captureBreakpoints(tab, widths, captureMode);
       }
 
-      const single = await captureOnce(tab, captureMode);
-      return buildPreviewResult(tab, single.capture, single.screenshotDataUrl, single.truncationWarning);
+      try {
+        const single = await captureOnce(tab, captureMode);
+        const result = await buildPreviewResult(tab, single.capture, single.screenshotDataUrl, single.truncationWarning);
+        if (captureMode === "element") {
+          await notifyCaptureStatus(tab, {
+            state: "ready",
+            title: "Element capture ready",
+            message: "Download now, or open the extension popup to preview it."
+          });
+        }
+        return result;
+      } catch (error) {
+        if (captureMode === "element") {
+          await notifyCaptureStatus(tab, {
+            state: "error",
+            title: "Element capture failed",
+            message: error?.message ?? "Could not capture the selected element."
+          });
+        }
+        throw error;
+      }
     },
 
     async confirmExport() {
@@ -485,6 +505,13 @@ export function createChromeCaptureRuntime(options = {}) {
       };
     }
   };
+
+  async function notifyCaptureStatus(tab, message) {
+    await contentRequest(chromeApi, tab.id, {
+      type: CAPTURE_STATUS_MESSAGE,
+      ...message
+    }).catch(() => null);
+  }
 }
 
 export function computeFullPageCapturePlan(metrics, limits = {}) {

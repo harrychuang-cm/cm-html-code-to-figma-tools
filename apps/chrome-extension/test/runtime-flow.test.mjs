@@ -4,6 +4,7 @@ import { createEmptyDiagnostics } from "../../../packages/capture-schema/dist/in
 import { captureElementTree } from "../dist/capture-core.js";
 import {
   CAPTURE_ACTIVE_TAB_MESSAGE,
+  CAPTURE_STATUS_MESSAGE,
   EXPORT_CONFIRMED_MESSAGE,
   GET_PENDING_CAPTURE_MESSAGE,
   RUNTIME_ERROR_CATEGORIES,
@@ -285,6 +286,7 @@ test("confirmed export maps package generation and download failures", async () 
 
 test("runtime message constants remain stable", () => {
   assert.equal(CAPTURE_ACTIVE_TAB_MESSAGE, "FIGCAPTURE_CAPTURE_ACTIVE_TAB");
+  assert.equal(CAPTURE_STATUS_MESSAGE, "FIGCAPTURE_CAPTURE_STATUS");
   assert.equal(EXPORT_CONFIRMED_MESSAGE, "FIGCAPTURE_EXPORT_CONFIRMED");
   assert.equal(GET_PENDING_CAPTURE_MESSAGE, "FIGCAPTURE_GET_PENDING_CAPTURE");
 });
@@ -1043,6 +1045,9 @@ test("element capture selects one DOM node and captures the matching clipped scr
         assert.equal(message.selection.id, "selection-1");
         return { status: "success", capture };
       }
+      if (message.type === "FIGCAPTURE_CAPTURE_STATUS") {
+        return { status: "success", shown: true };
+      }
       throw new Error(`Unexpected message ${message.type}`);
     },
     screenshotAdapter: async () => {
@@ -1069,8 +1074,15 @@ test("element capture selects one DOM node and captures the matching clipped scr
 
   assert.deepEqual(calls.map((call) => call.type), [
     "FIGCAPTURE_SELECT_ELEMENT",
-    "FIGCAPTURE_COLLECT_DOM"
+    "FIGCAPTURE_COLLECT_DOM",
+    "FIGCAPTURE_CAPTURE_STATUS"
   ]);
+  assert.deepEqual(calls.at(-1), {
+    type: "FIGCAPTURE_CAPTURE_STATUS",
+    state: "ready",
+    title: "Element capture ready",
+    message: "Download now, or open the extension popup to preview it."
+  });
   assert.deepEqual(shots, [{
     clip: { x: 100, y: 600, width: 320, height: 180, scale: 1 },
     captureBeyondViewport: true
