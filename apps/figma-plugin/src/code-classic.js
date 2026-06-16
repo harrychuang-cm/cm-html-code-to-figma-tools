@@ -3121,6 +3121,63 @@
     return { x: 0, y: 0 };
   }
 
+  function transformAxisScale(transform, axis) {
+    var value = String(transform || "").replace(/^\s+|\s+$/g, "");
+    var match;
+    var parts;
+    if (!value || value === "none") {
+      return 1;
+    }
+
+    match = value.match(/^matrix\(([^)]+)\)$/i);
+    if (match) {
+      parts = parseTransformNumbers(match[1]);
+      if (parts.length >= 4) {
+        return axis === "x"
+          ? Math.sqrt(parts[0] * parts[0] + parts[1] * parts[1])
+          : Math.sqrt(parts[2] * parts[2] + parts[3] * parts[3]);
+      }
+    }
+
+    match = value.match(/^matrix3d\(([^)]+)\)$/i);
+    if (match) {
+      parts = parseTransformNumbers(match[1]);
+      if (parts.length >= 16) {
+        return axis === "x"
+          ? Math.sqrt(parts[0] * parts[0] + parts[1] * parts[1] + parts[2] * parts[2])
+          : Math.sqrt(parts[4] * parts[4] + parts[5] * parts[5] + parts[6] * parts[6]);
+      }
+    }
+
+    match = value.match(/^scale3d\(([^)]+)\)$/i);
+    if (match) {
+      parts = parseTransformNumbers(match[1]);
+      return axis === "x"
+        ? (parts[0] !== undefined ? parts[0] : 1)
+        : (parts[1] !== undefined ? parts[1] : (parts[0] !== undefined ? parts[0] : 1));
+    }
+
+    match = value.match(/^scaleX\(([^)]+)\)$/i);
+    if (match) {
+      return axis === "x" ? numberFromCss(match[1]) : 1;
+    }
+
+    match = value.match(/^scaleY\(([^)]+)\)$/i);
+    if (match) {
+      return axis === "y" ? numberFromCss(match[1]) : 1;
+    }
+
+    match = value.match(/^scale\(([^)]+)\)$/i);
+    if (match) {
+      parts = parseTransformNumbers(match[1]);
+      return axis === "x"
+        ? (parts[0] !== undefined ? parts[0] : 1)
+        : (parts[1] !== undefined ? parts[1] : (parts[0] !== undefined ? parts[0] : 1));
+    }
+
+    return 1;
+  }
+
   function parseTransformNumbers(value) {
     var rawParts = String(value || "").split(/[\s,]+/);
     var parts = [];
@@ -4707,6 +4764,9 @@
     if (!(explicitWidth > rect.width + 1.5)) {
       return false;
     }
+    if (explicitWidthMatchesTransformedRect(styles, rect)) {
+      return false;
+    }
 
     fontSize = numberFromCss(styles.fontSize) || 14;
     estimatedTextWidth = estimateTextPrimarySize(node.textContent, styles);
@@ -4730,9 +4790,20 @@
     explicitWidth = numberFromCss(styles.width);
     fontSize = numberFromCss(styles.fontSize) || 14;
     tinyWidth = Math.max(4, fontSize * 0.3);
+    if (explicitWidthMatchesTransformedRect(styles, rect)) {
+      return false;
+    }
     return explicitWidth > rect.width + 1.5 &&
       rect.width <= tinyWidth &&
       estimateTextPrimarySize(node.textContent, styles) > rect.width + Math.max(2, fontSize * 0.25);
+  }
+
+  function explicitWidthMatchesTransformedRect(styles, rect) {
+    var explicitWidth = numberFromCss(styles && styles.width);
+    var scaleX = transformAxisScale(styles && styles.transform, "x");
+    return explicitWidth > 0 &&
+      Math.abs(scaleX - 1) > 0.001 &&
+      Math.abs(explicitWidth * scaleX - rect.width) <= 1.5;
   }
 
   function isOverflowClippedTextBox(node, rect, styles) {
@@ -5571,6 +5642,9 @@
     if (maskedGradientBorderStroke(safeStyles)) {
       return fills;
     }
+    if (gradientBorderOverlayFillIsTransparent(safeStyles)) {
+      return fills;
+    }
     if (visibleColor(safeStyles.backgroundColor)) {
       fills.push(safeStyles.backgroundColor);
     }
@@ -5672,6 +5746,22 @@
       color: safeStyles.backgroundImage,
       width: Math.max.apply(null, widths)
     };
+  }
+
+  function gradientBorderOverlayFillIsTransparent(styles) {
+    var safeStyles = styles || {};
+    var content = String(safeStyles.content || "").replace(/^\s+|\s+$/g, "");
+    var sides;
+    if (
+      content !== "\"\"" ||
+      normalizeCssKeyword(safeStyles.position) !== "absolute" ||
+      !visibleCssLinearGradient(safeStyles.backgroundImage) ||
+      visibleColor(safeStyles.backgroundColor)
+    ) {
+      return false;
+    }
+    sides = visibleBorderSides(safeStyles);
+    return Boolean(uniformBorderStrokeFromSides(sides) && cornerRadiusFromStyles(safeStyles) > 0);
   }
 
   function hasLayeredCssMask(styles) {

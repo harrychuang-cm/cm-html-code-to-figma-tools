@@ -480,6 +480,57 @@ function transformTranslation(transform) {
   return { x: 0, y: 0 };
 }
 
+function transformAxisScale(transform, axis) {
+  const value = String(transform ?? "").trim();
+  if (!value || value === "none") {
+    return 1;
+  }
+
+  const matrix = value.match(/^matrix\(([^)]+)\)$/i);
+  if (matrix) {
+    const parts = parseTransformNumbers(matrix[1]);
+    if (parts.length >= 4) {
+      return axis === "x"
+        ? Math.hypot(parts[0], parts[1])
+        : Math.hypot(parts[2], parts[3]);
+    }
+  }
+
+  const matrix3d = value.match(/^matrix3d\(([^)]+)\)$/i);
+  if (matrix3d) {
+    const parts = parseTransformNumbers(matrix3d[1]);
+    if (parts.length >= 16) {
+      return axis === "x"
+        ? Math.hypot(parts[0], parts[1], parts[2])
+        : Math.hypot(parts[4], parts[5], parts[6]);
+    }
+  }
+
+  const scale3d = value.match(/^scale3d\(([^)]+)\)$/i);
+  if (scale3d) {
+    const parts = parseTransformNumbers(scale3d[1]);
+    return axis === "x" ? parts[0] ?? 1 : parts[1] ?? parts[0] ?? 1;
+  }
+
+  const scaleX = value.match(/^scaleX\(([^)]+)\)$/i);
+  if (scaleX) {
+    return axis === "x" ? parseCssNumber(scaleX[1]) : 1;
+  }
+
+  const scaleY = value.match(/^scaleY\(([^)]+)\)$/i);
+  if (scaleY) {
+    return axis === "y" ? parseCssNumber(scaleY[1]) : 1;
+  }
+
+  const scale = value.match(/^scale\(([^)]+)\)$/i);
+  if (scale) {
+    const parts = parseTransformNumbers(scale[1]);
+    return axis === "x" ? parts[0] ?? 1 : parts[1] ?? parts[0] ?? 1;
+  }
+
+  return 1;
+}
+
 function parseTransformNumbers(value) {
   return String(value ?? "")
     .split(/[\s,]+/)
@@ -1773,6 +1824,9 @@ function isCapturedRectClippedExplicitTextBox(node, rect, styles) {
   if (!(explicitWidth > rect.width + 1.5)) {
     return false;
   }
+  if (explicitWidthMatchesTransformedRect(styles, rect)) {
+    return false;
+  }
 
   const fontSize = parseCssNumber(styles.fontSize) || 14;
   const estimatedTextWidth = estimateTextPrimarySize(node.textContent, styles);
@@ -1793,9 +1847,20 @@ function shouldSuppressTinyClippedText(node, rect) {
   const explicitWidth = parseCssNumber(styles.width);
   const fontSize = parseCssNumber(styles.fontSize) || 14;
   const tinyWidth = Math.max(4, fontSize * 0.3);
+  if (explicitWidthMatchesTransformedRect(styles, rect)) {
+    return false;
+  }
   return explicitWidth > rect.width + 1.5 &&
     rect.width <= tinyWidth &&
     estimateTextPrimarySize(node.textContent, styles) > rect.width + Math.max(2, fontSize * 0.25);
+}
+
+function explicitWidthMatchesTransformedRect(styles = {}, rect) {
+  const explicitWidth = parseCssNumber(styles.width);
+  const scaleX = transformAxisScale(styles.transform, "x");
+  return explicitWidth > 0 &&
+    Math.abs(scaleX - 1) > 0.001 &&
+    Math.abs(explicitWidth * scaleX - rect.width) <= 1.5;
 }
 
 function isOverflowClippedTextBox(node, rect, styles) {
@@ -2507,6 +2572,9 @@ function cssFillsFromStyles(styles = {}) {
   if (maskedGradientBorderStroke(styles)) {
     return [];
   }
+  if (gradientBorderOverlayFillIsTransparent(styles)) {
+    return [];
+  }
 
   const fills = [];
   if (visibleColor(styles.backgroundColor)) {
@@ -2597,6 +2665,20 @@ function maskedGradientBorderStroke(styles = {}) {
     color: styles.backgroundImage,
     width: Math.max(...widths)
   };
+}
+
+function gradientBorderOverlayFillIsTransparent(styles = {}) {
+  const content = String(styles.content ?? "").trim();
+  if (
+    content !== "\"\"" ||
+    normalizeCssKeyword(styles.position) !== "absolute" ||
+    !visibleCssLinearGradient(styles.backgroundImage) ||
+    visibleColor(styles.backgroundColor)
+  ) {
+    return false;
+  }
+  const sides = visibleBorderSides(styles);
+  return Boolean(uniformBorderStrokeFromSides(sides) && cornerRadiusFromStyles(styles) > 0);
 }
 
 function hasLayeredCssMask(styles = {}) {

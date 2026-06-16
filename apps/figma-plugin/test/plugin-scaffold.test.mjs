@@ -3491,6 +3491,160 @@ test("classic Figma runtime orders auto-layout children by captured visual posit
   );
 });
 
+test("classic Figma runtime keeps transformed labels auto-width and pseudo bar fills transparent", async () => {
+  const main = await readFile("apps/figma-plugin/dist/code.js", "utf8");
+  const posted = [];
+
+  function captureNode(sourceNodeId, tagName, rect, extra = {}) {
+    return {
+      id: `node-${sourceNodeId}`,
+      sourceNodeId,
+      nodeType: extra.nodeType ?? "element",
+      tagName,
+      textContent: extra.textContent ?? "",
+      rect,
+      styles: extra.styles ?? {},
+      attributes: extra.attributes ?? {},
+      children: extra.children ?? []
+    };
+  }
+
+  function createNode(type) {
+    return {
+      type,
+      name: "",
+      children: [],
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0,
+      fills: [],
+      strokes: [],
+      effects: [],
+      strokeWeight: 0,
+      cornerRadius: 0,
+      pluginData: {},
+      resize(width, height) {
+        this.width = width;
+        this.height = height;
+      },
+      appendChild(child) {
+        this.children.push(child);
+      },
+      setPluginData(key, value) {
+        this.pluginData[key] = value;
+      }
+    };
+  }
+
+  const root = captureNode("dom-root", "main", { x: 0, y: 0, width: 160, height: 40 }, {
+    children: [
+      captureNode("dom-popularity-label", "p", { x: 32.05, y: 3.7, width: 35.9, height: 12.6 }, {
+        textContent: "超人氣!",
+        styles: {
+          display: "block",
+          position: "relative",
+          width: "39.8906px",
+          height: "14px",
+          fontSize: "12px",
+          lineHeight: "14px",
+          whiteSpace: "nowrap",
+          overflow: "visible",
+          overflowX: "visible",
+          textOverflow: "clip",
+          transform: "matrix(0.9, 0, 0, 0.9, 0, 0)",
+          color: "rgb(255, 255, 255)"
+        }
+      }),
+      captureNode("dom-rating-border-after", "::after", { x: 0, y: 18, width: 100, height: 20 }, {
+        nodeType: "pseudo",
+        styles: {
+          display: "block",
+          position: "absolute",
+          content: "\"\"",
+          opacity: "0.2",
+          backgroundColor: "rgba(0, 0, 0, 0)",
+          backgroundImage: "linear-gradient(270deg, rgb(91, 110, 255) 0%, rgb(0, 40, 131) 100%)",
+          borderTopWidth: "0.5px",
+          borderRightWidth: "0.5px",
+          borderBottomWidth: "0.5px",
+          borderLeftWidth: "0.5px",
+          borderTopStyle: "solid",
+          borderRightStyle: "solid",
+          borderBottomStyle: "solid",
+          borderLeftStyle: "solid",
+          borderTopColor: "rgb(49, 57, 255)",
+          borderRightColor: "rgb(49, 57, 255)",
+          borderBottomColor: "rgb(49, 57, 255)",
+          borderLeftColor: "rgb(49, 57, 255)",
+          borderTopLeftRadius: "10px",
+          borderTopRightRadius: "10px",
+          borderBottomRightRadius: "10px",
+          borderBottomLeftRadius: "10px"
+        }
+      })
+    ]
+  });
+  const basePackage = createValidPackage();
+  const packageData = createValidPackage({
+    capture: {
+      ...basePackage.capture,
+      root
+    }
+  });
+  const figma = {
+    currentPage: { children: [], appendChild(child) { this.children.push(child); } },
+    ui: { onmessage: null, postMessage(message) { posted.push(message); } },
+    showUI() {},
+    createFrame() { return createNode("FRAME"); },
+    createRectangle() { return createNode("RECTANGLE"); },
+    createText() { return createNode("TEXT"); },
+    createImage(bytes) { return { hash: `hash-${bytes.length}` }; },
+    async loadFontAsync() {}
+  };
+
+  vm.runInNewContext(main, {
+    figma,
+    Uint8Array,
+    Uint32Array,
+    ArrayBuffer,
+    DataView,
+    Error,
+    JSON,
+    Math,
+    Number,
+    Object,
+    Promise,
+    String,
+    Boolean,
+    Array,
+    isFinite,
+    parseFloat
+  });
+  await figma.ui.onmessage({
+    type: "IMPORT_PACKAGE",
+    filename: "awwrated-rating-bar.figcapture",
+    bytes: packFigcapture(packageData)
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const success = posted.find((message) => message.type === "IMPORT_SUCCESS");
+  assert.ok(success, `expected IMPORT_SUCCESS, got ${JSON.stringify(posted)}`);
+
+  const accurateFrame = figma.currentPage.children[1];
+  const nodes = flattenNodes(accurateFrame.children);
+  const label = nodes.find((node) => node.pluginData?.sourceNodeId === "dom-popularity-label");
+  const overlay = nodes.find((node) => node.pluginData?.sourceNodeId === "dom-rating-border-after");
+
+  assert(label);
+  assert.equal(label.textAutoResize, "WIDTH_AND_HEIGHT");
+  assert.equal(label.layoutSizingHorizontal, "HUG");
+  assert(overlay);
+  assert.equal(overlay.fills.length, 0);
+  assert.equal(overlay.strokes[0].type, "SOLID");
+  assert.equal(overlay.strokeWeight, 0.5);
+});
+
 test("classic Figma runtime sizes full-page frames to the document dimensions", async () => {
   const main = await readFile("apps/figma-plugin/dist/code.js", "utf8");
   const posted = [];

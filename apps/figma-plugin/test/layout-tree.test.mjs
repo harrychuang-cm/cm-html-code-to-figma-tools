@@ -1659,6 +1659,45 @@ test("masked pseudo gradient backgrounds import as gradient strokes", () => {
   assert.equal(model.style.cornerRadius, 20);
 });
 
+test("pseudo gradient border overlays keep transparent fills", () => {
+  const overlay = node("dom-rating-border-after", "::after", { x: 577.5, y: 4346.66, width: 100, height: 20 }, {
+    nodeType: "pseudo",
+    styles: {
+      display: "block",
+      position: "absolute",
+      content: "\"\"",
+      opacity: "0.2",
+      backgroundColor: "rgba(0, 0, 0, 0)",
+      backgroundImage: "linear-gradient(270deg, rgb(91, 110, 255) 0%, rgb(0, 40, 131) 100%)",
+      borderTopWidth: "0.5px",
+      borderRightWidth: "0.5px",
+      borderBottomWidth: "0.5px",
+      borderLeftWidth: "0.5px",
+      borderTopStyle: "solid",
+      borderRightStyle: "solid",
+      borderBottomStyle: "solid",
+      borderLeftStyle: "solid",
+      borderTopColor: "rgb(49, 57, 255)",
+      borderRightColor: "rgb(49, 57, 255)",
+      borderBottomColor: "rgb(49, 57, 255)",
+      borderLeftColor: "rgb(49, 57, 255)",
+      borderTopLeftRadius: "10px",
+      borderTopRightRadius: "10px",
+      borderBottomRightRadius: "10px",
+      borderBottomLeftRadius: "10px"
+    }
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(overlay))[0];
+
+  assert.equal(model.type, "RECTANGLE");
+  assert.deepEqual(model.style.fills, []);
+  assert.deepEqual(model.style.strokes, [{
+    color: "rgb(49, 57, 255)",
+    width: 0.5
+  }]);
+  assert.equal(model.style.cornerRadius, 10);
+});
+
 test("rounded video cards keep top-right ranking badges", () => {
   const card = node("dom-video-card", "a", { x: 142.5, y: 223, width: 105, height: 140 }, {
     assetRef: "assets/poster.jpg",
@@ -2417,6 +2456,32 @@ test("text resize mode uses auto width only for captured single-line text", () =
   assert.equal(memberName.layoutSizingHorizontal, "FIXED");
   assert.equal(memberName.layoutSizingVertical, "HUG");
   assert.equal(memberName.rect.width, 48);
+});
+
+test("transformed explicit-width nowrap text keeps auto width", () => {
+  const label = node("dom-popularity-label", "p", { x: 609.55, y: 4350.36, width: 35.9, height: 12.6 }, {
+    textContent: "超人氣!",
+    styles: {
+      display: "block",
+      position: "relative",
+      width: "39.8906px",
+      height: "14px",
+      fontSize: "12px",
+      lineHeight: "14px",
+      whiteSpace: "nowrap",
+      overflow: "visible",
+      overflowX: "visible",
+      textOverflow: "clip",
+      transform: "matrix(0.9, 0, 0, 0.9, 0, 0)",
+      color: "rgb(255, 255, 255)"
+    }
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(label))[0];
+
+  assert.equal(model.type, "TEXT");
+  assert.equal(model.textAutoResize, "WIDTH_AND_HEIGHT");
+  assert.equal(model.layoutSizingHorizontal, "HUG");
+  assert.equal(model.layoutSizingVertical, "HUG");
 });
 
 test("tiny viewport-clipped explicit-width text is omitted instead of showing an ellipsis", () => {
