@@ -288,11 +288,29 @@ function createModel(node, context) {
     });
   }
 
-  if (node.assetRef || node.tagName === "img") {
+  if (shouldCreateBackgroundImageLayer(node, children)) {
+    const frameChildren = [
+      ...reparentAbsoluteOverlaysIntoStackingHosts(children),
+      ...borderDecorations
+    ];
+    const autoLayout = inferAutoLayout(node, frameChildren);
+    return baseModel(node, "FRAME", rect, absoluteRect, {
+      style: extractVisualStyle(node),
+      autoLayout,
+      clipsContent: shouldClipContent(node),
+      children: [
+        createBackgroundImageModel(node, rect, absoluteRect),
+        ...orderedChildrenForAutoLayout(frameChildren, autoLayout)
+      ]
+    });
+  }
+
+  if (node.assetRef || node.tagName === "img" || hasCssImageUrl(node.styles)) {
     return baseModel(node, "IMAGE", rect, absoluteRect, {
       assetRef: node.assetRef ?? null,
       assetKind: assetKindForNode(node),
-      style: extractVisualStyle(node),
+      assetRole: assetRoleForNode(node),
+      style: imageVisualStyleForNode(node),
       children: []
     });
   }
@@ -360,6 +378,25 @@ function createBorderDecorationModels(node, rect, absoluteRect) {
       children: []
     };
   });
+}
+
+function createBackgroundImageModel(node, rect, absoluteRect) {
+  return {
+    id: `${node.sourceNodeId}::background-image`,
+    type: "IMAGE",
+    name: "Background image",
+    sourceNodeId: `${node.sourceNodeId}::background-image`,
+    layoutPositioning: "ABSOLUTE",
+    rect: { x: 0, y: 0, width: rect.width, height: rect.height },
+    absoluteRect,
+    styles: node.styles ?? {},
+    assetRef: node.assetRef ?? null,
+    assetKind: assetKindForNode(node),
+    assetRole: assetRoleForNode(node),
+    ...(!node.assetRef ? { fallbackReason: "missing css background asset" } : {}),
+    style: imageVisualStyleForNode(node),
+    children: []
+  };
 }
 
 function geometryAdjustedAbsoluteRect(node, absoluteRect) {
@@ -2180,6 +2217,17 @@ function extractVisualStyle(node) {
   };
 }
 
+function imageVisualStyleForNode(node) {
+  const style = extractVisualStyle(node);
+  if (assetRoleForNode(node) !== "css-background") {
+    return style;
+  }
+  return {
+    ...style,
+    imageScaleMode: cssBackgroundImageScaleMode(node.styles)
+  };
+}
+
 function visualStyleForNode(node, context) {
   const style = extractVisualStyle(node);
   if (!shouldApplyTextOverlayBackdrop(node, context, style)) {
@@ -2282,11 +2330,64 @@ function assetKindForNode(node) {
   if (node.attributes?.assetKind) {
     return node.attributes.assetKind;
   }
+  const cssImageUrl = cssImageUrlFromStyles(node.styles);
+  if (cssImageUrl && /\.svg(?:[?#]|$)/i.test(cssImageUrl)) {
+    return "svg";
+  }
   const ref = node.assetRef ?? node.fallbackRef ?? "";
   if (typeof ref === "string" && ref.toLowerCase().endsWith(".svg")) {
     return "svg";
   }
   return "raster";
+}
+
+function assetRoleForNode(node) {
+  if (typeof node.attributes?.assetRole === "string") {
+    return node.attributes.assetRole;
+  }
+  return hasCssImageUrl(node.styles) ? "css-background" : "";
+}
+
+function cssBackgroundImageScaleMode(styles = {}) {
+  const backgroundSize = String(styles.backgroundSize ?? "").trim().toLowerCase();
+  if (backgroundSize.includes("contain")) {
+    return "FIT";
+  }
+  return "FILL";
+}
+
+function shouldCreateBackgroundImageLayer(node, children) {
+  return node.tagName !== "img" &&
+    node.tagName !== "svg" &&
+    !node.textContent &&
+    children.length > 0 &&
+    (Boolean(node.assetRef) || hasCssImageUrl(node.styles));
+}
+
+function hasCssImageUrl(styles = {}) {
+  return Boolean(cssImageUrlFromStyles(styles));
+}
+
+function cssImageUrlFromStyles(styles = {}) {
+  return firstCssImageUrl(
+    styles.content,
+    styles.maskImage,
+    styles.webkitMaskImage,
+    styles.backgroundImage
+  );
+}
+
+function firstCssImageUrl(...values) {
+  for (const value of values) {
+    if (typeof value !== "string" || value.length === 0 || value === "none") {
+      continue;
+    }
+    const match = value.match(/url\((?:"([^"]+)"|'([^']+)'|([^)]*))\)/i);
+    if (match) {
+      return (match[1] || match[2] || match[3] || "").trim();
+    }
+  }
+  return "";
 }
 
 function visibleColor(value) {
@@ -2298,6 +2399,9 @@ function visibleColor(value) {
 
 function cssFillsFromStyles(styles = {}) {
   if (isBackgroundClippedToText(styles)) {
+    return [];
+  }
+  if (maskedGradientBorderStroke(styles)) {
     return [];
   }
 
@@ -2343,6 +2447,10 @@ function visibleCssLinearGradient(value) {
 }
 
 function cssStrokesFromStyles(styles = {}) {
+  const maskedGradientStroke = maskedGradientBorderStroke(styles);
+  if (maskedGradientStroke) {
+    return [maskedGradientStroke];
+  }
   const sides = visibleBorderSides(styles);
   const borderStroke = uniformBorderStrokeFromSides(sides) ?? legacyTopBorderStroke(styles, sides);
   if (borderStroke) {
@@ -2350,6 +2458,29 @@ function cssStrokesFromStyles(styles = {}) {
   }
   const outlineStroke = cssStrokeSide(styles.outlineWidth, styles.outlineColor, styles.outlineStyle);
   return outlineStroke ? [outlineStroke] : [];
+}
+
+function maskedGradientBorderStroke(styles = {}) {
+  if (!visibleCssLinearGradient(styles.backgroundImage) || !hasLayeredCssMask(styles)) {
+    return null;
+  }
+  const padding = explicitCssPadding(styles);
+  if (!padding) {
+    return null;
+  }
+  const widths = [padding.top, padding.right, padding.bottom, padding.left].filter((value) => value > 0);
+  if (widths.length === 0) {
+    return null;
+  }
+  return {
+    color: styles.backgroundImage,
+    width: Math.max(...widths)
+  };
+}
+
+function hasLayeredCssMask(styles = {}) {
+  const mask = `${styles.maskImage ?? ""}, ${styles.webkitMaskImage ?? ""}`;
+  return (mask.match(/(?:linear-gradient|radial-gradient|url)\(/gi) ?? []).length >= 2;
 }
 
 function borderDecorationSides(styles = {}) {

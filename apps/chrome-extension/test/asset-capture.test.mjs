@@ -737,6 +737,67 @@ test("css image URL extraction ignores unsupported gradients", () => {
   assert.equal(firstCssImageUrl("url('data:image/svg+xml,%3Csvg%2F%3E')"), "data:image/svg+xml,%3Csvg%2F%3E");
 });
 
+test("asset capture keeps CSS background image assets on nodes with children", async () => {
+  const capture = captureElementTree(
+    {
+      tagName: "main",
+      rect: { x: 0, y: 0, width: 400, height: 120 },
+      styles: {},
+      attributes: {},
+      children: [
+        {
+          tagName: "div",
+          sourceNodeId: "dom-logo",
+          rect: { x: 20, y: 10, width: 90, height: 46 },
+          styles: {
+            backgroundImage: "url(\"https://cdn.example.com/logo.svg\")",
+            backgroundSize: "100% auto"
+          },
+          attributes: {},
+          children: [
+            {
+              tagName: "span",
+              sourceNodeId: "dom-logo-version",
+              textContent: "v6.11.0",
+              rect: { x: 88, y: 44, width: 36, height: 8 },
+              styles: { color: "rgb(133, 133, 133)", fontSize: "12px" },
+              attributes: {},
+              children: []
+            }
+          ]
+        }
+      ]
+    },
+    { width: 400, height: 120, devicePixelRatio: 1, scrollX: 0, scrollY: 0 },
+    {
+      sourceUrl: "https://example.com",
+      captureTimestamp: "2026-06-16T02:47:01.730Z"
+    }
+  );
+  const svgBytes = new TextEncoder().encode("<svg viewBox=\"0 0 90 46\"></svg>");
+
+  const result = await captureVisualAssets(capture, {
+    async assetResolver(source) {
+      assert.equal(source.assetKind, "svg");
+      assert.equal(source.sourceNodeId, "dom-logo");
+      return {
+        bytes: svgBytes,
+        contentType: "image/svg+xml"
+      };
+    }
+  });
+  const logo = result.capture.root.children[0];
+
+  assert.equal(logo.assetRef, "assets/icon-1.svg");
+  assert.equal(logo.attributes.assetKind, "svg");
+  assert.equal(logo.attributes.assetRole, "css-background");
+  assert.equal(logo.children[0].textContent, "v6.11.0");
+  assert.deepEqual(Array.from(result.assets["assets/icon-1.svg"]), Array.from(svgBytes));
+  assert.deepEqual(result.sourceNodeMap, [
+    { sourceNodeId: "dom-logo", assetRef: "assets/icon-1.svg" }
+  ]);
+});
+
 test("closed shadow host becomes screenshot crop fallback with reason", async () => {
   const capture = captureElementTree(
     {

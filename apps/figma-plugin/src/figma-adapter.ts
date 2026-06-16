@@ -55,7 +55,21 @@ export function createFigmaApiAdapter(figmaApi = globalThis.figma, options = {})
       const bytes = model.bytes ?? assets[model.assetRef] ?? new Uint8Array();
       const imageBytes = toUint8Array(bytes);
       let fallbackReason = model.fallbackReason;
-      if (isSvgAsset(model, imageBytes) && typeof figmaApi.createNodeFromSvg === "function") {
+      if (imageBytes.length > 0 && isSvgAsset(model, imageBytes) && typeof figmaApi.createNodeFromSvg === "function") {
+        const svgText = decodeUtf8(imageBytes);
+        if (shouldCropAmbiguousCssBackgroundSvg(model, svgText)) {
+          const screenshotFallback = createScreenshotCropFallbackLayer(figmaApi, model, {
+            assets,
+            fallbackReason: "css background SVG sizing unavailable",
+            screenshotBytes,
+            viewport,
+            getAssetImageHash,
+            getScreenshotImageHash
+          });
+          if (screenshotFallback) {
+            return screenshotFallback;
+          }
+        }
         try {
           return createSvgImageLayer(figmaApi, model, imageBytes);
         } catch (error) {
@@ -73,6 +87,7 @@ export function createFigmaApiAdapter(figmaApi = globalThis.figma, options = {})
       node.name = model.name;
       node.locked = Boolean(model.locked);
       writeNodeMetadata(node, "assetRef", model.assetRef);
+      writeNodeMetadata(node, "assetRole", model.assetRole);
       let canUseScreenshotCropFallback = false;
       if (isSupportedRasterImage(imageBytes)) {
         const aspectMismatchFallbackReason = screenshotCropReasonForMismatchedRaster(model, imageBytes);
@@ -92,6 +107,7 @@ export function createFigmaApiAdapter(figmaApi = globalThis.figma, options = {})
         try {
           const imageHash = figmaApi.createImage(imageBytes).hash;
           node.fills = [imagePaintForModel(model, imageHash)];
+          applyNonFillVisualStyle(node, model.style);
           writeNodeMetadata(node, "fallbackReason", fallbackReason);
           writeNodeMetadata(node, "imageHash", imageHash);
           return node;
@@ -663,6 +679,7 @@ function createScreenshotCropFallbackLayer(figmaApi, model, options = {}) {
   node.name = `${model.name} / Screenshot Crop`;
   node.locked = Boolean(model.locked);
   node.fills = [cropPaint.fill];
+  applyNonFillVisualStyle(node, model.style);
   writeNodeMetadata(node, "assetRef", model.assetRef);
   writeNodeMetadata(node, "cropAssetRef", cropPaint.assetRef);
   writeNodeMetadata(node, "fallbackReason", `${options.fallbackReason || "image fallback"}; screenshot crop fallback`);
@@ -815,7 +832,9 @@ function createSvgImageLayer(figmaApi, model, imageBytes) {
   };
   const rotation = rotationFromTransform(model.style?.transform ?? model.styles?.transform);
   const intrinsic = svgIntrinsicSize(svgText);
-  const fitted = fittedSvgRect(rect, intrinsic, shouldPreserveSvgAspectRatio(svgText));
+  const fitted = model.assetRole === "css-background"
+    ? cssBackgroundSvgRect(rect, intrinsic, model)
+    : fittedSvgRect(rect, intrinsic, shouldPreserveSvgAspectRatio(svgText));
   const requiresWrapper = rotation !== 0 ||
     fitted.x !== 0 ||
     fitted.y !== 0 ||
@@ -828,6 +847,7 @@ function createSvgImageLayer(figmaApi, model, imageBytes) {
     svgNode.locked = Boolean(model.locked);
     writeNodeMetadata(svgNode, "assetRef", model.assetRef);
     writeNodeMetadata(svgNode, "assetKind", "svg");
+    writeNodeMetadata(svgNode, "assetRole", model.assetRole);
     return svgNode;
   }
 
@@ -839,6 +859,7 @@ function createSvgImageLayer(figmaApi, model, imageBytes) {
   frame.fills = [];
   writeNodeMetadata(frame, "assetRef", model.assetRef);
   writeNodeMetadata(frame, "assetKind", "svg");
+  writeNodeMetadata(frame, "assetRole", model.assetRole);
 
   const placed = rotatedFittedSvgRect(rect, fitted, rotation);
   svgNode.x = placed.x;
@@ -853,6 +874,7 @@ function createSvgImageLayer(figmaApi, model, imageBytes) {
   svgNode.name = `${model.name} / Vector`;
   writeNodeMetadata(svgNode, "assetRef", model.assetRef);
   writeNodeMetadata(svgNode, "assetKind", "svg");
+  writeNodeMetadata(svgNode, "assetRole", model.assetRole);
   frame.appendChild(svgNode);
   return frame;
 }
@@ -987,11 +1009,15 @@ function applyVisualStyle(node, style = {}) {
     .filter(Boolean);
   node.fills = fills;
 
+  applyNonFillVisualStyle(node, style);
+}
+
+function applyNonFillVisualStyle(node, style = {}) {
   if (style.borderSides?.length > 0) {
     applyBorderSideStrokes(node, style.borderSides);
   } else if (style.strokes?.length > 0) {
     const stroke = style.strokes[0];
-    const strokePaint = cssColorToPaint(stroke.color);
+    const strokePaint = cssFillToPaint(stroke.color);
     if (strokePaint) {
       node.strokes = [strokePaint];
       node.strokeWeight = stroke.width;
@@ -1060,7 +1086,7 @@ function extractCssShadowColor(value) {
 
 function applyBorderSideStrokes(node, borderSides) {
   const [first] = borderSides;
-  const strokePaint = cssColorToPaint(first?.color);
+  const strokePaint = cssFillToPaint(first?.color);
   if (!strokePaint) {
     return;
   }
@@ -1139,6 +1165,151 @@ function extractSvgAttribute(svgText, attribute) {
 
 function shouldPreserveSvgAspectRatio(svgText) {
   return !/preserveAspectRatio\s*=\s*["']none["']/i.test(String(svgText));
+}
+
+function cssBackgroundSvgRect(rect, intrinsic, model = {}) {
+  const width = Math.max(0, Number(rect.width) || 0);
+  const height = Math.max(0, Number(rect.height) || 0);
+  const intrinsicSize = intrinsic && intrinsic.width > 0 && intrinsic.height > 0
+    ? intrinsic
+    : { width, height };
+  const target = cssBackgroundRenderedSize(
+    firstCssLayer(model.styles?.backgroundSize ?? model.style?.backgroundSize),
+    intrinsicSize,
+    { width, height }
+  );
+  const position = cssBackgroundPositionOffset(
+    firstCssLayer(model.styles?.backgroundPosition ?? model.style?.backgroundPosition),
+    { width, height },
+    target
+  );
+
+  return {
+    x: position.x,
+    y: position.y,
+    width: target.width,
+    height: target.height
+  };
+}
+
+function shouldCropAmbiguousCssBackgroundSvg(model = {}, svgText = "") {
+  if (model.assetRole !== "css-background" || hasCapturedCssBackgroundSizing(model)) {
+    return false;
+  }
+  const rect = model.rect ?? {
+    x: model.x ?? 0,
+    y: model.y ?? 0,
+    width: model.width ?? 0,
+    height: model.height ?? 0
+  };
+  const width = Math.max(0, Number(rect.width) || 0);
+  const height = Math.max(0, Number(rect.height) || 0);
+  const intrinsic = svgIntrinsicSize(svgText);
+  if (!intrinsic || intrinsic.width <= 0 || intrinsic.height <= 0 || width <= 0 || height <= 0) {
+    return false;
+  }
+  const widthMatches = Math.abs(intrinsic.width - width) <= 1;
+  const heightCovers = intrinsic.height >= height - 1;
+  return !(widthMatches && heightCovers);
+}
+
+function hasCapturedCssBackgroundSizing(model = {}) {
+  const size = String(model.styles?.backgroundSize ?? model.style?.backgroundSize ?? "").trim();
+  const position = String(model.styles?.backgroundPosition ?? model.style?.backgroundPosition ?? "").trim();
+  const repeat = String(model.styles?.backgroundRepeat ?? model.style?.backgroundRepeat ?? "").trim();
+  return Boolean(size || position || repeat);
+}
+
+function cssBackgroundRenderedSize(value, intrinsic, container) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (!normalized || normalized === "auto") {
+    return {
+      width: round(intrinsic.width),
+      height: round(intrinsic.height)
+    };
+  }
+
+  if (normalized === "contain" || normalized === "cover") {
+    const scale = normalized === "cover"
+      ? Math.max(container.width / intrinsic.width, container.height / intrinsic.height)
+      : Math.min(container.width / intrinsic.width, container.height / intrinsic.height);
+    return {
+      width: round(intrinsic.width * scale),
+      height: round(intrinsic.height * scale)
+    };
+  }
+
+  const parts = normalized.split(/\s+/).filter(Boolean);
+  const first = cssBackgroundSizeComponent(parts[0], container.width);
+  const second = cssBackgroundSizeComponent(parts[1], container.height);
+  let width = first ?? intrinsic.width;
+  let height = second ?? intrinsic.height;
+
+  if (first !== null && second === null) {
+    height = intrinsic.height * (width / intrinsic.width);
+  } else if (first === null && second !== null) {
+    width = intrinsic.width * (height / intrinsic.height);
+  }
+
+  return {
+    width: round(width),
+    height: round(height)
+  };
+}
+
+function cssBackgroundSizeComponent(value, reference) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (!normalized || normalized === "auto") {
+    return null;
+  }
+  if (normalized.endsWith("%")) {
+    const percentage = Number.parseFloat(normalized);
+    return Number.isFinite(percentage) ? reference * percentage / 100 : null;
+  }
+  const number = parseCssNumber(normalized);
+  return number > 0 ? number : null;
+}
+
+function cssBackgroundPositionOffset(value, container, image) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (!normalized) {
+    return { x: 0, y: 0 };
+  }
+  const parts = normalized.split(/\s+/).filter(Boolean);
+  const xToken = parts[0] ?? "0%";
+  const yToken = parts[1] ?? (isVerticalPositionKeyword(xToken) ? "0%" : "50%");
+  return {
+    x: round(cssBackgroundPositionAxisOffset(xToken, container.width, image.width, "x")),
+    y: round(cssBackgroundPositionAxisOffset(yToken, container.height, image.height, "y"))
+  };
+}
+
+function cssBackgroundPositionAxisOffset(token, containerSize, imageSize, axis) {
+  const normalized = String(token ?? "").trim().toLowerCase();
+  if (normalized === "center") {
+    return (containerSize - imageSize) / 2;
+  }
+  if (normalized === "right" && axis === "x" || normalized === "bottom" && axis === "y") {
+    return containerSize - imageSize;
+  }
+  if (normalized === "left" || normalized === "top") {
+    return 0;
+  }
+  if (normalized.endsWith("%")) {
+    const percentage = Number.parseFloat(normalized);
+    return Number.isFinite(percentage) ? (containerSize - imageSize) * percentage / 100 : 0;
+  }
+  return parseCssNumber(normalized);
+}
+
+function isVerticalPositionKeyword(value) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return normalized === "top" || normalized === "bottom";
+}
+
+function firstCssLayer(value) {
+  const layers = splitCssArguments(String(value ?? ""));
+  return layers[0]?.trim() ?? "";
 }
 
 function fittedSvgRect(rect, intrinsic, preserveAspectRatio) {

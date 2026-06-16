@@ -58,6 +58,7 @@ export function captureVisualAssets(capture, options = {}) {
     node.attributes = {
       ...(node.attributes ?? {}),
       assetKind,
+      ...(source?.assetRole ? { assetRole: source.assetRole } : {}),
       ...(source?.url ? { assetSource: source.url } : {})
     };
   }
@@ -504,7 +505,8 @@ function cssImageSourceForNode(node) {
   return {
     url,
     extension,
-    assetKind: extension === "svg" ? "svg" : "raster"
+    assetKind: extension === "svg" ? "svg" : "raster",
+    assetRole: "css-background"
   };
 }
 
@@ -512,7 +514,6 @@ function canUseCssImageAsset(node) {
   return node.tagName !== "img" &&
     node.tagName !== "svg" &&
     !node.textContent &&
-    (node.children?.length ?? 0) === 0 &&
     Boolean(firstCssImageUrl(
       node.styles?.content,
       node.styles?.maskImage,

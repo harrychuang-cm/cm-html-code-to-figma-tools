@@ -231,6 +231,7 @@ export function createAccurateNodeModels(packageData) {
       text: node.textContent,
       assetRef: node.assetRef ?? node.fallbackRef ?? null,
       assetKind: assetKindForNode(node),
+      assetRole: node.attributes?.assetRole ?? "",
       fallbackReason: node.fallbackRef ? fallbackReasons.get(node.sourceNodeId) ?? "raster fallback" : null,
       style: extractVisualStyle(node)
     });

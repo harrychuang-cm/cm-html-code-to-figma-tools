@@ -1061,6 +1061,137 @@ test("Figma API adapter resolves SVG currentColor from captured computed color",
   assert.match(node.svg, /stroke="rgb\(217, 221, 228\)"/);
 });
 
+test("Figma API adapter clips auto-sized CSS background SVG assets to the captured box", () => {
+  const svgBytes = new TextEncoder().encode(
+    "<svg width=\"74px\" height=\"40px\" viewBox=\"0 0 74 40\"><path fill=\"#fff\" d=\"M0 0h74v40H0z\"/></svg>"
+  );
+  const figmaApi = createMockFigmaApi();
+  const adapter = createFigmaApiAdapter(figmaApi, {
+    assets: {
+      "assets/logo.svg": svgBytes
+    }
+  });
+
+  const node = adapter.createImageLayer({
+    name: "Background image",
+    sourceNodeId: "dom-logo::background-image",
+    assetRef: "assets/logo.svg",
+    assetKind: "svg",
+    assetRole: "css-background",
+    rect: { x: 0, y: 0, width: 74, height: 20 },
+    style: {
+      imageScaleMode: "FILL",
+      objectFit: "fill"
+    }
+  });
+
+  assert.equal(node.type, "FRAME");
+  assert.equal(node.width, 74);
+  assert.equal(node.height, 20);
+  assert.equal(node.pluginData.assetRole, "css-background");
+  assert.equal(node.clipsContent, true);
+  assert.equal(node.children.length, 1);
+  assert.equal(node.children[0].type, "VECTOR");
+  assert.equal(node.children[0].width, 74);
+  assert.equal(node.children[0].height, 40);
+  assert.equal(node.children[0].x, 0);
+  assert.equal(node.children[0].y, 0);
+});
+
+test("Figma API adapter preserves border radius on raster image layers", () => {
+  const png = pngHeaderBytes(105, 140);
+  const figmaApi = createMockFigmaApi();
+  const adapter = createFigmaApiAdapter(figmaApi, {
+    assets: {
+      "assets/poster.png": png
+    }
+  });
+
+  const node = adapter.createImageLayer({
+    name: "Image / poster",
+    sourceNodeId: "dom-poster",
+    assetRef: "assets/poster.png",
+    assetKind: "raster",
+    rect: { x: 0, y: 0, width: 105, height: 140 },
+    style: {
+      cornerRadius: 8,
+      objectFit: "cover"
+    }
+  });
+
+  assert.equal(node.type, "RECTANGLE");
+  assert.equal(node.cornerRadius, 8);
+  assert.equal(node.fills[0].type, "IMAGE");
+});
+
+test("Figma API adapter crops ambiguous CSS background SVG sprites from the screenshot", () => {
+  const svgBytes = new TextEncoder().encode(
+    "<svg width=\"252px\" height=\"161px\" viewBox=\"0 0 252 161\"><path fill=\"#fff\" d=\"M0 0h252v161H0z\"/></svg>"
+  );
+  const figmaApi = createMockFigmaApi();
+  const adapter = createFigmaApiAdapter(figmaApi, {
+    assets: {
+      "assets/logo.svg": svgBytes
+    },
+    screenshot: pngHeaderBytes(1440, 973),
+    viewport: { width: 1440, height: 973 }
+  });
+
+  const node = adapter.createImageLayer({
+    name: "Background image",
+    sourceNodeId: "dom-logo::background-image",
+    assetRef: "assets/logo.svg",
+    assetKind: "svg",
+    assetRole: "css-background",
+    rect: { x: 0, y: 0, width: 90, height: 46 },
+    absoluteRect: { x: 20, y: 4, width: 90, height: 46 },
+    styles: {
+      backgroundImage: "url(\"https://cdn.example.com/logo.svg\")"
+    },
+    style: {
+      imageScaleMode: "FILL",
+      objectFit: "fill"
+    }
+  });
+
+  assert.equal(node.type, "RECTANGLE");
+  assert.equal(node.name, "Background image / Screenshot Crop");
+  assert.equal(node.fills[0].type, "IMAGE");
+  assert.equal(node.fills[0].scaleMode, "CROP");
+  assert.equal(node.pluginData.assetRef, "assets/logo.svg");
+  assert.match(node.pluginData.fallbackReason, /css background SVG sizing unavailable/);
+});
+
+test("Figma API adapter crops the screenshot for missing CSS background SVG assets", () => {
+  const figmaApi = createMockFigmaApi();
+  const adapter = createFigmaApiAdapter(figmaApi, {
+    assets: {},
+    screenshot: pngHeaderBytes(390, 844),
+    viewport: { width: 390, height: 844 }
+  });
+
+  const node = adapter.createImageLayer({
+    name: "Background image",
+    sourceNodeId: "dom-logo::background-image",
+    assetRef: null,
+    assetKind: "svg",
+    assetRole: "css-background",
+    rect: { x: 0, y: 0, width: 90, height: 46 },
+    absoluteRect: { x: 20, y: 4, width: 90, height: 46 },
+    style: {
+      imageScaleMode: "FILL",
+      objectFit: "fill"
+    }
+  });
+
+  assert.equal(node.type, "RECTANGLE");
+  assert.equal(node.name, "Background image / Screenshot Crop");
+  assert.equal(node.fills[0].type, "IMAGE");
+  assert.equal(node.fills[0].scaleMode, "CROP");
+  assert.equal(node.pluginData.assetRole, undefined);
+  assert.match(node.pluginData.fallbackReason, /missing image asset; screenshot crop fallback/);
+});
+
 test("Figma API adapter converts CSS linear gradients to Figma paints", () => {
   const figmaApi = createMockFigmaApi();
   const adapter = createFigmaApiAdapter(figmaApi);
@@ -1102,6 +1233,31 @@ test("Figma API adapter converts CSS linear gradients to Figma paints", () => {
   assert.deepEqual(verticalNode.fills[0].gradientStops.map((stop) => stop.position), [0, 1]);
   assert.deepEqual(verticalNode.fills[0].gradientStops[0].color, { r: 0, g: 0, b: 0, a: 0 });
   assert.deepEqual(verticalNode.fills[0].gradientStops[1].color, { r: 0, g: 0, b: 0, a: 1 });
+});
+
+test("Figma API adapter converts CSS linear gradients to stroke paints", () => {
+  const figmaApi = createMockFigmaApi();
+  const adapter = createFigmaApiAdapter(figmaApi);
+
+  const node = adapter.createRectLayer({
+    name: "Shape / ::before",
+    sourceNodeId: "dom-button-before",
+    rect: { x: 0, y: 0, width: 112, height: 36 },
+    style: {
+      fills: [],
+      strokes: [{
+        color: "linear-gradient(45deg, rgb(255, 23, 85), rgb(47, 84, 197))",
+        width: 2.6
+      }],
+      cornerRadius: 20
+    }
+  });
+
+  assert.equal(node.fills.length, 0);
+  assert.equal(node.strokes.length, 1);
+  assert.equal(node.strokes[0].type, "GRADIENT_LINEAR");
+  assert.equal(node.strokeWeight, 2.6);
+  assert.equal(node.cornerRadius, 20);
 });
 
 test("Figma API adapter parses CSS Color 4 values from browser-computed styles", async () => {

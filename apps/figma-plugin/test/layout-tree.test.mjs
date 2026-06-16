@@ -1443,6 +1443,85 @@ test("text nodes with visible backgrounds create visual backing frames", () => {
   assert.equal(model.style.fills[0], "rgb(0, 131, 83)");
 });
 
+test("CSS background image assets with children import as background layers", () => {
+  const logo = node("dom-logo", "div", { x: 20, y: 4, width: 90, height: 46 }, {
+    assetRef: "assets/icon-1.svg",
+    attributes: {
+      assetKind: "svg",
+      assetRole: "css-background"
+    },
+    styles: {
+      backgroundImage: "url(\"https://cdn.example.com/logo.svg\")",
+      backgroundSize: "100% auto"
+    },
+    children: [
+      text("dom-logo-version", "v6.11.0", { x: 89.63, y: 43.1, width: 35.75, height: 7.8 }, {
+        color: "rgb(133, 133, 133)"
+      })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(logo))[0];
+
+  assert.equal(model.type, "FRAME");
+  assert.equal(model.children.length, 2);
+  assert.equal(model.children[0].type, "IMAGE");
+  assert.equal(model.children[0].name, "Background image");
+  assert.equal(model.children[0].assetRef, "assets/icon-1.svg");
+  assert.equal(model.children[0].assetRole, "css-background");
+  assert.equal(model.children[0].layoutPositioning, "ABSOLUTE");
+  assert.deepEqual(model.children[0].rect, { x: 0, y: 0, width: 90, height: 46 });
+  assert.equal(model.children[0].style.imageScaleMode, "FILL");
+  assert.equal(model.children[1].type, "TEXT");
+  assert.equal(model.children[1].text, "v6.11.0");
+});
+
+test("missing CSS background image assets fall back to screenshot crop layers", () => {
+  const logo = node("dom-logo", "div", { x: 20, y: 4, width: 90, height: 46 }, {
+    styles: {
+      backgroundImage: "url(\"https://cdn.example.com/logo.svg\")"
+    },
+    children: [
+      text("dom-logo-version", "v6.11.0", { x: 89.63, y: 43.1, width: 35.75, height: 7.8 })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(logo))[0];
+
+  assert.equal(model.type, "FRAME");
+  assert.equal(model.children[0].type, "IMAGE");
+  assert.equal(model.children[0].assetRef, null);
+  assert.equal(model.children[0].assetKind, "svg");
+  assert.equal(model.children[0].assetRole, "css-background");
+  assert.equal(model.children[0].fallbackReason, "missing css background asset");
+});
+
+test("masked pseudo gradient backgrounds import as gradient strokes", () => {
+  const border = node("dom-button-before", "::before", { x: 1144, y: 12, width: 112, height: 36 }, {
+    nodeType: "pseudo",
+    styles: {
+      backgroundColor: "rgba(0, 0, 0, 0)",
+      backgroundImage: "linear-gradient(45deg, rgb(255, 23, 85), rgb(47, 84, 197))",
+      maskImage: "linear-gradient(rgb(255, 255, 255) 0px, rgb(255, 255, 255) 0px), linear-gradient(rgb(255, 255, 255) 0px, rgb(255, 255, 255) 0px)",
+      paddingTop: "2.6px",
+      paddingRight: "2.6px",
+      paddingBottom: "2.6px",
+      paddingLeft: "2.6px",
+      borderTopLeftRadius: "20px",
+      borderTopRightRadius: "20px",
+      borderBottomRightRadius: "20px",
+      borderBottomLeftRadius: "20px"
+    }
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(border))[0];
+
+  assert.equal(model.type, "RECTANGLE");
+  assert.deepEqual(model.style.fills, []);
+  assert.deepEqual(model.style.strokes, [{
+    color: "linear-gradient(45deg, rgb(255, 23, 85), rgb(47, 84, 197))",
+    width: 2.6
+  }]);
+  assert.equal(model.style.cornerRadius, 20);
+});
+
 test("visible borders and outlines become editable stroke styles", () => {
   const outlineButton = node("dom-outline-button", "button", { x: 24, y: 32, width: 120, height: 36 }, {
     styles: {
