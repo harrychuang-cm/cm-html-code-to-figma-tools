@@ -268,18 +268,22 @@ function createModel(node, context) {
           };
       const shouldUseBackingAutoLayout = borderDecorations.length === 0 &&
         (shouldUsePaddedBacking || backingTextAutoResize === "WIDTH_AND_HEIGHT");
+      const backingTextModel = {
+        ...textModel,
+        textAutoResize: backingTextAutoResize,
+        ...backingTextSizing,
+        rect: childRect
+      };
+      if (shouldUseBackingAutoLayout) {
+        delete backingTextModel.layoutPositioning;
+      }
       return baseModel(node, "FRAME", rect, absoluteRect, {
         name: `Text Background / ${node.textContent.slice(0, 32)}`,
         style: extractVisualStyle(node, context),
         autoLayout: shouldUseBackingAutoLayout
           ? textBackingAutoLayout(backingPadding ?? zeroPadding(), backingTextAutoResize)
           : null,
-        children: [{
-          ...textModel,
-          textAutoResize: backingTextAutoResize,
-          ...backingTextSizing,
-          rect: childRect
-        }, ...borderDecorations]
+        children: [backingTextModel, ...borderDecorations]
       });
     }
     return textModel;

@@ -1665,6 +1665,7 @@ test("rounded video cards keep top-right ranking badges", () => {
   assert.equal(rank.autoLayout.counterAxisAlignItems, "CENTER");
   assert.equal(rank.children[0].type, "TEXT");
   assert.equal(rank.children[0].text, "1");
+  assert.equal(rank.children[0].layoutPositioning, undefined);
   assert.equal(rank.children[0].layoutSizingHorizontal, "HUG");
   assert.equal(rank.children[0].layoutSizingVertical, "HUG");
   assert.equal(rank.children[0].style.text.color, "rgb(255, 255, 255)");

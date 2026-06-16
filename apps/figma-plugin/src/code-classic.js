@@ -2920,6 +2920,9 @@
         childModel.textAutoResize = backingTextAutoResize;
         childModel.layoutSizingHorizontal = textLayoutSizingHorizontal(backingTextAutoResize);
         childModel.layoutSizingVertical = textLayoutSizingVertical(backingTextAutoResize);
+        if (shouldUseBackingAutoLayout) {
+          delete childModel.layoutPositioning;
+        }
         model = baseLayoutModel(node, "FRAME", rect, absoluteRect, [childModel].concat(borderDecorations), context);
         model.name = "Text Background / " + String(node.textContent || "").slice(0, 32);
         model.autoLayout = shouldUseBackingAutoLayout

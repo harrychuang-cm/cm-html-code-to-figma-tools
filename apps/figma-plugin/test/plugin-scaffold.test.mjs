@@ -1802,6 +1802,7 @@ test("classic Figma runtime preserves awwrated header CSS background logos and r
   assert.equal(rankFrame.counterAxisAlignItems, "CENTER");
   assert(rankFrame.children.some((node) => node.type === "TEXT" && node.characters === "1"));
   const rankText = rankFrame.children.find((node) => node.type === "TEXT" && node.characters === "1");
+  assert.equal(rankText.layoutPositioning, undefined);
   assert.equal(rankText.layoutSizingHorizontal, "HUG");
   assert.equal(rankText.layoutSizingVertical, "HUG");
 });
