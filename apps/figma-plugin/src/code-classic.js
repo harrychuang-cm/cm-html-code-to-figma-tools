@@ -4022,14 +4022,12 @@
   }
 
   function orderedChildrenForAutoLayout(children, autoLayout) {
-    var pseudoOrderedChildren = orderPseudoChildrenForFlow(children, autoLayout && autoLayout.layoutMode || "HORIZONTAL");
-    if (autoLayout && autoLayout.applied && autoLayout.reversedChildren) {
-      return pseudoOrderedChildren.slice().reverse();
-    }
+    var layoutMode = autoLayout && autoLayout.layoutMode || "HORIZONTAL";
+    var pseudoOrderedChildren = orderPseudoChildrenForFlow(children, layoutMode);
     if (!autoLayout || !autoLayout.applied) {
       return stackOrderedChildren(pseudoOrderedChildren);
     }
-    return pseudoOrderedChildren;
+    return orderChildrenByVisualFlow(pseudoOrderedChildren, layoutMode);
   }
 
   function orderPseudoChildrenForFlow(children, layoutMode) {
@@ -4052,6 +4050,37 @@
       return !isBeforePseudoModel(child) && !isAfterPseudoModel(child);
     });
     return beforeChildren.concat(flowChildren).concat(afterChildren);
+  }
+
+  function orderChildrenByVisualFlow(children, layoutMode) {
+    var beforeChildren = sortModelsByVisualFlow(children.filter(isBeforePseudoModel), layoutMode);
+    var afterChildren = sortModelsByVisualFlow(children.filter(isAfterPseudoModel), layoutMode);
+    var flowChildren = sortModelsByVisualFlow(children.filter(function (child) {
+      return !isBeforePseudoModel(child) && !isAfterPseudoModel(child);
+    }), layoutMode);
+    return beforeChildren.concat(flowChildren).concat(afterChildren);
+  }
+
+  function sortModelsByVisualFlow(children, layoutMode) {
+    return children.map(function (child, index) {
+      return { child: child, index: index };
+    }).sort(function (a, b) {
+      return compareModelVisualFlow(a.child, b.child, layoutMode) || a.index - b.index;
+    }).map(function (item) {
+      return item.child;
+    });
+  }
+
+  function compareModelVisualFlow(a, b, layoutMode) {
+    var primaryDelta = primaryAxisStart(a.absoluteRect, layoutMode) - primaryAxisStart(b.absoluteRect, layoutMode);
+    if (Math.abs(primaryDelta) > 0.5) {
+      return primaryDelta;
+    }
+    var counterDelta = counterAxisStart(a.absoluteRect, layoutMode) - counterAxisStart(b.absoluteRect, layoutMode);
+    if (Math.abs(counterDelta) > 0.5) {
+      return counterDelta;
+    }
+    return 0;
   }
 
   function stackOrderedChildren(children) {

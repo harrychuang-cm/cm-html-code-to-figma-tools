@@ -1156,6 +1156,62 @@ test("column-reverse flex preserves browser visual child order", () => {
   assert.deepEqual(model.children.map((child) => child.text), ["Top", "Middle", "Bottom"]);
 });
 
+test("auto-layout children follow captured visual order when DOM order differs", () => {
+  const ratingSection = node("dom-rating-section", "section", { x: 232.47, y: 763, width: 169.55, height: 72 }, {
+    styles: {
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "flex-start",
+      justifyContent: "center"
+    },
+    children: [
+      node("dom-rating-label", "h6", { x: 232.47, y: 787, width: 169.55, height: 48 }, {
+        styles: {
+          display: "flex",
+          flexDirection: "column",
+          paddingTop: "10px"
+        },
+        children: [
+          text("dom-rating-info", "推薦!", { x: 232.47, y: 797, width: 32.89, height: 16 }),
+          node("dom-rating-name", "div", { x: 232.47, y: 817, width: 169.55, height: 18 }, {
+            styles: {
+              display: "flex",
+              flexDirection: "row",
+              alignItems: "center"
+            },
+            children: [
+              text("dom-rating-by", "By", { x: 232.47, y: 818, width: 15.82, height: 16 }),
+              text("dom-rating-author", "吉比寶（愛看影片）", { x: 294.02, y: 818, width: 108, height: 16 })
+            ]
+          })
+        ]
+      }),
+      node("dom-rating-stars", "div", { x: 232.47, y: 763, width: 139, height: 24 }, {
+        styles: {
+          display: "flex",
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "center"
+        },
+        children: [
+          node("dom-rating-avatar", "picture", { x: 232.47, y: 763, width: 24, height: 24 }, {
+            styles: { display: "block" }
+          }),
+          text("dom-rating-star", "★", { x: 259.47, y: 767, width: 16, height: 16 })
+        ]
+      })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(ratingSection))[0];
+
+  assert.equal(model.autoLayout.applied, true);
+  assert.equal(model.autoLayout.layoutMode, "VERTICAL");
+  assert.deepEqual(
+    model.children.map((child) => child.sourceNodeId),
+    ["dom-rating-stars", "dom-rating-label"]
+  );
+});
+
 test("flex alignment maps to figma auto layout axis alignment", () => {
   const topMenu = node("dom-top-menu", "ul", { x: 92.91, y: 0, width: 833.68, height: 28 }, {
     styles: {

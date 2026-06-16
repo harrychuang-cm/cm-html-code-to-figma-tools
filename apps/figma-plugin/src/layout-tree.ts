@@ -1212,14 +1212,12 @@ function inferAutoLayout(node, children) {
 }
 
 function orderedChildrenForAutoLayout(children, autoLayout) {
-  const pseudoOrderedChildren = orderPseudoChildrenForFlow(children, autoLayout?.layoutMode ?? "HORIZONTAL");
-  if (autoLayout?.applied && autoLayout.reversedChildren) {
-    return [...pseudoOrderedChildren].reverse();
-  }
+  const layoutMode = autoLayout?.layoutMode ?? "HORIZONTAL";
+  const pseudoOrderedChildren = orderPseudoChildrenForFlow(children, layoutMode);
   if (!autoLayout?.applied) {
     return stackOrderedChildren(pseudoOrderedChildren);
   }
-  return pseudoOrderedChildren;
+  return orderChildrenByVisualFlow(pseudoOrderedChildren, layoutMode);
 }
 
 function orderPseudoChildrenForFlow(children, layoutMode) {
@@ -1237,6 +1235,39 @@ function orderPseudoChildrenForFlow(children, layoutMode) {
     ...flowChildren,
     ...afterChildren
   ];
+}
+
+function orderChildrenByVisualFlow(children, layoutMode) {
+  const beforeChildren = sortModelsByVisualFlow(children.filter(isBeforePseudoModel), layoutMode);
+  const afterChildren = sortModelsByVisualFlow(children.filter(isAfterPseudoModel), layoutMode);
+  const flowChildren = sortModelsByVisualFlow(
+    children.filter((child) => !isBeforePseudoModel(child) && !isAfterPseudoModel(child)),
+    layoutMode
+  );
+  return [
+    ...beforeChildren,
+    ...flowChildren,
+    ...afterChildren
+  ];
+}
+
+function sortModelsByVisualFlow(children, layoutMode) {
+  return children
+    .map((child, index) => ({ child, index }))
+    .sort((a, b) => compareModelVisualFlow(a.child, b.child, layoutMode) || a.index - b.index)
+    .map((item) => item.child);
+}
+
+function compareModelVisualFlow(a, b, layoutMode) {
+  const primaryDelta = primaryAxisStart(a.absoluteRect, layoutMode) - primaryAxisStart(b.absoluteRect, layoutMode);
+  if (Math.abs(primaryDelta) > 0.5) {
+    return primaryDelta;
+  }
+  const counterDelta = counterAxisStart(a.absoluteRect, layoutMode) - counterAxisStart(b.absoluteRect, layoutMode);
+  if (Math.abs(counterDelta) > 0.5) {
+    return counterDelta;
+  }
+  return 0;
 }
 
 function stackOrderedChildren(children) {

@@ -3350,6 +3350,147 @@ test("classic Figma runtime centers margin-auto children in vertical auto layout
   assert.equal(section.paddingRight, 0);
 });
 
+test("classic Figma runtime orders auto-layout children by captured visual position", async () => {
+  const main = await readFile("apps/figma-plugin/dist/code.js", "utf8");
+  const posted = [];
+
+  function captureNode(sourceNodeId, tagName, rect, extra = {}) {
+    return {
+      id: `node-${sourceNodeId}`,
+      sourceNodeId,
+      nodeType: extra.nodeType ?? "element",
+      tagName,
+      textContent: extra.textContent ?? "",
+      rect,
+      styles: extra.styles ?? {},
+      attributes: extra.attributes ?? {},
+      children: extra.children ?? []
+    };
+  }
+
+  function captureText(sourceNodeId, textContent, rect, styles = {}) {
+    return captureNode(sourceNodeId, "#text", rect, {
+      nodeType: "text",
+      textContent,
+      styles: {
+        fontSize: "14px",
+        lineHeight: "16px",
+        color: "rgb(255, 255, 255)",
+        ...styles
+      }
+    });
+  }
+
+  function createNode(type) {
+    return {
+      type,
+      name: "",
+      children: [],
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0,
+      fills: [],
+      strokes: [],
+      pluginData: {},
+      resize(width, height) {
+        this.width = width;
+        this.height = height;
+      },
+      appendChild(child) {
+        this.children.push(child);
+      },
+      setPluginData(key, value) {
+        this.pluginData[key] = value;
+      }
+    };
+  }
+
+  const root = captureNode("dom-rating-section", "section", { x: 232.47, y: 763, width: 169.55, height: 72 }, {
+    styles: {
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "flex-start",
+      justifyContent: "center"
+    },
+    children: [
+      captureNode("dom-rating-label", "h6", { x: 232.47, y: 787, width: 169.55, height: 48 }, {
+        styles: { display: "flex", flexDirection: "column", paddingTop: "10px" },
+        children: [
+          captureText("dom-rating-info", "推薦!", { x: 232.47, y: 797, width: 32.89, height: 16 }),
+          captureText("dom-rating-author", "By LV 7 吉比寶（愛看影片）", { x: 232.47, y: 817, width: 169.55, height: 18 })
+        ]
+      }),
+      captureNode("dom-rating-stars", "div", { x: 232.47, y: 763, width: 139, height: 24 }, {
+        styles: {
+          display: "flex",
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "center"
+        },
+        children: [
+          captureText("dom-rating-avatar", "●", { x: 232.47, y: 763, width: 24, height: 24 }),
+          captureText("dom-rating-star", "★", { x: 259.47, y: 767, width: 16, height: 16 })
+        ]
+      })
+    ]
+  });
+  const basePackage = createValidPackage();
+  const packageData = createValidPackage({
+    capture: {
+      ...basePackage.capture,
+      root
+    }
+  });
+  const figma = {
+    currentPage: { children: [], appendChild(child) { this.children.push(child); } },
+    ui: { onmessage: null, postMessage(message) { posted.push(message); } },
+    showUI() {},
+    createFrame() { return createNode("FRAME"); },
+    createRectangle() { return createNode("RECTANGLE"); },
+    createText() { return createNode("TEXT"); },
+    createImage(bytes) { return { hash: `hash-${bytes.length}` }; },
+    async loadFontAsync() {}
+  };
+
+  vm.runInNewContext(main, {
+    figma,
+    Uint8Array,
+    Uint32Array,
+    ArrayBuffer,
+    DataView,
+    Error,
+    JSON,
+    Math,
+    Number,
+    Object,
+    Promise,
+    String,
+    Boolean,
+    Array,
+    isFinite,
+    parseFloat
+  });
+  await figma.ui.onmessage({
+    type: "IMPORT_PACKAGE",
+    filename: "visual-order.figcapture",
+    bytes: packFigcapture(packageData)
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const success = posted.find((message) => message.type === "IMPORT_SUCCESS");
+  assert.ok(success, `expected IMPORT_SUCCESS, got ${JSON.stringify(posted)}`);
+
+  const accurateFrame = figma.currentPage.children[1];
+  const section = flattenNodes(accurateFrame.children).find((node) => node.pluginData?.sourceNodeId === "dom-rating-section");
+  assert(section);
+  assert.equal(section.layoutMode, "VERTICAL");
+  assert.deepEqual(
+    section.children.map((node) => node.pluginData?.sourceNodeId),
+    ["dom-rating-stars", "dom-rating-label"]
+  );
+});
+
 test("classic Figma runtime sizes full-page frames to the document dimensions", async () => {
   const main = await readFile("apps/figma-plugin/dist/code.js", "utf8");
   const posted = [];
