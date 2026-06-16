@@ -23,6 +23,8 @@ export const SET_PINNED_HIDDEN_MESSAGE = "FIGCAPTURE_SET_PINNED_HIDDEN";
 
 export const MAX_FULL_PAGE_HEIGHT = 20000;
 export const MAX_FULL_PAGE_SEGMENTS = 25;
+export const MAX_CDP_SCREENSHOT_BITMAP_DIMENSION = 16384;
+export const MAX_PREVIEW_SCREENSHOT_DATA_URL_BYTES = 8 * 1024 * 1024;
 
 export const RUNTIME_ERROR_CATEGORIES = {
   MISSING_ACTIVE_TAB: "missing-active-tab",
@@ -47,6 +49,7 @@ export function createChromeCaptureRuntime(options = {}) {
   const contentRequest = options.contentRequest ?? sendContentRequest;
   const stitcher = options.stitcher ?? stitchScreenshotSegments;
   const emulationFactory = options.emulationFactory ?? createDeviceEmulationSession;
+  const previewScreenshotMaxBytes = options.previewScreenshotMaxBytes ?? MAX_PREVIEW_SCREENSHOT_DATA_URL_BYTES;
   const getPending = options.getPending ?? (() => pendingCapture);
   const setPending = options.setPending ?? ((value) => {
     pendingCapture = value;
@@ -67,7 +70,9 @@ export function createChromeCaptureRuntime(options = {}) {
       previewPackage.packageData.diagnostics.warnings.push(truncationWarning);
     }
 
-    const preview = createPreviewPayload(capture, screenshotDataUrl, previewPackage.packageData.diagnostics, tab);
+    const preview = createPreviewPayload(capture, screenshotDataUrl, previewPackage.packageData.diagnostics, tab, {
+      previewScreenshotMaxBytes
+    });
     setPending({
       tab,
       capture,
@@ -88,13 +93,13 @@ export function createChromeCaptureRuntime(options = {}) {
     return screenshotAdapter(chromeApi, { tab });
   }
 
-  function clipFor(width, height) {
+  function clipFor(width, height, x = 0, y = 0) {
     const w = Number(width);
     const h = Number(height);
     if (!(w > 0) || !(h > 0)) {
       return null;
     }
-    return { x: 0, y: 0, width: w, height: h, scale: 1 };
+    return { x: Number(x) || 0, y: Number(y) || 0, width: w, height: h, scale: 1 };
   }
 
   // When a device-emulation override is active, the real viewport pixels live in
@@ -168,9 +173,37 @@ export function createChromeCaptureRuntime(options = {}) {
       capture = domResponse.capture;
 
       if (screenshot.supportsClip) {
-        // CDP renders the whole emulated page in a single shot — no scroll-stitch,
-        // and no blank segments from mobile/zero-height emulation surfaces.
+        // Short CDP captures can render the whole emulated page in a single shot.
+        // Tall pages must be clipped into slices because Chrome clamps very large
+        // screenshot bitmaps; stretching the clamped bitmap distorts the source frame.
         await contentRequest(chromeApi, tab.id, { type: SCROLL_TO_MESSAGE, scrollY: 0 });
+        if (shouldSegmentCdpFullPageCapture(plan, metrics.viewport)) {
+          const segments = [];
+          const clips = cdpFullPageClipSegments(plan, metrics.viewport);
+          for (let index = 0; index < clips.length; index += 1) {
+            const clip = clips[index];
+            const dataUrl = await captureSegmentScreenshot(
+              tab,
+              () => screenshot(tab, clipFor(clip.width, clip.height, 0, clip.y))
+            );
+            segments.push({
+              dataUrl,
+              scrollY: clip.y,
+              width: clip.width,
+              height: clip.height
+            });
+            if (index === 0 && clips.length > 1) {
+              await contentRequest(chromeApi, tab.id, { type: SET_PINNED_HIDDEN_MESSAGE, hidden: true });
+            }
+          }
+          const screenshotDataUrl = await stitcher(segments, {
+            documentWidth: plan.documentWidth,
+            documentHeight: plan.documentHeight,
+            devicePixelRatio: metrics.viewport.devicePixelRatio ?? 1,
+            outputScale: 1
+          });
+          return { capture, screenshotDataUrl, truncationWarning };
+        }
         const screenshotDataUrl = await screenshot(tab, clipFor(plan.documentWidth, plan.documentHeight));
         return { capture, screenshotDataUrl, truncationWarning };
       }
@@ -269,7 +302,8 @@ export function createChromeCaptureRuntime(options = {}) {
         primary.packageData.capture,
         breakpoints[0].screenshotDataUrl,
         primary.packageData.diagnostics,
-        tab
+        tab,
+        { previewScreenshotMaxBytes }
       ),
       multiCapture: true,
       breakpoints: captureEntries.map((entry, index) => ({
@@ -281,8 +315,7 @@ export function createChromeCaptureRuntime(options = {}) {
         },
         captureMode: entry.packageData.capture.captureMode ?? "viewport",
         diagnostics: entry.packageData.diagnostics,
-        diagnosticsSummary: summarizeDiagnostics(entry.packageData.diagnostics),
-        screenshotDataUrl: breakpoints[index].screenshotDataUrl
+        diagnosticsSummary: summarizeDiagnostics(entry.packageData.diagnostics)
       })),
       failures
     };
@@ -389,6 +422,34 @@ export function computeFullPageCapturePlan(metrics, limits = {}) {
     truncated: documentHeight < rawDocumentHeight,
     segmentOffsets
   };
+}
+
+export function shouldSegmentCdpFullPageCapture(plan = {}, viewport = {}, limits = {}) {
+  const maxBitmapDimension = limits.maxBitmapDimension ?? MAX_CDP_SCREENSHOT_BITMAP_DIMENSION;
+  const dpr = Number(viewport.devicePixelRatio ?? 1) || 1;
+  const width = Number(plan.documentWidth ?? 0);
+  const height = Number(plan.documentHeight ?? 0);
+  return width * dpr > maxBitmapDimension || height * dpr > maxBitmapDimension;
+}
+
+export function cdpFullPageClipSegments(plan = {}, viewport = {}, limits = {}) {
+  const maxBitmapDimension = limits.maxBitmapDimension ?? MAX_CDP_SCREENSHOT_BITMAP_DIMENSION;
+  const dpr = Number(viewport.devicePixelRatio ?? 1) || 1;
+  const documentWidth = Math.max(1, Number(plan.documentWidth ?? viewport.width ?? 0));
+  const documentHeight = Math.max(1, Number(plan.documentHeight ?? viewport.height ?? 0));
+  const viewportHeight = Math.max(1, Number(viewport.height ?? documentHeight));
+  const maxCssHeightForBitmap = Math.max(1, Math.floor(maxBitmapDimension / Math.max(dpr, 1)));
+  const segmentHeight = Math.max(1, Math.min(viewportHeight, maxCssHeightForBitmap, documentHeight));
+  const segments = [];
+  for (let y = 0; y < documentHeight; y += segmentHeight) {
+    segments.push({
+      x: 0,
+      y,
+      width: documentWidth,
+      height: Math.min(segmentHeight, documentHeight - y)
+    });
+  }
+  return segments;
 }
 
 export function createFetchAssetResolver(fetchImpl = globalThis.fetch?.bind(globalThis)) {
@@ -499,11 +560,10 @@ export async function handleConfirmExport(chromeApi = globalThis.chrome, options
   }
 }
 
-export function createPreviewPayload(capture, screenshotDataUrl, diagnostics, tab = {}) {
+export function createPreviewPayload(capture, screenshotDataUrl, diagnostics, tab = {}, options = {}) {
   const summary = summarizeDiagnostics(diagnostics);
-  return {
-    screenshotDataUrl,
-    screenshotUrl: screenshotDataUrl,
+  const previewScreenshot = boundedPreviewScreenshotDataUrl(screenshotDataUrl, options);
+  const payload = {
     sourceUrl: capture.sourceUrl || tab.url || "",
     viewport: {
       width: capture.viewport.width,
@@ -516,6 +576,7 @@ export function createPreviewPayload(capture, screenshotDataUrl, diagnostics, ta
     diagnosticsSummary: summary,
     packageGenerationStatus: "ready",
     packageStatus: "ready",
+    screenshotPreviewStatus: previewScreenshot ? "ready" : "omitted",
     ...(capture.captureMode === "full-page"
       ? {
         captureMode: "full-page",
@@ -524,6 +585,32 @@ export function createPreviewPayload(capture, screenshotDataUrl, diagnostics, ta
       }
       : { captureMode: "viewport" })
   };
+  if (previewScreenshot) {
+    payload.screenshotDataUrl = previewScreenshot;
+    payload.screenshotUrl = previewScreenshot;
+  }
+  return payload;
+}
+
+function boundedPreviewScreenshotDataUrl(screenshotDataUrl, options = {}) {
+  if (typeof screenshotDataUrl !== "string" || !screenshotDataUrl.startsWith("data:image/")) {
+    return null;
+  }
+  const maxBytes = normalizePreviewScreenshotMaxBytes(options.previewScreenshotMaxBytes);
+  // Screenshot data URLs are ASCII base64; length is a tight byte estimate and
+  // avoids allocating a second giant string just to measure UTF-8 size.
+  if (screenshotDataUrl.length > maxBytes) {
+    return null;
+  }
+  return screenshotDataUrl;
+}
+
+function normalizePreviewScreenshotMaxBytes(value) {
+  const maxBytes = Number(value);
+  if (Number.isFinite(maxBytes) && maxBytes >= 0) {
+    return Math.floor(maxBytes);
+  }
+  return MAX_PREVIEW_SCREENSHOT_DATA_URL_BYTES;
 }
 
 async function requestContentResponse(chromeApi, tabId, message) {

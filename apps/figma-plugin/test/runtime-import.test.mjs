@@ -12,7 +12,10 @@ import {
   registerFigmaPluginRuntime
 } from "../dist/code-module.js";
 import {
+  DEFAULT_IMPORT_PACKAGE_CHUNK_SIZE,
+  createImportPackageTransferMessages,
   createImportPackageMessage,
+  postImportPackageFile,
   readFileAsImportPackageMessage
 } from "../dist/message-bridge.js";
 import {
@@ -149,6 +152,11 @@ test("Figma API adapter creates real frame, image, text, rectangle, fallback, an
   assert(result.renderResult.frames.every((frame) => frame.width === 1440 && frame.height === 900));
   assert.equal(result.renderResult.frames[0].children[0].locked, true);
   assert.equal(result.renderResult.frames[0].children[0].imageHash, "hash-4");
+  assert.equal(result.renderResult.frames[0].children[0].fills[0].scaleMode, "CROP");
+  assert.deepEqual(result.renderResult.frames[0].children[0].fills[0].imageTransform, [
+    [1, 0, 0],
+    [0, 1, 0]
+  ]);
   assert.equal(imageCreateCount, 1);
   const editableNodes = flattenNodes(result.renderResult.frames[1].children);
   const cardNode = editableNodes.find((node) => node.pluginData?.sourceNodeId === "dom-card");
@@ -278,17 +286,17 @@ test("Figma API adapter falls back to a screenshot crop when a raster asset cann
 
   assert.equal(result.status, "success");
   assert(banner);
-  assert.equal(banner.type, "FRAME");
+  assert.equal(banner.type, "RECTANGLE");
   assert.equal(banner.name, "Image / banner / Screenshot Crop");
-  assert.equal(banner.clipsContent, true);
   assert.equal(banner.pluginData.assetRef, "assets/banner.webp");
   assert.match(banner.pluginData.fallbackReason, /screenshot crop fallback/);
-  assert.equal(banner.children[0].x, 0);
-  assert.equal(banner.children[0].y, -159);
-  assert.equal(banner.children[0].width, 390);
-  assert.equal(banner.children[0].height, 844);
-  assert.equal(banner.children[0].locked, true);
-  assert.equal(banner.children[0].fills[0].imageHash, "hash-4");
+  assert.equal(banner.children.length, 0);
+  assert.equal(banner.fills[0].scaleMode, "CROP");
+  assert.equal(banner.fills[0].imageHash, "hash-4");
+  assert.deepEqual(banner.fills[0].imageTransform, [
+    [1, 0, 0],
+    [0, 0.11, 0.19]
+  ]);
 });
 
 test("Figma API adapter falls back to a screenshot crop when an image asset is unsupported", async () => {
@@ -342,12 +350,15 @@ test("Figma API adapter falls back to a screenshot crop when an image asset is u
 
   assert.equal(result.status, "success");
   assert(product);
-  assert.equal(product.type, "FRAME");
+  assert.equal(product.type, "RECTANGLE");
   assert.equal(product.name, "Image / product / Screenshot Crop");
   assert.match(product.pluginData.fallbackReason, /screenshot crop fallback/);
-  assert.equal(product.children[0].x, -24);
-  assert.equal(product.children[0].y, -332);
-  assert.equal(product.children[0].locked, true);
+  assert.equal(product.children.length, 0);
+  assert.equal(product.fills[0].scaleMode, "CROP");
+  assert.deepEqual(product.fills[0].imageTransform, [
+    [0.4, 0, 0.06],
+    [0, 0.25, 0.39]
+  ]);
 });
 
 test("Figma API adapter falls back to a full-page screenshot crop when a contained raster asset has the wrong aspect ratio", async () => {
@@ -401,13 +412,86 @@ test("Figma API adapter falls back to a full-page screenshot crop when a contain
 
   assert.equal(result.status, "success");
   assert(logo);
-  assert.equal(logo.type, "FRAME");
+  assert.equal(logo.type, "RECTANGLE");
   assert.equal(logo.name, "Image / Logo / Screenshot Crop");
-  assert.equal(logo.children[0].x, -40);
-  assert.equal(logo.children[0].y, -6);
-  assert.equal(logo.children[0].width, 1440);
-  assert.equal(logo.children[0].height, 5882);
+  assert.equal(logo.children.length, 0);
+  assert.equal(logo.fills[0].scaleMode, "CROP");
+  assert.deepEqual(logo.fills[0].imageTransform, [
+    [0.11, 0, 0.03],
+    [0, 0.01, 0]
+  ]);
   assert.match(logo.pluginData.fallbackReason, /asset aspect ratio mismatch/);
+});
+
+test("Figma API adapter uses source screenshot tiles for contained raster crop fallback", () => {
+  const figmaApi = createMockFigmaApi();
+  const adapter = createFigmaApiAdapter(figmaApi, {
+    assets: {
+      "assets/logo.png": pngHeaderBytes(280, 46),
+      "assets/source-screenshot/tile-0000.png": pngHeaderBytes(2880, 1786),
+      "assets/source-screenshot/tile-0001.png": pngHeaderBytes(2880, 1787),
+      "assets/source-screenshot/tile-0002.png": pngHeaderBytes(2880, 1786),
+      "assets/source-screenshot/tile-0003.png": pngHeaderBytes(2880, 1786),
+      "assets/source-screenshot/tile-0004.png": pngHeaderBytes(2880, 1786),
+      "assets/source-screenshot/tile-0005.png": pngHeaderBytes(2880, 1787),
+      "assets/source-screenshot/tile-0006.png": pngHeaderBytes(2880, 1786),
+      "assets/source-screenshot/tile-0007.png": pngHeaderBytes(2880, 1786),
+      "assets/source-screenshot/tile-0008.png": pngHeaderBytes(2880, 1786),
+      "assets/source-screenshot/tile-0009.png": pngHeaderBytes(2880, 308)
+    },
+    screenshot: pngHeaderBytes(2880, 16384),
+    viewport: { width: 1440, height: 16510 }
+  });
+
+  const logo = adapter.createImageLayer({
+    name: "Image / Footer Logo",
+    assetRef: "assets/logo.png",
+    x: 40,
+    y: 16232.61,
+    width: 140,
+    height: 47,
+    rect: { x: 40, y: 16232.61, width: 140, height: 47 },
+    absoluteRect: { x: 40, y: 16232.61, width: 140, height: 47 },
+    style: { objectFit: "contain" }
+  });
+
+  assert.equal(logo.type, "RECTANGLE");
+  assert.equal(logo.name, "Image / Footer Logo / Screenshot Crop");
+  assert.equal(logo.children.length, 0);
+  assert.equal(logo.pluginData.cropAssetRef, "assets/source-screenshot/tile-0009.png");
+  assert.equal(logo.fills[0].scaleMode, "CROP");
+  assert.deepEqual(logo.fills[0].imageTransform, [
+    [0.1, 0, 0.03],
+    [0, 0.15, 0.11]
+  ]);
+  assert.match(logo.pluginData.fallbackReason, /asset aspect ratio mismatch/);
+});
+
+test("Figma API adapter maps contained raster images to FIT without screenshot crop", () => {
+  const figmaApi = createMockFigmaApi();
+  const adapter = createFigmaApiAdapter(figmaApi, {
+    assets: {
+      "assets/logo.png": pngHeaderBytes(312, 104)
+    },
+    screenshot: pngHeaderBytes(2880, 16384),
+    viewport: { width: 1440, height: 16510 }
+  });
+
+  const logo = adapter.createImageLayer({
+    name: "Image / Logo",
+    assetRef: "assets/logo.png",
+    x: 40,
+    y: 6,
+    width: 156,
+    height: 52,
+    rect: { x: 40, y: 6, width: 156, height: 52 },
+    style: { objectFit: "contain" }
+  });
+
+  assert.equal(logo.type, "RECTANGLE");
+  assert.equal(logo.fills[0].type, "IMAGE");
+  assert.equal(logo.fills[0].scaleMode, "FIT");
+  assert.equal(logo.pluginData.fallbackReason, undefined);
 });
 
 test("Figma API adapter applies side-specific strokes for rounded partial borders", async () => {
@@ -1115,6 +1199,34 @@ test("plugin runtime bridge imports a valid package and posts success report", a
   assert.equal(posted[0].report.createdFrameCount, 2);
 });
 
+test("plugin runtime bridge imports package chunks after reassembly", async () => {
+  const posted = [];
+  const figmaApi = {
+    ...createMockFigmaApi(),
+    showUI() {},
+    ui: {
+      postMessage(message) {
+        posted.push(message);
+      },
+      onmessage: null
+    }
+  };
+  assert.equal(registerFigmaPluginRuntime(figmaApi), true);
+
+  const messages = createImportPackageTransferMessages(
+    "dashboard.figcapture",
+    packFigcapture(createRuntimePackage()),
+    { chunkSize: 17, transferId: "runtime-transfer" }
+  );
+  for (const message of messages) {
+    await figmaApi.ui.onmessage(message);
+  }
+
+  assert(posted.some((message) => message.type === "IMPORT_PROGRESS" && message.phase === "receiving"));
+  assert.equal(posted.at(-1).type, "IMPORT_SUCCESS");
+  assert.equal(posted.at(-1).report.createdFrameCount, 2);
+});
+
 test("plugin runtime bridge rejects invalid packages without creating nodes", async () => {
   const figmaApi = createMockFigmaApi();
   const files = createFigcaptureFileMap(createRuntimePackage());
@@ -1126,6 +1238,72 @@ test("plugin runtime bridge rejects invalid packages without creating nodes", as
   assert.equal(result.status, "error");
   assert.equal(result.error.category, "missing-screenshot");
   assert.equal(figmaApi.createdNodes.length, 0);
+});
+
+test("plugin UI bridge sends .figcapture files as bounded chunks", async () => {
+  const bytes = new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  const posted = [];
+  const progress = [];
+  const target = {
+    postMessage(message, origin) {
+      posted.push({ message, origin });
+    }
+  };
+
+  const result = await postImportPackageFile(target, {
+    name: "large.figcapture",
+    async arrayBuffer() {
+      return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    }
+  }, {
+    chunkSize: 4,
+    transferId: "ui-transfer",
+    matchVariables: false,
+    onProgress(item) {
+      progress.push(item);
+    }
+  });
+
+  assert.deepEqual(result, {
+    filename: "large.figcapture",
+    totalBytes: 10,
+    totalChunks: 3
+  });
+  assert.deepEqual(posted.map((entry) => entry.origin), ["*", "*", "*", "*", "*"]);
+  assert.deepEqual(posted.map((entry) => entry.message.pluginMessage.type), [
+    "IMPORT_PACKAGE_TRANSFER_START",
+    "IMPORT_PACKAGE_TRANSFER_CHUNK",
+    "IMPORT_PACKAGE_TRANSFER_CHUNK",
+    "IMPORT_PACKAGE_TRANSFER_CHUNK",
+    "IMPORT_PACKAGE_TRANSFER_END"
+  ]);
+  assert.deepEqual(posted
+    .filter((entry) => entry.message.pluginMessage.type === "IMPORT_PACKAGE_TRANSFER_CHUNK")
+    .map((entry) => Array.from(entry.message.pluginMessage.bytes)), [
+    [0, 1, 2, 3],
+    [4, 5, 6, 7],
+    [8, 9]
+  ]);
+  assert.deepEqual(progress.map((item) => [item.sentChunks, item.totalChunks, item.sentBytes]), [
+    [1, 3, 4],
+    [2, 3, 8],
+    [3, 3, 10]
+  ]);
+});
+
+test("plugin UI bridge defaults to conservative transfer chunks", () => {
+  const bytes = new Uint8Array(DEFAULT_IMPORT_PACKAGE_CHUNK_SIZE * 2 + 17);
+  const messages = createImportPackageTransferMessages("large.figcapture", bytes, {
+    transferId: "default-chunk-size"
+  });
+  const start = messages[0];
+  const chunks = messages.filter((message) => message.type === "IMPORT_PACKAGE_TRANSFER_CHUNK");
+
+  assert.equal(DEFAULT_IMPORT_PACKAGE_CHUNK_SIZE, 256 * 1024);
+  assert.equal(start.chunkSize, DEFAULT_IMPORT_PACKAGE_CHUNK_SIZE);
+  assert.equal(start.totalChunks, 3);
+  assert(chunks.every((message) => message.bytes.byteLength <= DEFAULT_IMPORT_PACKAGE_CHUNK_SIZE));
+  assert.equal(chunks.at(-1).bytes.byteLength, 17);
 });
 
 test("plugin UI reports file transfer error and renders success without raw JSON", async () => {

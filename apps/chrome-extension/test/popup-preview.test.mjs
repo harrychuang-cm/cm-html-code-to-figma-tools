@@ -66,6 +66,50 @@ test("popup preview renders screenshot and diagnostics before download", () => {
   assert.equal(elements.get("download-button").disabled, false);
 });
 
+test("popup preview handles omitted oversized screenshot previews", () => {
+  const screenshot = {
+    src: "stale",
+    hidden: false,
+    removed: [],
+    removeAttribute(name) {
+      this.removed.push(name);
+      if (name === "src") {
+        this.src = "";
+      }
+    }
+  };
+  const elements = new Map([
+    ["capture-preview", { hidden: true }],
+    ["screenshot-preview", screenshot],
+    ["download-button", { disabled: true }],
+    ["source-url", { textContent: "" }],
+    ["viewport-size", { textContent: "" }],
+    ["fallback-count", { textContent: "" }],
+    ["missing-asset-count", { textContent: "" }],
+    ["unsupported-style-count", { textContent: "" }],
+    ["package-generation-status", { textContent: "" }],
+    ["runtime-error-category", { textContent: "" }]
+  ]);
+  const documentRef = {
+    getElementById(id) {
+      return elements.get(id);
+    }
+  };
+
+  renderCapturePreview(documentRef, {
+    sourceUrl: "https://app.example.com/dashboard",
+    viewport: { width: 1440, height: 900 },
+    packageGenerationStatus: "ready",
+    screenshotPreviewStatus: "omitted",
+    diagnostics: createEmptyDiagnostics()
+  });
+
+  assert.equal(elements.get("capture-preview").hidden, false);
+  assert.equal(screenshot.hidden, true);
+  assert.deepEqual(screenshot.removed, ["src"]);
+  assert.equal(elements.get("download-button").disabled, false);
+});
+
 test("popup renders runtime error category and disables download", () => {
   const elements = new Map([
     ["capture-status", { textContent: "" }],

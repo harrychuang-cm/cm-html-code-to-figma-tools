@@ -99,6 +99,47 @@ test("full-page source screenshots use packaged tiles when available", () => {
   assert.deepEqual(result.sourceScreenshotLayers, sourceLayers);
 });
 
+test("full-page source screenshot tiles fill tall documents when Chrome clamps bitmap height", () => {
+  const base = createValidPackage();
+  const packageData = {
+    ...base,
+    manifest: {
+      ...base.manifest,
+      captureMode: "full-page",
+      documentWidth: 1440,
+      documentHeight: 16510,
+      devicePixelRatio: 2
+    },
+    screenshot: pngHeaderBytes(2880, 16384),
+    assets: {
+      ...base.assets,
+      "assets/source-screenshot/tile-0000.png": pngHeaderBytes(2880, 1786),
+      "assets/source-screenshot/tile-0001.png": pngHeaderBytes(2880, 1787),
+      "assets/source-screenshot/tile-0002.png": pngHeaderBytes(2880, 1786),
+      "assets/source-screenshot/tile-0003.png": pngHeaderBytes(2880, 1786),
+      "assets/source-screenshot/tile-0004.png": pngHeaderBytes(2880, 1786),
+      "assets/source-screenshot/tile-0005.png": pngHeaderBytes(2880, 1787),
+      "assets/source-screenshot/tile-0006.png": pngHeaderBytes(2880, 1786),
+      "assets/source-screenshot/tile-0007.png": pngHeaderBytes(2880, 1786),
+      "assets/source-screenshot/tile-0008.png": pngHeaderBytes(2880, 1786),
+      "assets/source-screenshot/tile-0009.png": pngHeaderBytes(2880, 308)
+    }
+  };
+  const adapter = createMemoryFigmaAdapter();
+  const result = renderThreeFrames(adapter, packageData);
+  const sourceLayers = result.frames[0].children;
+
+  assert.equal(sourceLayers.length, 10);
+  assert.equal(sourceLayers[0].y, 0);
+  assert.equal(sourceLayers.at(-1).y + sourceLayers.at(-1).height, 16510);
+  assert(sourceLayers.every((layer) => layer.width === 1440));
+  assert(sourceLayers.every((layer) => layer.imageScaleMode === "CROP"));
+  assert(sourceLayers.every((layer) => JSON.stringify(layer.imageTransform) === JSON.stringify([
+    [1, 0, 0],
+    [0, 1, 0]
+  ])));
+});
+
 test("viewport manifests keep viewport-sized frames", () => {
   const models = createFrameModels(createValidPackage());
   assert(models.every((model) => model.width === 1440 && model.height === 900));

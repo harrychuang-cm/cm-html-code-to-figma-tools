@@ -99,6 +99,8 @@ function createSourceScreenshotLayerModels(packageData) {
     y: 0,
     width: size.width,
     height: size.height,
+    imageScaleMode: "CROP",
+    imageTransform: fullImageTransform(),
     locked: true
   }];
 }
@@ -106,20 +108,28 @@ function createSourceScreenshotLayerModels(packageData) {
 function createSourceScreenshotTileLayerModels(packageData) {
   const assets = packageData.assets ?? {};
   const size = captureFrameSize(packageData.manifest);
-  const dpr = Number(packageData.manifest?.devicePixelRatio ?? 1) || 1;
   const tileEntries = Object.entries(assets)
     .filter(([name]) => name.startsWith(SOURCE_SCREENSHOT_TILE_PREFIX) && name.endsWith(".png"))
     .sort(([a], [b]) => a.localeCompare(b));
+  const tileIntrinsics = tileEntries.map(([, bytes]) => pngIntrinsicSize(bytes));
+  if (tileIntrinsics.some((intrinsic) => !intrinsic || intrinsic.width <= 0 || intrinsic.height <= 0)) {
+    return [];
+  }
+  const totalIntrinsicHeight = tileIntrinsics.reduce((total, intrinsic) => total + intrinsic.height, 0);
+  if (totalIntrinsicHeight <= 0) {
+    return [];
+  }
+  const cssScaleY = size.height / totalIntrinsicHeight;
   const models = [];
   let y = 0;
 
   for (let index = 0; index < tileEntries.length; index += 1) {
     const [assetRef, bytes] = tileEntries[index];
-    const intrinsic = pngIntrinsicSize(bytes);
-    if (!intrinsic || intrinsic.width <= 0 || intrinsic.height <= 0) {
-      return [];
-    }
-    const height = Math.min(size.height - y, round(intrinsic.height / dpr));
+    const intrinsic = tileIntrinsics[index];
+    const inferredHeight = round(intrinsic.height * cssScaleY);
+    const height = index === tileEntries.length - 1
+      ? round(size.height - y)
+      : Math.min(size.height - y, inferredHeight);
     if (height <= 0) {
       break;
     }
@@ -131,6 +141,8 @@ function createSourceScreenshotTileLayerModels(packageData) {
       y,
       width: size.width,
       height,
+      imageScaleMode: "CROP",
+      imageTransform: fullImageTransform(),
       locked: true
     });
     y = round(y + height);
@@ -307,6 +319,13 @@ function round(value) {
   return Math.round(value * 100) / 100;
 }
 
+function fullImageTransform() {
+  return [
+    [1, 0, 0],
+    [0, 1, 0]
+  ];
+}
+
 export function createMemoryFigmaAdapter() {
   const createdFrames = [];
   const createdImageLayers = [];
@@ -338,6 +357,8 @@ export function createMemoryFigmaAdapter() {
         assetRef: model.assetRef,
         assetKind: model.assetKind,
         fallbackReason: model.fallbackReason,
+        imageScaleMode: model.imageScaleMode,
+        imageTransform: model.imageTransform,
         x: model.x,
         y: model.y,
         width: model.width,

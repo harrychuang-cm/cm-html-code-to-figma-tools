@@ -119,13 +119,13 @@ export function captureVisualAssets(capture, options = {}) {
           const contentType = resolved?.contentType ?? "";
           const resolvedKind = assetKindFromContentType(contentType) ?? assetKind;
           const normalizedBytes = toUint8Array(resolvedBytes);
-          if (shouldRasterizeFetchedImageAsset(source, normalizedBytes, contentType) && options.fallbackRasterProvider) {
-            return Promise.resolve(options.fallbackRasterProvider(node))
+          if (shouldRasterizeFetchedImageAsset(source, normalizedBytes, contentType)) {
+            return Promise.resolve(rasterizeFetchedImageAsset(node, source, normalizedBytes, contentType, options))
               .then((bytes) => {
-                const croppedBytes = normalizeFallbackBytes(bytes);
-                if (croppedBytes.length > 0 && !isTransparentPlaceholder(croppedBytes)) {
+                const rasterBytes = normalizeFallbackBytes(bytes);
+                if (rasterBytes.length > 0 && !isTransparentPlaceholder(rasterBytes)) {
                   updateAssetName(`assets/${namePrefix}-${source.index}.png`);
-                  storeAssetBytes(node, assetName, croppedBytes, "raster", source);
+                  storeAssetBytes(node, assetName, rasterBytes, "raster", source);
                   return;
                 }
                 node.attributes.assetKind = resolvedKind;
@@ -271,6 +271,31 @@ function directCanvasAssetBytes(node) {
 function normalizeFallbackBytes(bytes) {
   const normalized = toUint8Array(bytes);
   return normalized.length > 0 ? normalized : TRANSPARENT_PNG;
+}
+
+async function rasterizeFetchedImageAsset(node, source, bytes, contentType, options) {
+  const providerSource = {
+    ...source,
+    sourceNodeId: node.sourceNodeId
+  };
+  if (typeof options.imageRasterProvider === "function") {
+    try {
+      const rasterized = normalizeFallbackBytes(await options.imageRasterProvider(providerSource, bytes, contentType));
+      if (rasterized.length > 0 && !isTransparentPlaceholder(rasterized)) {
+        return rasterized;
+      }
+    } catch {
+      // Fall through to screenshot crop fallback when direct image decoding is unavailable.
+    }
+  }
+  if (typeof options.fallbackRasterProvider === "function") {
+    try {
+      return await options.fallbackRasterProvider(node);
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 function shouldRasterizeFetchedImageAsset(source, bytes, contentType = "") {

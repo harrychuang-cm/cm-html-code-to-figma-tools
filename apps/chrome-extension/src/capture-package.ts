@@ -13,9 +13,11 @@ const SOURCE_SCREENSHOT_TILE_MAX_BITMAP_DIMENSION = 4096;
 export async function buildCapturePackageData(capture, screenshotDataUrl, options = {}) {
   const fallbackRasterProvider = options.fallbackRasterProvider ??
     createScreenshotCropFallbackProvider(screenshotDataUrl, screenshotFallbackBoundsForCapture(capture));
+  const imageRasterProvider = options.imageRasterProvider ?? createImageAssetRasterProvider();
   const assetResult = await captureVisualAssets(capture, {
     ...options,
-    fallbackRasterProvider
+    fallbackRasterProvider,
+    imageRasterProvider
   });
   const sourceScreenshotTiles = await createSourceScreenshotTileAssets(assetResult.capture, screenshotDataUrl);
   const figmaPlan = createInitialFigmaPlan(assetResult.capture, assetResult.sourceNodeMap);
@@ -252,6 +254,50 @@ export function createScreenshotCropFallbackProvider(screenshotDataUrl, viewport
   }
 }
 
+export function createImageAssetRasterProvider() {
+  return async function imageAssetRasterProvider(_source, bytes, contentType = "") {
+    if (
+      typeof globalThis.createImageBitmap !== "function" ||
+      typeof globalThis.OffscreenCanvas !== "function" ||
+      typeof globalThis.Blob !== "function"
+    ) {
+      return null;
+    }
+
+    const imageBytes = toUint8Array(bytes);
+    if (imageBytes.length === 0) {
+      return null;
+    }
+
+    let bitmap = null;
+    try {
+      const blob = new globalThis.Blob([imageBytes], {
+        type: contentType || "image/webp"
+      });
+      bitmap = await globalThis.createImageBitmap(blob);
+      if (!bitmap?.width || !bitmap?.height) {
+        return null;
+      }
+
+      const canvas = new globalThis.OffscreenCanvas(bitmap.width, bitmap.height);
+      const context = canvas.getContext?.("2d");
+      if (!context?.drawImage || typeof canvas.convertToBlob !== "function") {
+        return null;
+      }
+
+      context.drawImage(bitmap, 0, 0);
+      const pngBlob = await canvas.convertToBlob({ type: "image/png" });
+      return new Uint8Array(await pngBlob.arrayBuffer());
+    } catch {
+      return null;
+    } finally {
+      if (typeof bitmap?.close === "function") {
+        bitmap.close();
+      }
+    }
+  };
+}
+
 async function decodeScreenshotBitmap(screenshotDataUrl) {
   const bytes = dataUrlToBytes(screenshotDataUrl);
   if (bytes.length === 0) {
@@ -301,6 +347,22 @@ function bytesToBase64(bytes) {
     return btoa(binary);
   }
   return Buffer.from(bytes).toString("base64");
+}
+
+function toUint8Array(value) {
+  if (value instanceof Uint8Array) {
+    return value;
+  }
+  if (value instanceof ArrayBuffer) {
+    return new Uint8Array(value);
+  }
+  if (Array.isArray(value)) {
+    return new Uint8Array(value);
+  }
+  if (value?.buffer instanceof ArrayBuffer) {
+    return new Uint8Array(value.buffer, value.byteOffset ?? 0, value.byteLength);
+  }
+  return new Uint8Array(0);
 }
 
 function planTypeForNode(node) {

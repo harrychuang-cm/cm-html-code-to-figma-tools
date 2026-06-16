@@ -5,8 +5,7 @@ import {
   IMPORT_SUCCESS,
   createImportErrorMessage,
   normalizePluginMessage,
-  postPluginMessage,
-  readFileAsImportPackageMessage
+  postImportPackageFile
 } from "./message-bridge.ts";
 
 export function connectFigmaPluginUi(
@@ -30,10 +29,20 @@ export function connectFigmaPluginUi(
     showProgress(documentRef, { phase: "reading", message: "Reading file", indeterminate: true });
     try {
       const matchVariables = readMatchVariables(documentRef);
-      const message = await readFileAsImportPackageMessage(file, { matchVariables });
+      await postImportPackageFile(parentWindow, file, {
+        matchVariables,
+        onProgress(progress) {
+          renderProgress(documentRef, {
+            phase: "transferring",
+            processed: progress.sentChunks,
+            total: progress.totalChunks,
+            label: file.name,
+            message: "Sending .figcapture…"
+          });
+        }
+      });
       setStatusState(documentRef, "working", "Importing…");
       showProgress(documentRef, { phase: "importing", message: "Importing", indeterminate: true });
-      postPluginMessage(parentWindow, message);
     } catch (error) {
       renderIncomingMessage(documentRef, createImportErrorMessage(error));
     }

@@ -1,6 +1,9 @@
 (function () {
   var REQUIRED_FILES = ["manifest.json", "capture.json", "figma-plan.json", "diagnostics.json", "screenshot.png"];
   var IMPORT_PACKAGE = "IMPORT_PACKAGE";
+  var IMPORT_PACKAGE_TRANSFER_START = "IMPORT_PACKAGE_TRANSFER_START";
+  var IMPORT_PACKAGE_TRANSFER_CHUNK = "IMPORT_PACKAGE_TRANSFER_CHUNK";
+  var IMPORT_PACKAGE_TRANSFER_END = "IMPORT_PACKAGE_TRANSFER_END";
   var IMPORT_SUCCESS = "IMPORT_SUCCESS";
   var IMPORT_ERROR = "IMPORT_ERROR";
   var IMPORT_PROGRESS = "IMPORT_PROGRESS";
@@ -8,6 +11,7 @@
   // Active during a single import; maps captured colors/numbers to local Figma
   // Variables so matching values bind to the variable instead of a raw literal.
   var VARIABLE_INDEX = null;
+  var IMPORT_TRANSFER = null;
   var SUPPORTED_ZIP_FLAGS = 0x0800;
   var MAX_ARCHIVE_FILE_NAME_LENGTH = 240;
   var LINEAR_GRADIENT_TO_RIGHT_TRANSFORM = [
@@ -306,10 +310,31 @@
   function runImport(message) {
     Promise.resolve()
       .then(function () {
-        if (!message || message.type !== IMPORT_PACKAGE) {
+        var importMessage = message;
+        var transferResult;
+        if (!message) {
           return null;
         }
-        return importBytes(toUint8Array(message.bytes), message.matchVariables !== false);
+        if (isImportPackageTransferMessage(message)) {
+          transferResult = receiveImportPackageTransferMessage(message);
+          if (!transferResult || transferResult.status !== "complete") {
+            if (transferResult && transferResult.status === "pending") {
+              postProgress({
+                phase: "receiving",
+                processed: transferResult.processed,
+                total: transferResult.total,
+                label: transferResult.filename,
+                message: "Receiving .figcapture…"
+              });
+            }
+            return null;
+          }
+          importMessage = transferResult.message;
+        }
+        if (!importMessage || importMessage.type !== IMPORT_PACKAGE) {
+          return null;
+        }
+        return importBytes(toUint8Array(importMessage.bytes), importMessage.matchVariables !== false);
       })
       .then(function (result) {
         if (!result) {
@@ -320,6 +345,135 @@
       .catch(function (error) {
         postError(error.category || "import-error", error.message || "Import failed");
       });
+  }
+
+  function isImportPackageTransferMessage(message) {
+    return message && (
+      message.type === IMPORT_PACKAGE_TRANSFER_START ||
+      message.type === IMPORT_PACKAGE_TRANSFER_CHUNK ||
+      message.type === IMPORT_PACKAGE_TRANSFER_END
+    );
+  }
+
+  function receiveImportPackageTransferMessage(message) {
+    if (message.type === IMPORT_PACKAGE_TRANSFER_START) {
+      IMPORT_TRANSFER = createImportTransferState(message);
+      return {
+        status: "pending",
+        filename: IMPORT_TRANSFER.filename,
+        processed: 0,
+        total: IMPORT_TRANSFER.totalChunks
+      };
+    }
+    if (message.type === IMPORT_PACKAGE_TRANSFER_CHUNK) {
+      assertActiveImportTransfer(message);
+      storeImportTransferChunk(message);
+      return {
+        status: "pending",
+        filename: IMPORT_TRANSFER.filename,
+        processed: IMPORT_TRANSFER.receivedChunks,
+        total: IMPORT_TRANSFER.totalChunks
+      };
+    }
+    if (message.type === IMPORT_PACKAGE_TRANSFER_END) {
+      assertActiveImportTransfer(message);
+      message = {
+        type: IMPORT_PACKAGE,
+        filename: IMPORT_TRANSFER.filename,
+        bytes: assembleImportTransferBytes(),
+        matchVariables: IMPORT_TRANSFER.matchVariables
+      };
+      IMPORT_TRANSFER = null;
+      return {
+        status: "complete",
+        message: message
+      };
+    }
+    return null;
+  }
+
+  function createImportTransferState(message) {
+    var totalBytes = Number(message.totalBytes);
+    var totalChunks = Number(message.totalChunks);
+    var filename = typeof message.filename === "string" ? message.filename : "";
+    var transferId = typeof message.transferId === "string" ? message.transferId : "";
+    var chunks;
+    var received;
+    var index;
+    if (!filename || !transferId || !isFinite(totalBytes) || totalBytes < 0 || Math.floor(totalBytes) !== totalBytes ||
+      !isFinite(totalChunks) || totalChunks < 0 || Math.floor(totalChunks) !== totalChunks) {
+      throw importError("file-transfer-failed", "Received an invalid .figcapture transfer start message");
+    }
+    chunks = new Array(totalChunks);
+    received = new Array(totalChunks);
+    for (index = 0; index < totalChunks; index += 1) {
+      received[index] = false;
+    }
+    return {
+      transferId: transferId,
+      filename: filename,
+      totalBytes: totalBytes,
+      totalChunks: totalChunks,
+      matchVariables: message.matchVariables !== false,
+      chunks: chunks,
+      received: received,
+      receivedChunks: 0,
+      receivedBytes: 0
+    };
+  }
+
+  function assertActiveImportTransfer(message) {
+    if (!IMPORT_TRANSFER) {
+      throw importError("file-transfer-failed", "Received .figcapture transfer data without an active transfer");
+    }
+    if (message.transferId !== IMPORT_TRANSFER.transferId) {
+      throw importError("file-transfer-failed", "Received .figcapture transfer data for an unknown transfer");
+    }
+  }
+
+  function storeImportTransferChunk(message) {
+    var index = Number(message.index);
+    var bytes;
+    var previous;
+    if (!isFinite(index) || Math.floor(index) !== index || index < 0 || index >= IMPORT_TRANSFER.totalChunks) {
+      throw importError("file-transfer-failed", "Received an invalid .figcapture chunk index");
+    }
+    bytes = toUint8Array(message.bytes);
+    previous = IMPORT_TRANSFER.chunks[index];
+    IMPORT_TRANSFER.chunks[index] = bytes;
+    if (!IMPORT_TRANSFER.received[index]) {
+      IMPORT_TRANSFER.received[index] = true;
+      IMPORT_TRANSFER.receivedChunks += 1;
+      IMPORT_TRANSFER.receivedBytes += bytes.byteLength;
+    } else {
+      IMPORT_TRANSFER.receivedBytes += bytes.byteLength - previous.byteLength;
+    }
+  }
+
+  function assembleImportTransferBytes() {
+    var bytes;
+    var offset = 0;
+    var index;
+    var chunk;
+    if (IMPORT_TRANSFER.receivedChunks !== IMPORT_TRANSFER.totalChunks) {
+      throw importError("file-transfer-failed", "The .figcapture transfer ended before every chunk was received");
+    }
+    bytes = new Uint8Array(IMPORT_TRANSFER.totalBytes);
+    for (index = 0; index < IMPORT_TRANSFER.totalChunks; index += 1) {
+      chunk = IMPORT_TRANSFER.chunks[index];
+      if (!chunk) {
+        throw importError("file-transfer-failed", "The .figcapture transfer is missing a chunk");
+      }
+      if (offset + chunk.byteLength > bytes.byteLength) {
+        throw importError("file-transfer-failed", "The .figcapture transfer is larger than expected");
+      }
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    if (offset !== IMPORT_TRANSFER.totalBytes) {
+      throw importError("file-transfer-failed", "The .figcapture transfer size did not match the expected size");
+    }
+    return bytes;
   }
 
   function importBytes(bytes, matchVariables) {
@@ -597,7 +751,9 @@
           tileModels[index].rect,
           true,
           tileModels[index].assetRef,
-          null
+          null,
+          null,
+          { imageScaleMode: "CROP", imageTransform: fullImageTransform() }
         ));
       }
       return nodes;
@@ -607,29 +763,42 @@
       y: 0,
       width: frameSize.width,
       height: frameSize.height
-    }, true, null, null)];
+    }, true, null, null, null, { imageScaleMode: "CROP", imageTransform: fullImageTransform() })];
   }
 
   function createSourceScreenshotTileModels(packageData, frameSize) {
     var prefix = "assets/source-screenshot/tile-";
     var assets = packageData && packageData.assets || {};
-    var dpr = Number(packageData && packageData.manifest && packageData.manifest.devicePixelRatio || 1) || 1;
     var names = Object.keys(assets).filter(function (name) {
       return name.indexOf(prefix) === 0 && /\.png$/.test(name);
     }).sort();
+    var intrinsics = names.map(function (name) {
+      return pngIntrinsicSize(assets[name]);
+    });
+    var totalIntrinsicHeight = 0;
     var models = [];
     var y = 0;
     var index;
     var intrinsic;
+    var inferredHeight;
     var height;
     var name;
-    for (index = 0; index < names.length; index += 1) {
-      name = names[index];
-      intrinsic = pngIntrinsicSize(assets[name]);
-      if (!intrinsic || intrinsic.width <= 0 || intrinsic.height <= 0) {
+    for (index = 0; index < intrinsics.length; index += 1) {
+      if (!intrinsics[index] || intrinsics[index].width <= 0 || intrinsics[index].height <= 0) {
         return [];
       }
-      height = Math.min(frameSize.height - y, round(intrinsic.height / dpr));
+      totalIntrinsicHeight += intrinsics[index].height;
+    }
+    if (totalIntrinsicHeight <= 0) {
+      return [];
+    }
+    for (index = 0; index < names.length; index += 1) {
+      name = names[index];
+      intrinsic = intrinsics[index];
+      inferredHeight = round(intrinsic.height * frameSize.height / totalIntrinsicHeight);
+      height = index === names.length - 1
+        ? round(frameSize.height - y)
+        : Math.min(frameSize.height - y, inferredHeight);
       if (height <= 0) {
         break;
       }
@@ -834,11 +1003,7 @@
       }
       try {
         image = figma.createImage(imageBytes);
-        node.fills = [{
-          type: "IMAGE",
-          scaleMode: "FILL",
-          imageHash: image.hash
-        }];
+        node.fills = [imagePaintForStyle(style || {}, image.hash)];
         writeNodeMetadata(node, "assetRef", assetRef);
         writeNodeMetadata(node, "fallbackReason", reason);
         writeNodeMetadata(node, "imageHash", image.hash);
@@ -888,6 +1053,63 @@
     return "asset aspect ratio mismatch (" + intrinsic.width + "x" + intrinsic.height + " asset for " + round(rectWidth) + "x" + round(rectHeight) + " rendered rect)";
   }
 
+  function imageScaleModeForObjectFit(style) {
+    var explicitScaleMode = normalizeImageScaleMode(style && style.imageScaleMode);
+    if (explicitScaleMode) {
+      return explicitScaleMode;
+    }
+    var objectFit = String(style && style.objectFit || "").replace(/^\s+|\s+$/g, "").toLowerCase();
+    if (objectFit === "contain" || objectFit === "scale-down") {
+      return "FIT";
+    }
+    return "FILL";
+  }
+
+  function normalizeImageScaleMode(value) {
+    var scaleMode = String(value || "").replace(/^\s+|\s+$/g, "").toUpperCase();
+    if (scaleMode === "FILL" || scaleMode === "FIT" || scaleMode === "CROP" || scaleMode === "TILE") {
+      return scaleMode;
+    }
+    return "";
+  }
+
+  function imagePaintForStyle(style, imageHash) {
+    var paint = {
+      type: "IMAGE",
+      scaleMode: imageScaleModeForObjectFit(style || {}),
+      imageHash: imageHash
+    };
+    var imageTransform = imageTransformForStyle(style || {});
+    if (paint.scaleMode === "CROP" && imageTransform) {
+      paint.imageTransform = imageTransform;
+    }
+    return paint;
+  }
+
+  function imageTransformForStyle(style) {
+    var transform = style && style.imageTransform;
+    var rows;
+    if (!Array.isArray(transform) || transform.length !== 2) {
+      return null;
+    }
+    rows = transform.map(function (row) {
+      return Array.isArray(row) ? row.map(function (value) { return Number(value); }) : [];
+    });
+    if (rows.some(function (row) {
+      return row.length !== 3 || row.some(function (value) { return !isFinite(value); });
+    })) {
+      return null;
+    }
+    return rows;
+  }
+
+  function fullImageTransform() {
+    return [
+      [1, 0, 0],
+      [0, 1, 0]
+    ];
+  }
+
   function aspectRatiosDiffer(a, b, tolerance) {
     if (!isFinite(a) || !isFinite(b) || a <= 0 || b <= 0) {
       return false;
@@ -900,14 +1122,11 @@
     var viewportWidth = Number(viewport.width || 0);
     var viewportHeight = Number(viewport.height || 0);
     var imageHash;
-    var frame;
-    var screenshotLayer;
-    var sourceX;
-    var sourceY;
+    var node;
+    var cropPaint;
     if (
       !absoluteRect ||
       !packageData ||
-      !packageData.screenshot ||
       !rect ||
       rect.width <= 0 ||
       rect.height <= 0 ||
@@ -916,43 +1135,44 @@
     ) {
       return null;
     }
-    try {
-      imageHash = getScreenshotImageHash(packageData);
-    } catch (error) {
-      return null;
-    }
-    if (!imageHash) {
-      return null;
+    cropPaint = createScreenshotCropTilePaint(rect, absoluteRect, packageData);
+    if (!cropPaint) {
+      if (!packageData.screenshot) {
+        return null;
+      }
+      try {
+        imageHash = getScreenshotImageHash(packageData);
+      } catch (error) {
+        return null;
+      }
+      if (!imageHash) {
+        return null;
+      }
+      cropPaint = createScreenshotCropPaintFromHash(imageHash, null, {
+        x: numberFromCss(absoluteRect.x),
+        y: numberFromCss(absoluteRect.y),
+        width: Number(rect && rect.width || 0),
+        height: Number(rect && rect.height || 0)
+      }, {
+        width: viewportWidth,
+        height: viewportHeight
+      });
+      if (!cropPaint) {
+        return null;
+      }
     }
 
-    frame = figma.createFrame();
-    applyGeometry(frame, rect);
-    frame.name = name + " / Screenshot Crop";
-    frame.locked = Boolean(locked);
-    frame.clipsContent = true;
-    frame.fills = [];
-    writeNodeMetadata(frame, "sourceNodeId", sourceNodeId);
-    writeNodeMetadata(frame, "cssZIndex", cssZIndex);
-    writeNodeMetadata(frame, "assetRef", assetRef);
-    writeNodeMetadata(frame, "fallbackReason", (reason || "image fallback") + "; screenshot crop fallback");
-
-    screenshotLayer = figma.createRectangle();
-    screenshotLayer.name = "Screenshot crop source";
-    screenshotLayer.locked = true;
-    sourceX = numberFromCss(absoluteRect.x);
-    sourceY = numberFromCss(absoluteRect.y);
-    screenshotLayer.x = sourceX === 0 ? 0 : -sourceX;
-    screenshotLayer.y = sourceY === 0 ? 0 : -sourceY;
-    screenshotLayer.resize(viewportWidth, viewportHeight);
-    screenshotLayer.fills = [{
-      type: "IMAGE",
-      scaleMode: "FILL",
-      imageHash: imageHash
-    }];
-    writeNodeMetadata(screenshotLayer, "assetRef", assetRef);
-    writeNodeMetadata(screenshotLayer, "fallbackReason", "screenshot crop source");
-    frame.appendChild(screenshotLayer);
-    return frame;
+    node = figma.createRectangle();
+    applyGeometry(node, rect);
+    node.name = name + " / Screenshot Crop";
+    node.locked = Boolean(locked);
+    node.fills = [cropPaint.fill];
+    writeNodeMetadata(node, "sourceNodeId", sourceNodeId);
+    writeNodeMetadata(node, "cssZIndex", cssZIndex);
+    writeNodeMetadata(node, "assetRef", assetRef);
+    writeNodeMetadata(node, "cropAssetRef", cropPaint.assetRef);
+    writeNodeMetadata(node, "fallbackReason", (reason || "image fallback") + "; screenshot crop fallback");
+    return node;
   }
 
   function getScreenshotImageHash(packageData) {
@@ -960,6 +1180,78 @@
       packageData._screenshotImageHash = figma.createImage(toUint8Array(packageData.screenshot)).hash;
     }
     return packageData._screenshotImageHash;
+  }
+
+  function createScreenshotCropTilePaint(rect, absoluteRect, packageData) {
+    var viewport = captureFrameSize(packageData && packageData.manifest || {});
+    var tiles = createSourceScreenshotTileModels(packageData, viewport);
+    var sourceX = numberFromCss(absoluteRect && absoluteRect.x);
+    var sourceY = numberFromCss(absoluteRect && absoluteRect.y);
+    var cropWidth = Number(rect && rect.width || 0) || 0;
+    var cropHeight = Number(rect && rect.height || 0) || 0;
+    var sourceBottom = sourceY + cropHeight;
+    var index;
+    var tile;
+    var tileBottom;
+    var image;
+    if (sourceBottom <= sourceY || cropWidth <= 0 || cropHeight <= 0) {
+      return null;
+    }
+    for (index = 0; index < tiles.length; index += 1) {
+      tile = tiles[index];
+      tileBottom = tile.rect.y + tile.rect.height;
+      if (sourceY < tile.rect.y || sourceBottom > tileBottom) {
+        continue;
+      }
+      try {
+        image = figma.createImage(toUint8Array(tile.bytes));
+      } catch (error) {
+        continue;
+      }
+      return createScreenshotCropPaintFromHash(image.hash, tile.assetRef, {
+        x: sourceX,
+        y: sourceY - tile.rect.y,
+        width: cropWidth,
+        height: cropHeight
+      }, {
+        width: tile.rect.width,
+        height: tile.rect.height
+      });
+    }
+    return null;
+  }
+
+  function createScreenshotCropPaintFromHash(imageHash, assetRef, cropRect, sourceSize) {
+    if (!imageHash || !cropRect || !sourceSize || sourceSize.width <= 0 || sourceSize.height <= 0) {
+      return null;
+    }
+    if ((Number(cropRect.width || 0) || 0) <= 0 || (Number(cropRect.height || 0) || 0) <= 0) {
+      return null;
+    }
+    return {
+      fill: {
+        type: "IMAGE",
+        scaleMode: "CROP",
+        imageHash: imageHash,
+        imageTransform: cropImageTransform(cropRect, sourceSize)
+      },
+      assetRef: assetRef
+    };
+  }
+
+  function cropImageTransform(cropRect, sourceSize) {
+    return [
+      [
+        round((Number(cropRect.width || 0) || 0) / sourceSize.width),
+        0,
+        round((Number(cropRect.x || 0) || 0) / sourceSize.width)
+      ],
+      [
+        0,
+        round((Number(cropRect.height || 0) || 0) / sourceSize.height),
+        round((Number(cropRect.y || 0) || 0) / sourceSize.height)
+      ]
+    ];
   }
 
   function createSvgImageNode(name, imageBytes, rect, locked, assetRef, style, sourceNodeId, cssZIndex) {
@@ -3389,7 +3681,7 @@
     }
     isFlex = display === "flex" || display === "inline-flex";
     canTrySingleChildAlignment = children.length === 1 &&
-      (isFlex || hasPotentialLineHeightAlignment(node, children[0]));
+      (isFlex || hasPotentialLineHeightAlignment(node, children[0]) || hasButtonTextAlignmentPotential(node, children[0]));
     if (!isFlex && !canTrySingleChildAlignment) {
       return null;
     }
@@ -3737,6 +4029,7 @@
     var counterAxisAlignItems;
     var hasFlexAlignment;
     var hasLineHeightAlignment;
+    var hasButtonTextAlignment;
     var padding;
     var paddingResult;
 
@@ -3750,11 +4043,18 @@
     counterAxisAlignItems = counterAxisAlignmentFromCss(styles.alignItems);
     hasFlexAlignment = isFlex && Boolean(primaryAxisAlignItems || counterAxisAlignItems);
     hasLineHeightAlignment = hasLineHeightAlignmentEvidence(styles, child, parentRect);
-    if (!hasFlexAlignment && parentRect.height <= child.absoluteRect.height + 1) {
+    hasButtonTextAlignment = hasButtonTextAlignmentEvidence(node, child, parentRect);
+    if (!hasFlexAlignment && !hasButtonTextAlignment && parentRect.height <= child.absoluteRect.height + 1) {
       return null;
     }
-    if (!hasFlexAlignment && !hasLineHeightAlignment) {
+    if (!hasFlexAlignment && !hasLineHeightAlignment && !hasButtonTextAlignment) {
       return null;
+    }
+    if (hasButtonTextAlignment && !primaryAxisAlignItems) {
+      primaryAxisAlignItems = "CENTER";
+    }
+    if (hasButtonTextAlignment && !counterAxisAlignItems) {
+      counterAxisAlignItems = "CENTER";
     }
     if (hasLineHeightAlignment && layoutMode === "HORIZONTAL" && !counterAxisAlignItems) {
       counterAxisAlignItems = "CENTER";
@@ -3798,6 +4098,31 @@
     var childTextStyle = childStyle.text || {};
     return child && child.type === "TEXT" &&
       (numberFromCss(styles.lineHeight) > 0 || numberFromCss(childTextStyle.lineHeight) > 0);
+  }
+
+  function hasButtonTextAlignmentPotential(node, child) {
+    return isInteractiveSingleLineTextElement(node) &&
+      child && child.type === "TEXT" &&
+      String(child.text || "").indexOf("\n") < 0;
+  }
+
+  function hasButtonTextAlignmentEvidence(node, child, parentRect) {
+    var textAlign;
+    var horizontallyCentered;
+    var verticallyCentered;
+    if (!hasButtonTextAlignmentPotential(node, child) || !hasUsableBounds(parentRect) || !hasUsableBounds(child.absoluteRect)) {
+      return false;
+    }
+    textAlign = normalizeCssKeyword(node.styles && node.styles.textAlign);
+    horizontallyCentered = Math.abs(
+      (child.absoluteRect.x + child.absoluteRect.width / 2) -
+      (parentRect.x + parentRect.width / 2)
+    ) <= Math.max(2, parentRect.width * 0.02);
+    verticallyCentered = Math.abs(
+      (child.absoluteRect.y + child.absoluteRect.height / 2) -
+      (parentRect.y + parentRect.height / 2)
+    ) <= Math.max(2, parentRect.height * 0.08);
+    return (textAlign === "center" || horizontallyCentered) && verticallyCentered;
   }
 
   function approximatelyEqual(value, expected, tolerance) {

@@ -621,6 +621,58 @@ test("asset capture resolves remote image bytes and records fetch failures", asy
   assert.match(new TextDecoder().decode(result.assets["assets/image-2.png"]), /asset fetch failed/);
 });
 
+test("asset capture rasterizes fetched WebP bytes before screenshot crop fallback", async () => {
+  const webpBytes = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]);
+  const rasterizedPng = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 91]);
+  const screenshotCrop = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 13]);
+  const calls = [];
+  const capture = captureElementTree(
+    {
+      tagName: "main",
+      rect: { x: 0, y: 0, width: 800, height: 600 },
+      styles: {},
+      attributes: {},
+      children: [
+        {
+          tagName: "img",
+          sourceNodeId: "dom-logo",
+          rect: { x: 20, y: 20, width: 140, height: 47 },
+          styles: { objectFit: "contain" },
+          attributes: { currentSrc: "https://cdn.example.com/logo.webp" },
+          children: []
+        }
+      ]
+    },
+    { width: 800, height: 600, devicePixelRatio: 1, scrollX: 0, scrollY: 0 },
+    {
+      sourceUrl: "https://example.com",
+      captureTimestamp: "2026-06-08T08:00:00.000Z"
+    }
+  );
+
+  const result = await captureVisualAssets(capture, {
+    async assetResolver() {
+      return {
+        bytes: webpBytes,
+        contentType: "image/webp"
+      };
+    },
+    async imageRasterProvider(source, bytes, contentType) {
+      calls.push(["image", source.sourceNodeId, bytes.byteLength, contentType]);
+      return rasterizedPng;
+    },
+    async fallbackRasterProvider(node) {
+      calls.push(["screenshot", node.sourceNodeId]);
+      return screenshotCrop;
+    }
+  });
+
+  assert.deepEqual(calls, [["image", "dom-logo", webpBytes.byteLength, "image/webp"]]);
+  assert.equal(result.capture.root.children[0].assetRef, "assets/image-1.png");
+  assert.equal(result.capture.root.children[0].attributes.assetKind, "raster");
+  assert.deepEqual(Array.from(result.assets["assets/image-1.png"]), Array.from(rasterizedPng));
+});
+
 test("asset capture unwraps Nuxt IPX image URLs before resolving assets", async () => {
   const capture = captureElementTree(
     {

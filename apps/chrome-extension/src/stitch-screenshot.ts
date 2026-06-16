@@ -4,6 +4,7 @@ export async function stitchScreenshotSegments(segments, options = {}) {
   const documentWidth = Number(options.documentWidth ?? 0);
   const documentHeight = Number(options.documentHeight ?? 0);
   const devicePixelRatio = Number(options.devicePixelRatio ?? 1) || 1;
+  const outputScale = Number(options.outputScale ?? devicePixelRatio) || devicePixelRatio;
   const createCanvas = options.createCanvas ?? defaultCreateCanvas;
   const createBitmap = options.createBitmap ?? defaultCreateBitmap;
 
@@ -14,8 +15,8 @@ export async function stitchScreenshotSegments(segments, options = {}) {
     throw stitchError("Document dimensions are required for stitching");
   }
 
-  const canvasWidth = Math.round(documentWidth * devicePixelRatio);
-  const canvasHeight = Math.round(documentHeight * devicePixelRatio);
+  const canvasWidth = Math.round(documentWidth * outputScale);
+  const canvasHeight = Math.round(documentHeight * outputScale);
   const canvas = createCanvas(canvasWidth, canvasHeight);
   const context = canvas?.getContext?.("2d");
   if (!context?.drawImage) {
@@ -27,7 +28,21 @@ export async function stitchScreenshotSegments(segments, options = {}) {
     if (!bitmap) {
       throw stitchError("Screenshot segment could not be decoded");
     }
-    context.drawImage(bitmap, 0, Math.round(Number(segment.scrollY ?? 0) * devicePixelRatio));
+    const x = 0;
+    const y = Math.round(Number(segment.scrollY ?? 0) * outputScale);
+    const width = Number(segment.width ?? 0);
+    const height = Number(segment.height ?? 0);
+    if (width > 0 && height > 0) {
+      context.drawImage(
+        bitmap,
+        x,
+        y,
+        Math.round(width * outputScale),
+        Math.round(height * outputScale)
+      );
+    } else {
+      context.drawImage(bitmap, x, y);
+    }
     bitmap.close?.();
   }
 

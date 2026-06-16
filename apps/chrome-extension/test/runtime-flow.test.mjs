@@ -111,6 +111,46 @@ test("runtime capture resolves active tab, collects DOM capture, captures screen
   assert.equal(pending.capture, capture);
 });
 
+test("runtime capture omits oversized preview screenshots from popup response", async () => {
+  const capture = createRuntimeCapture();
+  const oversizedScreenshot = `data:image/png;base64,${"a".repeat(96)}`;
+  let pending = null;
+  const runtime = createChromeCaptureRuntime({
+    chromeApi: {
+      tabs: {
+        async query() {
+          return [{ id: 42, url: capture.sourceUrl, title: capture.title }];
+        }
+      }
+    },
+    contentMessage: async () => capture,
+    screenshotAdapter: async () => oversizedScreenshot,
+    previewScreenshotMaxBytes: 32,
+    packageBuilder(captured, screenshotDataUrl) {
+      assert.equal(captured, capture);
+      assert.equal(screenshotDataUrl, oversizedScreenshot);
+      return {
+        filename: "dashboard-1280x720.figcapture",
+        bytes: new Uint8Array([1, 2, 3]),
+        packageData: { diagnostics: createEmptyDiagnostics() }
+      };
+    },
+    getPending: () => pending,
+    setPending: (value) => {
+      pending = value;
+    }
+  });
+
+  const response = await runtime.captureActiveTab();
+
+  assert.equal(response.status, "ready");
+  assert.equal(response.preview.screenshotDataUrl, undefined);
+  assert.equal(response.preview.screenshotUrl, undefined);
+  assert.equal(response.preview.screenshotPreviewStatus, "omitted");
+  assert.equal(pending.screenshotDataUrl, oversizedScreenshot);
+  assert.equal(JSON.stringify(response).includes(oversizedScreenshot), false);
+});
+
 test("runtime capture returns missing-active-tab when no active tab id exists", async () => {
   const response = await handleCaptureActiveTab({
     tabs: {
@@ -610,8 +650,13 @@ test("runtime captures breakpoint screenshots through the emulation session with
     assert.equal(shot.params.captureBeyondViewport, true);
     assert.deepEqual(shot.params.clip, { x: 0, y: 0, width: 1280, height: 720, scale: 1 });
   }
+  assert.equal(response.preview.screenshotDataUrl, "data:image/png;base64,cdp-1440");
   assert.deepEqual(
     response.preview.breakpoints.map((entry) => entry.screenshotDataUrl),
+    [undefined, undefined]
+  );
+  assert.deepEqual(
+    pending.breakpoints.map((entry) => entry.screenshotDataUrl),
     ["data:image/png;base64,cdp-1440", "data:image/png;base64,cdp-375"]
   );
 });
@@ -674,7 +719,92 @@ test("runtime captures emulated full-page breakpoints as a single clipped CDP sh
   assert.equal(shots.length, 1, "one CDP shot covers the whole emulated page");
   assert.equal(shots[0].captureBeyondViewport, true);
   assert.deepEqual(shots[0].clip, { x: 0, y: 0, width: 375, height: 2400, scale: 1 });
-  assert.equal(response.preview.breakpoints[0].screenshotDataUrl, "data:image/png;base64,cdp-fullpage");
+  assert.equal(response.preview.screenshotDataUrl, "data:image/png;base64,cdp-fullpage");
+  assert.equal(response.preview.breakpoints[0].screenshotDataUrl, undefined);
+  assert.equal(pending.breakpoints[0].screenshotDataUrl, "data:image/png;base64,cdp-fullpage");
+});
+
+test("runtime segments emulated full-page CDP screenshots when bitmap height would be clamped", async () => {
+  const shots = [];
+  const stitchedSegments = [];
+  let stitchOptions = null;
+  let pending = null;
+  const calls = [];
+  const runtime = createChromeCaptureRuntime({
+    chromeApi: {
+      tabs: {
+        async query() {
+          return [{ id: 7, url: "https://app.example.com/dashboard", title: "Dashboard" }];
+        }
+      }
+    },
+    contentRequest: async (_api, _tabId, message) => {
+      calls.push(message);
+      if (message.type === "FIGCAPTURE_PAGE_METRICS") {
+        return {
+          status: "success",
+          metrics: {
+            documentWidth: 1440,
+            documentHeight: 16510,
+            viewport: { width: 1440, height: 973, devicePixelRatio: 2, scrollX: 0, scrollY: 0 }
+          }
+        };
+      }
+      if (message.type === "FIGCAPTURE_COLLECT_DOM") {
+        return { status: "success", capture: createFullPageCapture(16510) };
+      }
+      return { status: "success", scrollY: message.scrollY ?? 0 };
+    },
+    stitcher: async (segments, options) => {
+      stitchedSegments.push(...segments);
+      stitchOptions = options;
+      return "data:image/png;base64,stitched-cdp";
+    },
+    emulationFactory: () => ({
+      async attach() {},
+      async setWidth() {},
+      async captureScreenshot(params) {
+        shots.push(params);
+        return `data:image/png;base64,cdp-segment-${shots.length}`;
+      },
+      async clear() {},
+      async detach() {}
+    }),
+    multiPackageBuilder: fakeMultiPackageBuilder,
+    getPending: () => pending,
+    setPending: (value) => {
+      pending = value;
+    }
+  });
+
+  const response = await runtime.captureActiveTab({
+    breakpointWidths: [1440],
+    captureMode: "full-page"
+  });
+
+  assert(shots.length > 1, "tall full-page CDP capture should be segmented");
+  assert.deepEqual(shots[0].clip, { x: 0, y: 0, width: 1440, height: 973, scale: 1 });
+  assert.deepEqual(shots.at(-1).clip, { x: 0, y: 15568, width: 1440, height: 942, scale: 1 });
+  assert(shots.every((shot) => shot.captureBeyondViewport === true));
+  assert.equal(stitchedSegments.length, shots.length);
+  assert.deepEqual(stitchedSegments[0], {
+    dataUrl: "data:image/png;base64,cdp-segment-1",
+    scrollY: 0,
+    width: 1440,
+    height: 973
+  });
+  assert.deepEqual(stitchOptions, {
+    documentWidth: 1440,
+    documentHeight: 16510,
+    devicePixelRatio: 2,
+    outputScale: 1
+  });
+  assert.equal(
+    calls.some((call) => call.type === "FIGCAPTURE_SET_PINNED_HIDDEN" && call.hidden === true),
+    true
+  );
+  assert.equal(response.preview.screenshotDataUrl, "data:image/png;base64,stitched-cdp");
+  assert.equal(pending.breakpoints[0].screenshotDataUrl, "data:image/png;base64,stitched-cdp");
 });
 
 test("runtime captures multiple breakpoints sequentially with device emulation and stores a multi-capture preview", async () => {

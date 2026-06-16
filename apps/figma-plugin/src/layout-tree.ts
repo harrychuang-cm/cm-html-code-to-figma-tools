@@ -1084,7 +1084,7 @@ function inferAutoLayout(node, children) {
   }
   const isFlex = display === "flex" || display === "inline-flex";
   const canTrySingleChildAlignment = children.length === 1 &&
-    (isFlex || hasPotentialLineHeightAlignment(node, children[0]));
+    (isFlex || hasPotentialLineHeightAlignment(node, children[0]) || hasButtonTextAlignmentPotential(node, children[0]));
   if (!isFlex && !canTrySingleChildAlignment) {
     return null;
   }
@@ -1353,15 +1353,22 @@ function inferSingleChildTextAutoLayout(node, child, parentRect) {
 
   const flexDirection = styles.flexDirection ?? "row";
   const layoutMode = isFlex && flexDirection.startsWith("column") ? "VERTICAL" : "HORIZONTAL";
-  const primaryAxisAlignItems = primaryAxisAlignmentFromCss(styles.justifyContent);
+  let primaryAxisAlignItems = primaryAxisAlignmentFromCss(styles.justifyContent);
   let counterAxisAlignItems = counterAxisAlignmentFromCss(styles.alignItems);
   const hasFlexAlignment = isFlex && Boolean(primaryAxisAlignItems || counterAxisAlignItems);
   const hasLineHeightAlignment = hasLineHeightAlignmentEvidence(styles, child, parentRect);
-  if (!hasFlexAlignment && parentRect.height <= child.absoluteRect.height + 1) {
+  const hasButtonTextAlignment = hasButtonTextAlignmentEvidence(node, child, parentRect);
+  if (!hasFlexAlignment && !hasButtonTextAlignment && parentRect.height <= child.absoluteRect.height + 1) {
     return null;
   }
-  if (!hasFlexAlignment && !hasLineHeightAlignment) {
+  if (!hasFlexAlignment && !hasLineHeightAlignment && !hasButtonTextAlignment) {
     return null;
+  }
+  if (hasButtonTextAlignment && !primaryAxisAlignItems) {
+    primaryAxisAlignItems = "CENTER";
+  }
+  if (hasButtonTextAlignment && !counterAxisAlignItems) {
+    counterAxisAlignItems = "CENTER";
   }
   if (hasLineHeightAlignment && layoutMode === "HORIZONTAL" && !counterAxisAlignItems) {
     counterAxisAlignItems = "CENTER";
@@ -1401,6 +1408,28 @@ function hasPotentialLineHeightAlignment(node, child) {
   const styles = node.styles ?? {};
   return child?.type === "TEXT" &&
     (parseCssNumber(styles.lineHeight) > 0 || parseCssNumber(child.style?.text?.lineHeight) > 0);
+}
+
+function hasButtonTextAlignmentPotential(node, child) {
+  return isInteractiveSingleLineTextElement(node) &&
+    child?.type === "TEXT" &&
+    !String(child.text ?? "").includes("\n");
+}
+
+function hasButtonTextAlignmentEvidence(node, child, parentRect) {
+  if (!hasButtonTextAlignmentPotential(node, child) || !hasUsableBounds(parentRect) || !hasUsableBounds(child.absoluteRect)) {
+    return false;
+  }
+  const textAlign = normalizeCssKeyword(node.styles?.textAlign);
+  const horizontallyCentered = Math.abs(
+    (child.absoluteRect.x + child.absoluteRect.width / 2) -
+    (parentRect.x + parentRect.width / 2)
+  ) <= Math.max(2, parentRect.width * 0.02);
+  const verticallyCentered = Math.abs(
+    (child.absoluteRect.y + child.absoluteRect.height / 2) -
+    (parentRect.y + parentRect.height / 2)
+  ) <= Math.max(2, parentRect.height * 0.08);
+  return (textAlign === "center" || horizontallyCentered) && verticallyCentered;
 }
 
 function approximatelyEqual(value, expected, tolerance) {

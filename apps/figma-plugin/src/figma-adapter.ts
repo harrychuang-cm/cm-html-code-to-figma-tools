@@ -1,4 +1,5 @@
 export const DEFAULT_FALLBACK_FONT = { family: "Inter", style: "Regular" };
+const SOURCE_SCREENSHOT_TILE_PREFIX = "assets/source-screenshot/tile-";
 
 const LINEAR_GRADIENT_TO_RIGHT_TRANSFORM = [
   [1, 0, 0],
@@ -16,6 +17,7 @@ export function createFigmaApiAdapter(figmaApi = globalThis.figma, options = {})
   const viewport = options.viewport ?? {};
   const fontSubstitutions = [];
   let screenshotImageHash = null;
+  const assetImageHashes = new Map();
 
   function getScreenshotImageHash() {
     if (!screenshotBytes || screenshotBytes.length === 0) {
@@ -25,6 +27,16 @@ export function createFigmaApiAdapter(figmaApi = globalThis.figma, options = {})
       screenshotImageHash = figmaApi.createImage(screenshotBytes).hash;
     }
     return screenshotImageHash;
+  }
+
+  function getAssetImageHash(assetRef) {
+    if (!assetRef || !assets[assetRef]) {
+      return null;
+    }
+    if (!assetImageHashes.has(assetRef)) {
+      assetImageHashes.set(assetRef, figmaApi.createImage(toUint8Array(assets[assetRef])).hash);
+    }
+    return assetImageHashes.get(assetRef);
   }
 
   return {
@@ -66,9 +78,11 @@ export function createFigmaApiAdapter(figmaApi = globalThis.figma, options = {})
         const aspectMismatchFallbackReason = screenshotCropReasonForMismatchedRaster(model, imageBytes);
         if (aspectMismatchFallbackReason) {
           const screenshotFallback = createScreenshotCropFallbackLayer(figmaApi, model, {
+            assets,
             fallbackReason: aspectMismatchFallbackReason,
             screenshotBytes,
             viewport,
+            getAssetImageHash,
             getScreenshotImageHash
           });
           if (screenshotFallback) {
@@ -77,11 +91,7 @@ export function createFigmaApiAdapter(figmaApi = globalThis.figma, options = {})
         }
         try {
           const imageHash = figmaApi.createImage(imageBytes).hash;
-          node.fills = [{
-            type: "IMAGE",
-            scaleMode: "FILL",
-            imageHash
-          }];
+          node.fills = [imagePaintForModel(model, imageHash)];
           writeNodeMetadata(node, "fallbackReason", fallbackReason);
           writeNodeMetadata(node, "imageHash", imageHash);
           return node;
@@ -96,9 +106,11 @@ export function createFigmaApiAdapter(figmaApi = globalThis.figma, options = {})
       }
       if (canUseScreenshotCropFallback) {
         const screenshotFallback = createScreenshotCropFallbackLayer(figmaApi, model, {
+          assets,
           fallbackReason,
           screenshotBytes,
           viewport,
+          getAssetImageHash,
           getScreenshotImageHash
         });
         if (screenshotFallback) {
@@ -388,6 +400,51 @@ function screenshotCropReasonForMismatchedRaster(model, bytes) {
   return `asset aspect ratio mismatch (${intrinsic.width}x${intrinsic.height} asset for ${round(rectWidth)}x${round(rectHeight)} rendered rect)`;
 }
 
+function imageScaleModeForObjectFit(model) {
+  const explicitScaleMode = normalizeImageScaleMode(model.imageScaleMode ?? model.style?.imageScaleMode ?? model.styles?.imageScaleMode);
+  if (explicitScaleMode) {
+    return explicitScaleMode;
+  }
+  const objectFit = String(model.style?.objectFit ?? model.styles?.objectFit ?? "").trim().toLowerCase();
+  if (objectFit === "contain" || objectFit === "scale-down") {
+    return "FIT";
+  }
+  return "FILL";
+}
+
+function normalizeImageScaleMode(value) {
+  const scaleMode = String(value ?? "").trim().toUpperCase();
+  if (scaleMode === "FILL" || scaleMode === "FIT" || scaleMode === "CROP" || scaleMode === "TILE") {
+    return scaleMode;
+  }
+  return "";
+}
+
+function imagePaintForModel(model, imageHash) {
+  const paint = {
+    type: "IMAGE",
+    scaleMode: imageScaleModeForObjectFit(model),
+    imageHash
+  };
+  const imageTransform = imageTransformForModel(model);
+  if (paint.scaleMode === "CROP" && imageTransform) {
+    paint.imageTransform = imageTransform;
+  }
+  return paint;
+}
+
+function imageTransformForModel(model) {
+  const transform = model.imageTransform ?? model.style?.imageTransform ?? model.styles?.imageTransform;
+  if (!Array.isArray(transform) || transform.length !== 2) {
+    return null;
+  }
+  const rows = transform.map((row) => Array.isArray(row) ? row.map((value) => Number(value)) : []);
+  if (rows.some((row) => row.length !== 3 || row.some((value) => !Number.isFinite(value)))) {
+    return null;
+  }
+  return rows;
+}
+
 function rasterIntrinsicSize(bytes) {
   const imageBytes = toUint8Array(bytes);
   if (isPng(imageBytes)) {
@@ -580,47 +637,171 @@ function createScreenshotCropFallbackLayer(figmaApi, model, options = {}) {
     return null;
   }
 
-  let imageHash = null;
+  const tilePaint = createScreenshotCropTilePaint(absoluteRect, rect, options);
+  let cropPaint = tilePaint;
+  if (!cropPaint) {
+    cropPaint = createScreenshotCropPaintFromHash({
+      imageHash: safeGetImageHash(options.getScreenshotImageHash),
+      cropRect: {
+        x: Number(absoluteRect.x ?? 0),
+        y: Number(absoluteRect.y ?? 0),
+        width: Number(rect.width ?? 0),
+        height: Number(rect.height ?? 0)
+      },
+      sourceSize: {
+        width: viewportWidth,
+        height: viewportHeight
+      }
+    });
+  }
+  if (!cropPaint) {
+    return null;
+  }
+
+  const node = figmaApi.createRectangle();
+  applyNodeBasics(node, model);
+  node.name = `${model.name} / Screenshot Crop`;
+  node.locked = Boolean(model.locked);
+  node.fills = [cropPaint.fill];
+  writeNodeMetadata(node, "assetRef", model.assetRef);
+  writeNodeMetadata(node, "cropAssetRef", cropPaint.assetRef);
+  writeNodeMetadata(node, "fallbackReason", `${options.fallbackReason || "image fallback"}; screenshot crop fallback`);
+  return node;
+}
+
+function safeGetImageHash(getImageHash) {
   try {
-    imageHash = options.getScreenshotImageHash?.() ?? null;
+    return getImageHash?.() ?? null;
   } catch {
     return null;
   }
-  if (!imageHash) {
+}
+
+function createScreenshotCropTilePaint(absoluteRect, rect, options = {}) {
+  const viewport = options.viewport ?? {};
+  const viewportWidth = Number(viewport.width ?? 0);
+  const viewportHeight = Number(viewport.height ?? 0);
+  const sourceX = Number(absoluteRect?.x ?? 0);
+  const sourceY = Number(absoluteRect?.y ?? 0);
+  const cropWidth = Number(rect?.width ?? 0) || 0;
+  const cropHeight = Number(rect?.height ?? 0) || 0;
+  const sourceBottom = sourceY + cropHeight;
+  const tileModels = createScreenshotCropTileModels(options.assets, viewportWidth, viewportHeight);
+  if (sourceBottom <= sourceY || cropWidth <= 0 || cropHeight <= 0) {
     return null;
   }
 
-  const frame = figmaApi.createFrame();
-  applyNodeBasics(frame, model);
-  frame.name = `${model.name} / Screenshot Crop`;
-  frame.locked = Boolean(model.locked);
-  frame.clipsContent = true;
-  frame.fills = [];
-  writeNodeMetadata(frame, "assetRef", model.assetRef);
-  writeNodeMetadata(frame, "fallbackReason", `${options.fallbackReason || "image fallback"}; screenshot crop fallback`);
-
-  const screenshotLayer = figmaApi.createRectangle();
-  screenshotLayer.name = "Screenshot crop source";
-  screenshotLayer.locked = true;
-  const sourceX = Number(absoluteRect.x ?? 0);
-  const sourceY = Number(absoluteRect.y ?? 0);
-  screenshotLayer.x = sourceX === 0 ? 0 : -sourceX;
-  screenshotLayer.y = sourceY === 0 ? 0 : -sourceY;
-  if (typeof screenshotLayer.resize === "function") {
-    screenshotLayer.resize(viewportWidth, viewportHeight);
-  } else {
-    screenshotLayer.width = viewportWidth;
-    screenshotLayer.height = viewportHeight;
+  for (const tile of tileModels) {
+    const tileBottom = tile.y + tile.height;
+    if (sourceY < tile.y || sourceBottom > tileBottom) {
+      continue;
+    }
+    let imageHash = null;
+    try {
+      imageHash = options.getAssetImageHash?.(tile.assetRef) ?? null;
+    } catch {
+      continue;
+    }
+    if (!imageHash) {
+      continue;
+    }
+    return createScreenshotCropPaintFromHash({
+      imageHash,
+      assetRef: tile.assetRef,
+      cropRect: {
+        x: sourceX,
+        y: sourceY - tile.y,
+        width: cropWidth,
+        height: cropHeight
+      },
+      sourceSize: {
+        width: tile.width,
+        height: tile.height
+      }
+    });
   }
-  screenshotLayer.fills = [{
-    type: "IMAGE",
-    scaleMode: "FILL",
-    imageHash
-  }];
-  writeNodeMetadata(screenshotLayer, "assetRef", model.assetRef);
-  writeNodeMetadata(screenshotLayer, "fallbackReason", "screenshot crop source");
-  frame.appendChild(screenshotLayer);
-  return frame;
+
+  return null;
+}
+
+function createScreenshotCropPaintFromHash({ imageHash, assetRef, cropRect, sourceSize }) {
+  if (!imageHash || !cropRect || !sourceSize || sourceSize.width <= 0 || sourceSize.height <= 0) {
+    return null;
+  }
+  const width = Number(cropRect.width ?? 0) || 0;
+  const height = Number(cropRect.height ?? 0) || 0;
+  if (width <= 0 || height <= 0) {
+    return null;
+  }
+  return {
+    fill: {
+      type: "IMAGE",
+      scaleMode: "CROP",
+      imageHash,
+      imageTransform: cropImageTransform(cropRect, sourceSize)
+    },
+    assetRef
+  };
+}
+
+function cropImageTransform(cropRect, sourceSize) {
+  return [
+    [
+      round((Number(cropRect.width ?? 0) || 0) / sourceSize.width),
+      0,
+      round((Number(cropRect.x ?? 0) || 0) / sourceSize.width)
+    ],
+    [
+      0,
+      round((Number(cropRect.height ?? 0) || 0) / sourceSize.height),
+      round((Number(cropRect.y ?? 0) || 0) / sourceSize.height)
+    ]
+  ];
+}
+
+function createScreenshotCropTileModels(assets = {}, viewportWidth, viewportHeight) {
+  const tileEntries = Object.entries(assets)
+    .filter(([name]) => name.startsWith(SOURCE_SCREENSHOT_TILE_PREFIX) && name.endsWith(".png"))
+    .sort(([a], [b]) => a.localeCompare(b));
+  const tileIntrinsics = tileEntries.map(([, bytes]) => pngIntrinsicSize(bytes));
+  if (
+    viewportWidth <= 0 ||
+    viewportHeight <= 0 ||
+    tileEntries.length === 0 ||
+    tileIntrinsics.some((intrinsic) => !intrinsic || intrinsic.width <= 0 || intrinsic.height <= 0)
+  ) {
+    return [];
+  }
+  const totalIntrinsicHeight = tileIntrinsics.reduce((total, intrinsic) => total + intrinsic.height, 0);
+  if (totalIntrinsicHeight <= 0) {
+    return [];
+  }
+
+  const cssScaleY = viewportHeight / totalIntrinsicHeight;
+  const models = [];
+  let y = 0;
+  for (let index = 0; index < tileEntries.length; index += 1) {
+    const [assetRef] = tileEntries[index];
+    const intrinsic = tileIntrinsics[index];
+    const inferredHeight = round(intrinsic.height * cssScaleY);
+    const height = index === tileEntries.length - 1
+      ? round(viewportHeight - y)
+      : Math.min(viewportHeight - y, inferredHeight);
+    if (height <= 0) {
+      break;
+    }
+    models.push({
+      name: `Source screenshot / Tile ${index + 1}`,
+      assetRef,
+      x: 0,
+      y,
+      width: viewportWidth,
+      height
+    });
+    y = round(y + height);
+  }
+
+  return y >= viewportHeight - 1 ? models : [];
 }
 
 function createSvgImageLayer(figmaApi, model, imageBytes) {

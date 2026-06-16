@@ -284,6 +284,9 @@ test("full-page export crops screenshot fallbacks against document dimensions", 
             bytes: Uint8Array.from([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]),
             contentType: "image/webp"
           };
+        },
+        async imageRasterProvider() {
+          return null;
         }
       }
     );

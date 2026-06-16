@@ -5,6 +5,7 @@ import vm from "node:vm";
 import { packFigcapture } from "../../../packages/capture-schema/dist/index.js";
 import { createValidPackage } from "../../../packages/capture-schema/fixtures/valid-package.mjs";
 import { describePluginRuntime } from "../dist/code-module.js";
+import { createImportPackageTransferMessages } from "../dist/message-bridge.js";
 
 // The classic runtime streams IMPORT_PROGRESS messages while rendering, so the
 // terminal result (IMPORT_SUCCESS / IMPORT_ERROR) is not necessarily posted[0].
@@ -118,6 +119,106 @@ test("classic Figma runtime rejects unsafe archive entry names", async () => {
   assert.equal(posted[0].error.category, "invalid-package");
   assert.match(posted[0].error.message, /parent directory/);
   assert.equal(figma.currentPage.children.length, 0);
+});
+
+test("classic Figma runtime imports chunked package transfers", async () => {
+  const main = await readFile("apps/figma-plugin/dist/code.js", "utf8");
+  const posted = [];
+
+  function createNode(type) {
+    return {
+      type,
+      name: "",
+      children: [],
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0,
+      fills: [],
+      strokes: [],
+      pluginData: {},
+      resize(width, height) {
+        this.width = width;
+        this.height = height;
+      },
+      appendChild(child) {
+        this.children.push(child);
+      },
+      setPluginData(key, value) {
+        this.pluginData[key] = value;
+      }
+    };
+  }
+
+  const figma = {
+    currentPage: {
+      children: [],
+      appendChild(child) {
+        this.children.push(child);
+      }
+    },
+    ui: {
+      onmessage: null,
+      postMessage(message) {
+        posted.push(message);
+      }
+    },
+    showUI() {},
+    createFrame() {
+      return createNode("FRAME");
+    },
+    createRectangle() {
+      return createNode("RECTANGLE");
+    },
+    createText() {
+      const node = createNode("TEXT");
+      node.characters = "";
+      node.textAutoResize = "";
+      node.setRangeFontName = function () {};
+      node.setRangeFontSize = function () {};
+      node.setRangeFills = function () {};
+      return node;
+    },
+    createImage(bytes) {
+      return {
+        hash: `hash-${bytes.length}`
+      };
+    },
+    async loadFontAsync() {}
+  };
+
+  vm.runInNewContext(main, {
+    figma,
+    Uint8Array,
+    Uint32Array,
+    ArrayBuffer,
+    DataView,
+    Error,
+    JSON,
+    Math,
+    Number,
+    Object,
+    Promise,
+    String,
+    Boolean,
+    Array,
+    isFinite,
+    parseFloat
+  });
+
+  const messages = createImportPackageTransferMessages(
+    "dashboard.figcapture",
+    packFigcapture(createValidPackage()),
+    { chunkSize: 19, transferId: "classic-transfer" }
+  );
+  for (const message of messages) {
+    await figma.ui.onmessage(message);
+  }
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert(posted.some((message) => message.type === "IMPORT_PROGRESS" && message.phase === "receiving"));
+  assert.equal(resultMessage(posted).type, "IMPORT_SUCCESS");
+  assert.equal(resultMessage(posted).report.createdFrameCount, 2);
 });
 
 test("classic Figma runtime omits transparent viewport-clipped table spacers", async () => {
@@ -2548,18 +2649,16 @@ test("classic Figma runtime keeps editable layers when an image asset is unsuppo
     [-1, 0, 1]
   ]);
   assert(placeholder);
-  assert.equal(placeholder.type, "FRAME");
+  assert.equal(placeholder.type, "RECTANGLE");
   assert.match(placeholder.name, /Screenshot Crop$/);
   assert.match(placeholder.pluginData.fallbackReason, /screenshot crop fallback/);
-  assert.equal(placeholder.children[0].x, -32);
-  assert.equal(placeholder.children[0].y, -96);
-  assert.equal(placeholder.children[0].locked, true);
+  assert.equal(placeholder.children.length, 0);
+  assert.equal(placeholder.fills[0].scaleMode, "CROP");
   assert(webpBannerFallback);
-  assert.equal(webpBannerFallback.type, "FRAME");
+  assert.equal(webpBannerFallback.type, "RECTANGLE");
   assert.match(webpBannerFallback.pluginData.fallbackReason, /screenshot crop fallback/);
-  assert.equal(webpBannerFallback.children[0].x, 0);
-  assert.equal(webpBannerFallback.children[0].y, -159);
-  assert.equal(webpBannerFallback.children[0].locked, true);
+  assert.equal(webpBannerFallback.children.length, 0);
+  assert.equal(webpBannerFallback.fills[0].scaleMode, "CROP");
   assert(vectorNode);
   assert.match(vectorNode.svg, /<path/);
   assert(currentColorVector);
@@ -3116,11 +3215,254 @@ test("classic Figma runtime uses packaged full-page screenshot tiles", async () 
     x: node.x,
     y: node.y,
     width: node.width,
-    height: node.height
+    height: node.height,
+    scaleMode: node.fills[0].scaleMode,
+    imageTransform: JSON.parse(JSON.stringify(node.fills[0].imageTransform))
   })), [
-    { name: "Source screenshot / Tile 1", x: 0, y: 0, width: 1440, height: 1800 },
-    { name: "Source screenshot / Tile 2", x: 0, y: 1800, width: 1440, height: 1600 }
+    { name: "Source screenshot / Tile 1", x: 0, y: 0, width: 1440, height: 1800, scaleMode: "CROP", imageTransform: [[1, 0, 0], [0, 1, 0]] },
+    { name: "Source screenshot / Tile 2", x: 0, y: 1800, width: 1440, height: 1600, scaleMode: "CROP", imageTransform: [[1, 0, 0], [0, 1, 0]] }
   ]);
+});
+
+test("classic Figma runtime scales clamped full-page screenshot tiles to document height", async () => {
+  const main = await readFile("apps/figma-plugin/dist/code.js", "utf8");
+  const posted = [];
+
+  function createNode(type) {
+    return {
+      type,
+      name: "",
+      children: [],
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0,
+      fills: [],
+      strokes: [],
+      pluginData: {},
+      resize(width, height) {
+        this.width = width;
+        this.height = height;
+      },
+      appendChild(child) {
+        this.children.push(child);
+      },
+      setPluginData(key, value) {
+        this.pluginData[key] = value;
+      }
+    };
+  }
+
+  const figma = {
+    currentPage: { children: [], appendChild(child) { this.children.push(child); } },
+    ui: { onmessage: null, postMessage(message) { posted.push(message); } },
+    showUI() {},
+    createFrame() { return createNode("FRAME"); },
+    createRectangle() { return createNode("RECTANGLE"); },
+    createText() { return createNode("TEXT"); },
+    createImage(bytes) {
+      return { hash: `hash-${bytes.length}` };
+    },
+    async loadFontAsync() {}
+  };
+  const basePackage = createValidPackage();
+  const packageData = createValidPackage({
+    manifest: {
+      ...basePackage.manifest,
+      captureMode: "full-page",
+      documentWidth: 1440,
+      documentHeight: 16510,
+      devicePixelRatio: 2
+    },
+    screenshot: pngHeaderBytes(2880, 16384),
+    assets: {
+      ...basePackage.assets,
+      "assets/source-screenshot/tile-0000.png": pngHeaderBytes(2880, 1786),
+      "assets/source-screenshot/tile-0001.png": pngHeaderBytes(2880, 1787),
+      "assets/source-screenshot/tile-0002.png": pngHeaderBytes(2880, 1786),
+      "assets/source-screenshot/tile-0003.png": pngHeaderBytes(2880, 1786),
+      "assets/source-screenshot/tile-0004.png": pngHeaderBytes(2880, 1786),
+      "assets/source-screenshot/tile-0005.png": pngHeaderBytes(2880, 1787),
+      "assets/source-screenshot/tile-0006.png": pngHeaderBytes(2880, 1786),
+      "assets/source-screenshot/tile-0007.png": pngHeaderBytes(2880, 1786),
+      "assets/source-screenshot/tile-0008.png": pngHeaderBytes(2880, 1786),
+      "assets/source-screenshot/tile-0009.png": pngHeaderBytes(2880, 308)
+    }
+  });
+
+  vm.runInNewContext(main, {
+    figma,
+    Uint8Array,
+    Uint32Array,
+    ArrayBuffer,
+    DataView,
+    Error,
+    JSON,
+    Math,
+    Number,
+    Object,
+    Promise,
+    String,
+    Boolean,
+    Array,
+    isFinite,
+    parseFloat
+  });
+  await figma.ui.onmessage({
+    type: "IMPORT_PACKAGE",
+    filename: "full-page-clamped.figcapture",
+    bytes: packFigcapture(packageData)
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const success = posted.find((message) => message.type === "IMPORT_SUCCESS");
+  assert.ok(success, `expected IMPORT_SUCCESS, got ${JSON.stringify(posted)}`);
+
+  const sourceLayers = figma.currentPage.children[0].children;
+  assert.equal(sourceLayers.length, 10);
+  assert.equal(sourceLayers[0].y, 0);
+  assert.equal(sourceLayers.at(-1).y + sourceLayers.at(-1).height, 16510);
+  assert(sourceLayers.every((node) => node.width === 1440));
+  assert(sourceLayers.every((node) => node.fills[0].scaleMode === "CROP"));
+  assert(sourceLayers.every((node) => JSON.stringify(node.fills[0].imageTransform) === JSON.stringify([
+    [1, 0, 0],
+    [0, 1, 0]
+  ])));
+});
+
+test("classic Figma runtime uses source screenshot tiles for image crop fallback", async () => {
+  const main = await readFile("apps/figma-plugin/dist/code.js", "utf8");
+  const posted = [];
+
+  function createNode(type) {
+    return {
+      type,
+      name: "",
+      children: [],
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0,
+      fills: [],
+      strokes: [],
+      pluginData: {},
+      resize(width, height) {
+        this.width = width;
+        this.height = height;
+      },
+      appendChild(child) {
+        this.children.push(child);
+      },
+      setPluginData(key, value) {
+        this.pluginData[key] = value;
+      }
+    };
+  }
+
+  const figma = {
+    currentPage: { children: [], appendChild(child) { this.children.push(child); } },
+    ui: { onmessage: null, postMessage(message) { posted.push(message); } },
+    showUI() {},
+    createFrame() { return createNode("FRAME"); },
+    createRectangle() { return createNode("RECTANGLE"); },
+    createText() { return createNode("TEXT"); },
+    createImage(bytes) {
+      return { hash: `hash-${bytes.length}` };
+    },
+    async loadFontAsync() {}
+  };
+  const basePackage = createValidPackage();
+  const packageData = createValidPackage({
+    manifest: {
+      ...basePackage.manifest,
+      captureMode: "full-page",
+      documentWidth: 1440,
+      documentHeight: 16510,
+      devicePixelRatio: 2
+    },
+    capture: {
+      ...basePackage.capture,
+      viewport: { width: 1440, height: 973, devicePixelRatio: 2, scrollX: 0, scrollY: 0 },
+      root: {
+        id: "node-root",
+        sourceNodeId: "dom-root",
+        nodeType: "element",
+        tagName: "main",
+        rect: { x: 0, y: 0, width: 1440, height: 16510 },
+        styles: {},
+        attributes: {},
+        children: [
+          {
+            id: "node-footer-logo",
+            sourceNodeId: "dom-footer-logo",
+            nodeType: "element",
+            tagName: "img",
+            rect: { x: 40, y: 16232.61, width: 140, height: 47 },
+            styles: { objectFit: "contain" },
+            attributes: { alt: "Footer Logo" },
+            assetRef: "assets/logo.png",
+            children: []
+          }
+        ]
+      }
+    },
+    screenshot: pngHeaderBytes(2880, 16384),
+    assets: {
+      ...basePackage.assets,
+      "assets/logo.png": pngHeaderBytes(280, 46),
+      "assets/source-screenshot/tile-0000.png": pngHeaderBytes(2880, 1786),
+      "assets/source-screenshot/tile-0001.png": pngHeaderBytes(2880, 1787),
+      "assets/source-screenshot/tile-0002.png": pngHeaderBytes(2880, 1786),
+      "assets/source-screenshot/tile-0003.png": pngHeaderBytes(2880, 1786),
+      "assets/source-screenshot/tile-0004.png": pngHeaderBytes(2880, 1786),
+      "assets/source-screenshot/tile-0005.png": pngHeaderBytes(2880, 1787),
+      "assets/source-screenshot/tile-0006.png": pngHeaderBytes(2880, 1786),
+      "assets/source-screenshot/tile-0007.png": pngHeaderBytes(2880, 1786),
+      "assets/source-screenshot/tile-0008.png": pngHeaderBytes(2880, 1786),
+      "assets/source-screenshot/tile-0009.png": pngHeaderBytes(2880, 308)
+    }
+  });
+
+  vm.runInNewContext(main, {
+    figma,
+    Uint8Array,
+    Uint32Array,
+    ArrayBuffer,
+    DataView,
+    Error,
+    JSON,
+    Math,
+    Number,
+    Object,
+    Promise,
+    String,
+    Boolean,
+    Array,
+    isFinite,
+    parseFloat
+  });
+  await figma.ui.onmessage({
+    type: "IMPORT_PACKAGE",
+    filename: "full-page-logo-fallback.figcapture",
+    bytes: packFigcapture(packageData)
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const success = posted.find((message) => message.type === "IMPORT_SUCCESS");
+  assert.ok(success, `expected IMPORT_SUCCESS, got ${JSON.stringify(posted)}`);
+
+  const editableNodes = flattenNodes(figma.currentPage.children[1].children);
+  const footerLogo = editableNodes.find((node) => node.pluginData.sourceNodeId === "dom-footer-logo");
+  assert(footerLogo);
+  assert.equal(footerLogo.type, "RECTANGLE");
+  assert.equal(footerLogo.children.length, 0);
+  assert.equal(footerLogo.pluginData.cropAssetRef, "assets/source-screenshot/tile-0009.png");
+  assert.equal(footerLogo.fills[0].scaleMode, "CROP");
+  assert.deepEqual(JSON.parse(JSON.stringify(footerLogo.fills[0].imageTransform)), [
+    [0.1, 0, 0.03],
+    [0, 0.15, 0.11]
+  ]);
+  assert.match(footerLogo.pluginData.fallbackReason, /asset aspect ratio mismatch/);
 });
 
 test("classic Figma runtime binds matching colors and numbers to local variables", async () => {

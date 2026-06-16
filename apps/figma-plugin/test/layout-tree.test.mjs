@@ -1240,6 +1240,52 @@ test("single-child flex menu item maps vertical centering when child line box eq
   assert.equal(model.autoLayout.paddingBottom, 0);
 });
 
+test("block button with one padded text child maps to centered auto layout", () => {
+  const button = node("dom-buy-button", "button", { x: 157, y: 579, width: 240, height: 46 }, {
+    styles: {
+      display: "block",
+      position: "relative",
+      backgroundColor: "rgb(255, 76, 106)",
+      borderTopLeftRadius: "6px",
+      borderTopRightRadius: "6px",
+      borderBottomRightRadius: "6px",
+      borderBottomLeftRadius: "6px",
+      textAlign: "center",
+      lineHeight: "24px"
+    },
+    children: [
+      node("dom-buy-button-label", "div", { x: 158, y: 580, width: 238, height: 44 }, {
+        textContent: "立即購買 NT$ 6,080",
+        styles: {
+          display: "block",
+          position: "relative",
+          color: "rgb(255, 255, 255)",
+          fontSize: "16px",
+          lineHeight: "24px",
+          whiteSpace: "nowrap",
+          textAlign: "center",
+          paddingTop: "10px",
+          paddingRight: "16px",
+          paddingBottom: "10px",
+          paddingLeft: "16px"
+        }
+      })
+    ]
+  });
+  const model = createEditableLayoutNodeModels(packageWithRoot(button))[0];
+  const label = model.children[0];
+
+  assert.equal(model.type, "FRAME");
+  assert.equal(model.autoLayout.applied, true);
+  assert.equal(model.autoLayout.layoutMode, "HORIZONTAL");
+  assert.equal(model.autoLayout.primaryAxisAlignItems, "CENTER");
+  assert.equal(model.autoLayout.counterAxisAlignItems, "CENTER");
+  assert.equal(label.type, "TEXT");
+  assert.equal(label.textAutoResize, "WIDTH_AND_HEIGHT");
+  assert.equal(label.layoutSizingHorizontal, "HUG");
+  assert.equal(label.layoutSizingVertical, "HUG");
+});
+
 test("line-height-only one-child containers still require a shorter child line box", () => {
   const item = node("dom-equal-line-height-only", "li", { x: 100, y: 0, width: 84, height: 28 }, {
     styles: {

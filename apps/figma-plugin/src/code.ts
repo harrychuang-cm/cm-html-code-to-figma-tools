@@ -1,9 +1,12 @@
 import { validateMultiCapturePackageBytes } from "./importer.ts";
 import {
   IMPORT_PACKAGE,
+  createImportPackageTransferReceiver,
   createImportErrorMessage,
+  createImportProgressMessage,
   createImportSuccessMessage,
-  isImportPackageMessage
+  isImportPackageMessage,
+  isImportPackageTransferMessage
 } from "./message-bridge.ts";
 import { createFigmaApiAdapter } from "./figma-adapter.ts";
 import { renderThreeFramesAsync, captureFrameSize, FRAME_ROLES, FRAME_GAP } from "./renderer.ts";
@@ -106,21 +109,45 @@ export function registerFigmaPluginRuntime(figmaApi = globalThis.figma, options 
     });
   }
 
+  const packageTransferReceiver = createImportPackageTransferReceiver();
+
   figmaApi.ui.onmessage = async (message) => {
-    if (!isImportPackageMessage(message) || message.type !== IMPORT_PACKAGE) {
-      return;
-    }
+    let importMessage = message;
+    try {
+      if (isImportPackageTransferMessage(message)) {
+        const transferResult = packageTransferReceiver.accept(message);
+        if (!transferResult || transferResult.status !== "complete") {
+          if (transferResult?.status === "pending") {
+            figmaApi.ui.postMessage(createImportProgressMessage({
+              phase: transferResult.phase,
+              processed: transferResult.processed,
+              total: transferResult.total,
+              label: transferResult.filename,
+              message: "Receiving .figcapture…"
+            }));
+          }
+          return;
+        }
+        importMessage = transferResult.message;
+      }
 
-    const result = await importPackageBytes(message.bytes, {
-      figmaApi,
-      fallbackFont: options.fallbackFont
-    });
-    if (result.status === "error") {
-      figmaApi.ui.postMessage(createImportErrorMessage(result.error));
-      return;
-    }
+      if (!isImportPackageMessage(importMessage) || importMessage.type !== IMPORT_PACKAGE) {
+        return;
+      }
 
-    figmaApi.ui.postMessage(createImportSuccessMessage(result.report));
+      const result = await importPackageBytes(importMessage.bytes, {
+        figmaApi,
+        fallbackFont: options.fallbackFont
+      });
+      if (result.status === "error") {
+        figmaApi.ui.postMessage(createImportErrorMessage(result.error));
+        return;
+      }
+
+      figmaApi.ui.postMessage(createImportSuccessMessage(result.report));
+    } catch (error) {
+      figmaApi.ui.postMessage(createImportErrorMessage(error));
+    }
   };
 
   return true;

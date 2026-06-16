@@ -133,7 +133,14 @@ export function renderCapturePreview(documentRef, preview) {
   setText(documentRef, "runtime-error-category", "");
 
   if (image) {
-    image.src = preview.screenshotDataUrl ?? preview.screenshotUrl;
+    const screenshotPreview = preview.screenshotDataUrl ?? preview.screenshotUrl;
+    if (screenshotPreview) {
+      image.src = screenshotPreview;
+      image.hidden = false;
+    } else {
+      image.removeAttribute?.("src");
+      image.hidden = true;
+    }
   }
   if (previewRoot) {
     previewRoot.hidden = false;
