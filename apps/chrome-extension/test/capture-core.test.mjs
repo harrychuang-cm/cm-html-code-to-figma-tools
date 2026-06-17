@@ -1462,6 +1462,185 @@ test("content capture falls back to raw inline SVG markup when normalization can
   assert.equal(capture.root.children[0].attributes.svgMarkup, rawMarkup);
 });
 
+test("content capture normalizes svg fill-rule and rendering hints", () => {
+  const styledPath = createTestSvgElement("path", {
+    class: "icon-shape",
+    d: "M0 0H12V12H0Z"
+  });
+  const defaultPath = createTestSvgElement("path", {
+    class: "icon-default",
+    d: "M2 2H6V6H2Z"
+  });
+  const svg = createTestSvgElement("svg", {
+    xmlns: "http://www.w3.org/2000/svg",
+    viewBox: "0 0 12 12"
+  }, {
+    rect: { x: 10, y: 10, width: 12, height: 12 },
+    children: [styledPath, defaultPath]
+  });
+  const body = createTestSvgElement("body", {}, {
+    rect: { x: 0, y: 0, width: 120, height: 80 },
+    children: [svg]
+  });
+  const styles = new Map([
+    [body, styleDeclaration({ display: "block" })],
+    [svg, styleDeclaration({ display: "block" })],
+    [styledPath, styleDeclaration({
+      fill: "rgb(76, 110, 245)",
+      fillRule: "evenodd",
+      clipRule: "evenodd",
+      paintOrder: "stroke",
+      vectorEffect: "non-scaling-stroke",
+      mixBlendMode: "multiply"
+    })],
+    [defaultPath, styleDeclaration({
+      fill: "rgb(76, 110, 245)",
+      fillRule: "nonzero",
+      mixBlendMode: "normal"
+    })]
+  ]);
+
+  const capture = captureVisibleViewportFromDocument({
+    body,
+    documentElement: body,
+    title: "SVG rendering hints",
+    location: { href: "https://app.example.com/svg" }
+  }, testWindowForSvgStyles(styles), {
+    captureTimestamp: "2026-06-17T09:30:00.000Z"
+  });
+
+  const markup = capture.root.children[0].attributes.svgMarkup;
+  assert.match(markup, /class="icon-shape"[^>]*fill-rule="evenodd"/);
+  assert.match(markup, /clip-rule="evenodd"/);
+  assert.match(markup, /paint-order="stroke"/);
+  assert.match(markup, /vector-effect="non-scaling-stroke"/);
+  assert.match(markup, /mix-blend-mode="multiply"/);
+  assert.doesNotMatch(markup, /class="icon-default"[^>]*fill-rule=/);
+  assert.doesNotMatch(markup, /mix-blend-mode="normal"/);
+});
+
+test("content capture inlines svg text fill from computed color", () => {
+  function captureSvgTextMarkup(textStyleByNode, build) {
+    const built = build();
+    const svg = createTestSvgElement("svg", {
+      xmlns: "http://www.w3.org/2000/svg",
+      viewBox: "0 0 100 50"
+    }, {
+      rect: { x: 10, y: 10, width: 100, height: 50 },
+      children: [built.node]
+    });
+    const body = createTestSvgElement("body", {}, {
+      rect: { x: 0, y: 0, width: 120, height: 80 },
+      children: [svg]
+    });
+    const styles = new Map([
+      [body, styleDeclaration({ display: "block" })],
+      [svg, styleDeclaration({ display: "block" })],
+      ...textStyleByNode
+    ]);
+    const capture = captureVisibleViewportFromDocument({
+      body,
+      documentElement: body,
+      title: "SVG text fill",
+      location: { href: "https://app.example.com/svg" }
+    }, testWindowForSvgStyles(styles), {
+      captureTimestamp: "2026-06-17T10:00:00.000Z"
+    });
+    return capture.root.children[0].attributes.svgMarkup;
+  }
+
+  // (a) class-less white text with no fill → explicit white fill
+  const textA = createTestSvgElement("text", { x: "50", y: "25" }, { text: "AAA" });
+  const markupA = captureSvgTextMarkup(
+    [[textA, styleDeclaration({ color: "rgb(255, 255, 255)" })]],
+    () => ({ node: textA })
+  );
+  assert.match(markupA, /<text[^>]*fill="rgb\(255, 255, 255\)"/);
+
+  // (b) existing non-default computed fill is preserved, not overwritten by text color
+  const textB = createTestSvgElement("text", { x: "50", y: "25" }, { text: "BBB" });
+  const markupB = captureSvgTextMarkup(
+    [[textB, styleDeclaration({ fill: "rgb(144, 202, 249)", color: "rgb(255, 255, 255)" })]],
+    () => ({ node: textB })
+  );
+  assert.match(markupB, /fill="rgb\(144, 202, 249\)"/);
+  assert.doesNotMatch(markupB, /fill="rgb\(255, 255, 255\)"/);
+
+  // (c) default-black computed fill falls back to computed text color
+  const tspanC = createTestSvgElement("tspan", { x: "50" }, { text: "CCC" });
+  const textC = createTestSvgElement("text", { x: "50", y: "25" }, { children: [tspanC] });
+  const markupC = captureSvgTextMarkup(
+    [
+      [textC, styleDeclaration({ fill: "rgb(0, 0, 0)", color: "rgb(255, 255, 255)" })],
+      [tspanC, styleDeclaration({ fill: "rgb(0, 0, 0)", color: "rgb(255, 255, 255)" })]
+    ],
+    () => ({ node: textC })
+  );
+  assert.match(markupC, /<tspan[^>]*fill="rgb\(255, 255, 255\)"/);
+});
+
+test("content capture resolves svg dominant-baseline to baseline y", () => {
+  function captureBaselineMarkup(textStyleByNode, rootNode) {
+    const svg = createTestSvgElement("svg", {
+      xmlns: "http://www.w3.org/2000/svg",
+      viewBox: "0 0 200 200"
+    }, {
+      rect: { x: 10, y: 10, width: 200, height: 200 },
+      children: [rootNode]
+    });
+    const body = createTestSvgElement("body", {}, {
+      rect: { x: 0, y: 0, width: 220, height: 220 },
+      children: [svg]
+    });
+    const styles = new Map([
+      [body, styleDeclaration({ display: "block" })],
+      [svg, styleDeclaration({ display: "block" })],
+      ...textStyleByNode
+    ]);
+    const capture = captureVisibleViewportFromDocument({
+      body,
+      documentElement: body,
+      title: "SVG baseline",
+      location: { href: "https://app.example.com/svg" }
+    }, testWindowForSvgStyles(styles), {
+      captureTimestamp: "2026-06-17T11:00:00.000Z"
+    });
+    return capture.root.children[0].attributes.svgMarkup;
+  }
+
+  // (a) central text shifts y by 0.35 * fontSize and drops dominant-baseline
+  const tspanA = createTestSvgElement("tspan", { x: "100", "dominant-baseline": "central" }, { text: "75" });
+  const textA = createTestSvgElement("text", { x: "100", y: "100", "dominant-baseline": "central" }, { children: [tspanA] });
+  const markupA = captureBaselineMarkup(
+    [
+      [textA, styleDeclaration({ dominantBaseline: "central", fontSize: "45px" })],
+      [tspanA, styleDeclaration({ dominantBaseline: "central", fontSize: "45px" })]
+    ],
+    textA
+  );
+  assert.match(markupA, /<text[^>]*y="115\.75"/);
+  assert.doesNotMatch(markupA, /dominant-baseline/);
+  // (b) inheriting tspan without its own y only strips the attribute, no y added
+  assert.doesNotMatch(markupA, /<tspan[^>]*\sy=/);
+
+  // (c) alphabetic baseline leaves geometry and attribute unchanged
+  const textC = createTestSvgElement("text", { x: "100", y: "100", "dominant-baseline": "alphabetic" }, { text: "X" });
+  const markupC = captureBaselineMarkup(
+    [[textC, styleDeclaration({ dominantBaseline: "alphabetic", fontSize: "45px" })]],
+    textC
+  );
+  assert.match(markupC, /<text[^>]*y="100"/);
+
+  // (c2) unparseable font-size leaves geometry and attribute unchanged
+  const textD = createTestSvgElement("text", { x: "100", y: "100", "dominant-baseline": "central" }, { text: "X" });
+  const markupD = captureBaselineMarkup(
+    [[textD, styleDeclaration({ dominantBaseline: "central", fontSize: "auto" })]],
+    textD
+  );
+  assert.match(markupD, /<text[^>]*y="100"/);
+  assert.match(markupD, /dominant-baseline="central"/);
+});
+
 function textElement(sourceNodeId, textContent, styles) {
   return {
     tagName: "div",
@@ -1511,6 +1690,10 @@ class TestSvgElement {
 
   setAttribute(name, value) {
     this._attributes.set(name, String(value));
+  }
+
+  removeAttribute(name) {
+    this._attributes.delete(name);
   }
 
   cloneNode(deep = false) {

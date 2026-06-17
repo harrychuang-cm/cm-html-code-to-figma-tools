@@ -86,6 +86,11 @@ export const DEFAULT_STYLE_PROPERTIES = [
 
 const SVG_PRESENTATION_PROPERTIES = [
   { cssName: "fill", domName: "fill", attrName: "fill", defaultValue: "rgb(0, 0, 0)" },
+  { cssName: "fill-rule", domName: "fillRule", attrName: "fill-rule", defaultValue: "nonzero" },
+  { cssName: "clip-rule", domName: "clipRule", attrName: "clip-rule", defaultValue: "nonzero" },
+  { cssName: "paint-order", domName: "paintOrder", attrName: "paint-order", defaultValue: "normal" },
+  { cssName: "vector-effect", domName: "vectorEffect", attrName: "vector-effect", defaultValue: "none" },
+  { cssName: "mix-blend-mode", domName: "mixBlendMode", attrName: "mix-blend-mode", defaultValue: "normal" },
   { cssName: "stroke", domName: "stroke", attrName: "stroke", defaultValue: "none" },
   { cssName: "color", domName: "color", attrName: "color", defaultValue: "rgb(0, 0, 0)" },
   { cssName: "opacity", domName: "opacity", attrName: "opacity", defaultValue: "1" },
@@ -106,6 +111,16 @@ const SVG_PRESENTATION_PROPERTIES = [
   { cssName: "stop-color", domName: "stopColor", attrName: "stop-color", defaultValue: "rgb(0, 0, 0)", tagNames: ["stop"] },
   { cssName: "stop-opacity", domName: "stopOpacity", attrName: "stop-opacity", defaultValue: "1", tagNames: ["stop"] }
 ];
+
+const SVG_TEXT_FILL_TAGS = new Set(["text", "tspan", "textpath"]);
+const SVG_BASELINE_OFFSET_FACTORS = {
+  central: 0.35,
+  middle: 0.35,
+  "text-before-edge": 0.8,
+  hanging: 0.8,
+  "text-after-edge": -0.2,
+  ideographic: -0.2
+};
 
 export function createManifestFromCapture(capture, options = {}) {
   const captureMode = capture.captureMode === "element" ? "element" : capture.captureMode;
@@ -554,6 +569,64 @@ function normalizeSvgPresentationNode(originalNode, cloneNode, windowRef) {
     }
     setSvgAttribute(cloneNode, property.attrName, normalizedSvgPresentationValue(value));
   }
+
+  ensureSvgTextFill(originalNode, cloneNode, computed);
+  resolveSvgTextBaseline(originalNode, cloneNode, computed);
+}
+
+function resolveSvgTextBaseline(originalNode, cloneNode, computed) {
+  const tagName = svgTagName(originalNode);
+  if (!SVG_TEXT_FILL_TAGS.has(tagName)) {
+    return;
+  }
+  const baselineRaw = svgComputedStyleValue(computed, { cssName: "dominant-baseline", domName: "dominantBaseline" }) ||
+    svgComputedStyleValue(computed, { cssName: "alignment-baseline", domName: "alignmentBaseline" });
+  const factor = SVG_BASELINE_OFFSET_FACTORS[String(baselineRaw).trim().toLowerCase()];
+  if (factor === undefined) {
+    return;
+  }
+  const fontSize = parseSvgLengthPx(svgComputedStyleValue(computed, { cssName: "font-size", domName: "fontSize" }));
+  if (!(fontSize > 0)) {
+    return;
+  }
+  const ownY = svgAttributeValue(originalNode, "y");
+  const hasOwnY = String(ownY).trim() !== "";
+  if (tagName === "text" || tagName === "textpath" || hasOwnY) {
+    const baseY = hasOwnY ? Number.parseFloat(ownY) : 0;
+    if (Number.isFinite(baseY)) {
+      setSvgAttribute(cloneNode, "y", String(Math.round((baseY + factor * fontSize) * 1000) / 1000));
+    }
+  }
+  removeSvgAttribute(cloneNode, "dominant-baseline");
+  removeSvgAttribute(cloneNode, "alignment-baseline");
+}
+
+function parseSvgLengthPx(value) {
+  const match = String(value ?? "").trim().match(/^(-?[\d.]+)/);
+  const parsed = match ? Number.parseFloat(match[1]) : NaN;
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function ensureSvgTextFill(originalNode, cloneNode, computed) {
+  if (!SVG_TEXT_FILL_TAGS.has(svgTagName(originalNode))) {
+    return;
+  }
+  if (hasSvgAttribute(cloneNode, "fill")) {
+    return;
+  }
+  const computedFill = svgComputedStyleValue(computed, { cssName: "fill", domName: "fill" });
+  let resolved = "";
+  if (isUsableSvgPresentationValue(computedFill) && !isDefaultSvgPresentationValue(computedFill, "rgb(0, 0, 0)")) {
+    resolved = computedFill;
+  } else {
+    const webkitFill = svgComputedStyleValue(computed, { cssName: "-webkit-text-fill-color", domName: "webkitTextFillColor" });
+    const color = svgComputedStyleValue(computed, { cssName: "color", domName: "color" });
+    resolved = isUsableSvgPresentationValue(webkitFill) ? webkitFill : (isUsableSvgPresentationValue(color) ? color : "");
+  }
+  if (!resolved || isDefaultSvgPresentationValue(resolved, "rgb(0, 0, 0)")) {
+    return;
+  }
+  setSvgAttribute(cloneNode, "fill", normalizedSvgPresentationValue(resolved));
 }
 
 function svgElementList(root) {
@@ -694,6 +767,12 @@ function svgAttributeValue(node, name) {
 function setSvgAttribute(node, name, value) {
   if (typeof node?.setAttribute === "function") {
     node.setAttribute(name, value);
+  }
+}
+
+function removeSvgAttribute(node, name) {
+  if (typeof node?.removeAttribute === "function") {
+    node.removeAttribute(name);
   }
 }
 
