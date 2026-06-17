@@ -311,7 +311,7 @@ test("asset capture keeps simple inline svg icons as vector assets", async () =>
   assert.equal(result.capture.root.children[0].attributes.assetKind, "svg");
 });
 
-test("asset capture uses screenshot fallback for complex inline svg charts", async () => {
+test("asset capture packages complex inline svg charts as vector assets", async () => {
   const capture = captureElementTree(
     {
       tagName: "main",
@@ -390,24 +390,78 @@ test("asset capture uses screenshot fallback for complex inline svg charts", asy
       captureTimestamp: "2026-06-08T08:00:00.000Z"
     }
   );
+
+  const result = await captureVisualAssets(capture);
+
+  assert.deepEqual(Object.keys(result.assets), ["assets/vector-1.svg"]);
+  assert.equal(result.capture.root.children[0].assetRef, "assets/vector-1.svg");
+  assert.equal(result.capture.root.children[0].fallbackRef, undefined);
+  assert.equal(result.capture.root.children[0].attributes.assetKind, "svg");
+  assert.match(new TextDecoder().decode(result.assets["assets/vector-1.svg"]), /元大台灣50/);
+  assert.equal(result.diagnostics.counts.fallbacks, 0);
+  assert.deepEqual(result.diagnostics.fallbackReasons, []);
+});
+
+test("asset capture keeps screenshot fallback for high-risk inline svg content", async () => {
+  const capture = captureElementTree(
+    {
+      tagName: "main",
+      rect: { x: 0, y: 0, width: 800, height: 600 },
+      styles: {},
+      attributes: {},
+      children: [
+        {
+          tagName: "svg",
+          sourceNodeId: "dom-risky-svg",
+          rect: { x: 80, y: 80, width: 320, height: 160 },
+          styles: {},
+          attributes: {
+            svgMarkup:
+              "<svg viewBox=\"0 0 320 160\"><foreignObject x=\"0\" y=\"0\" width=\"320\" height=\"160\"><div>HTML label</div></foreignObject></svg>"
+          },
+          children: [
+            {
+              tagName: "foreignObject",
+              rect: { x: 80, y: 80, width: 320, height: 160 },
+              styles: {},
+              attributes: {},
+              children: [
+                {
+                  tagName: "div",
+                  textContent: "HTML label",
+                  rect: { x: 80, y: 80, width: 120, height: 24 },
+                  styles: {},
+                  attributes: {},
+                  children: []
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    { width: 800, height: 600, devicePixelRatio: 1, scrollX: 0, scrollY: 0 },
+    {
+      sourceUrl: "https://example.com/risky-svg",
+      captureTimestamp: "2026-06-17T08:00:00.000Z"
+    }
+  );
   const cropBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 77]);
-  const providerCalls = [];
 
   const result = await captureVisualAssets(capture, {
     async fallbackRasterProvider(node) {
-      providerCalls.push(node.sourceNodeId);
+      assert.equal(node.sourceNodeId, "dom-risky-svg");
       return cropBytes;
     }
   });
 
-  assert.deepEqual(providerCalls, ["dom-chart"]);
   assert.deepEqual(Object.keys(result.assets), ["assets/fallback-1.png"]);
   assert.equal(result.capture.root.children[0].assetRef, undefined);
   assert.equal(result.capture.root.children[0].fallbackRef, "assets/fallback-1.png");
   assert.deepEqual(Array.from(result.assets["assets/fallback-1.png"]), Array.from(cropBytes));
   assert.equal(result.diagnostics.counts.fallbacks, 1);
   assert.deepEqual(result.diagnostics.fallbackReasons, [
-    { sourceNodeId: "dom-chart", reason: "complex svg fallback" }
+    { sourceNodeId: "dom-risky-svg", reason: "complex svg fallback" }
   ]);
 });
 

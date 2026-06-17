@@ -84,6 +84,29 @@ export const DEFAULT_STYLE_PROPERTIES = [
   "left"
 ];
 
+const SVG_PRESENTATION_PROPERTIES = [
+  { cssName: "fill", domName: "fill", attrName: "fill", defaultValue: "rgb(0, 0, 0)" },
+  { cssName: "stroke", domName: "stroke", attrName: "stroke", defaultValue: "none" },
+  { cssName: "color", domName: "color", attrName: "color", defaultValue: "rgb(0, 0, 0)" },
+  { cssName: "opacity", domName: "opacity", attrName: "opacity", defaultValue: "1" },
+  { cssName: "fill-opacity", domName: "fillOpacity", attrName: "fill-opacity", defaultValue: "1" },
+  { cssName: "stroke-opacity", domName: "strokeOpacity", attrName: "stroke-opacity", defaultValue: "1" },
+  { cssName: "stroke-width", domName: "strokeWidth", attrName: "stroke-width", defaultValue: "1px" },
+  { cssName: "stroke-linecap", domName: "strokeLinecap", attrName: "stroke-linecap", defaultValue: "butt" },
+  { cssName: "stroke-linejoin", domName: "strokeLinejoin", attrName: "stroke-linejoin", defaultValue: "miter" },
+  { cssName: "stroke-miterlimit", domName: "strokeMiterlimit", attrName: "stroke-miterlimit", defaultValue: "4" },
+  { cssName: "stroke-dasharray", domName: "strokeDasharray", attrName: "stroke-dasharray", defaultValue: "none" },
+  { cssName: "stroke-dashoffset", domName: "strokeDashoffset", attrName: "stroke-dashoffset", defaultValue: "0px" },
+  { cssName: "font-family", domName: "fontFamily", attrName: "font-family", defaultValue: "" },
+  { cssName: "font-size", domName: "fontSize", attrName: "font-size", defaultValue: "16px" },
+  { cssName: "font-style", domName: "fontStyle", attrName: "font-style", defaultValue: "normal" },
+  { cssName: "font-weight", domName: "fontWeight", attrName: "font-weight", defaultValue: "400" },
+  { cssName: "text-anchor", domName: "textAnchor", attrName: "text-anchor", defaultValue: "start" },
+  { cssName: "dominant-baseline", domName: "dominantBaseline", attrName: "dominant-baseline", defaultValue: "auto" },
+  { cssName: "stop-color", domName: "stopColor", attrName: "stop-color", defaultValue: "rgb(0, 0, 0)", tagNames: ["stop"] },
+  { cssName: "stop-opacity", domName: "stopOpacity", attrName: "stop-opacity", defaultValue: "1", tagNames: ["stop"] }
+];
+
 export function createManifestFromCapture(capture, options = {}) {
   const captureMode = capture.captureMode === "element" ? "element" : capture.captureMode;
   return {
@@ -338,7 +361,7 @@ function snapshotDomElement(element, documentRef, windowRef, containingBlockRect
     attributes.currentSrc = element.currentSrc;
   }
   if (tagName === "svg" && element.outerHTML) {
-    attributes.svgMarkup = element.outerHTML;
+    attributes.svgMarkup = serializeSvgMarkupForFigma(element, windowRef);
   }
   if (tagName === "canvas") {
     const canvasDataUrl = serializeCanvasDataUrl(element);
@@ -476,6 +499,201 @@ function slotComputedStyles(slot, windowRef) {
     return pickStyles(windowRef.getComputedStyle(slot));
   } catch {
     return {};
+  }
+}
+
+function serializeSvgMarkupForFigma(element, windowRef) {
+  const rawMarkup = typeof element.outerHTML === "string" ? element.outerHTML : "";
+  if (!rawMarkup) {
+    return "";
+  }
+  if (typeof element.cloneNode !== "function") {
+    return rawMarkup;
+  }
+
+  try {
+    const clone = element.cloneNode(true);
+    const originalNodes = svgElementList(element);
+    const cloneNodes = svgElementList(clone);
+    const count = Math.min(originalNodes.length, cloneNodes.length);
+    for (let index = 0; index < count; index += 1) {
+      normalizeSvgPresentationNode(originalNodes[index], cloneNodes[index], windowRef);
+    }
+    return serializeSvgClone(clone, rawMarkup);
+  } catch {
+    return rawMarkup;
+  }
+}
+
+function normalizeSvgPresentationNode(originalNode, cloneNode, windowRef) {
+  if (!originalNode || !cloneNode || !isSvgElementLike(originalNode) || !isSvgElementLike(cloneNode)) {
+    return;
+  }
+  const tagName = svgTagName(originalNode);
+  if (["script", "style", "title", "desc"].includes(tagName)) {
+    return;
+  }
+
+  let computed;
+  try {
+    computed = windowRef.getComputedStyle(originalNode);
+  } catch {
+    return;
+  }
+  if (!computed) {
+    return;
+  }
+
+  for (const property of SVG_PRESENTATION_PROPERTIES) {
+    if (property.tagNames && !property.tagNames.includes(tagName)) {
+      continue;
+    }
+    const value = svgComputedStyleValue(computed, property);
+    if (!shouldWriteSvgPresentationAttribute(originalNode, property, value)) {
+      continue;
+    }
+    setSvgAttribute(cloneNode, property.attrName, normalizedSvgPresentationValue(value));
+  }
+}
+
+function svgElementList(root) {
+  const nodes = [root];
+  if (typeof root.querySelectorAll === "function") {
+    try {
+      return nodes.concat(Array.from(root.querySelectorAll("*") ?? []).filter(isSvgElementLike));
+    } catch {
+      return nodes;
+    }
+  }
+  appendSvgElementChildren(root, nodes);
+  return nodes;
+}
+
+function appendSvgElementChildren(node, nodes) {
+  for (const child of Array.from(node.children ?? [])) {
+    if (!isSvgElementLike(child)) {
+      continue;
+    }
+    nodes.push(child);
+    appendSvgElementChildren(child, nodes);
+  }
+}
+
+function isSvgElementLike(node) {
+  return Boolean(node) && typeof node === "object" && (node.nodeType === 1 || node.nodeType === undefined) && Boolean(node.tagName ?? node.nodeName);
+}
+
+function svgTagName(node) {
+  return String(node?.tagName ?? node?.nodeName ?? "").toLowerCase();
+}
+
+function svgComputedStyleValue(computed, property) {
+  let value = "";
+  if (typeof computed.getPropertyValue === "function") {
+    value = computed.getPropertyValue(property.cssName);
+  }
+  if (typeof value !== "string" || value.trim().length === 0) {
+    value = computed[property.domName] ?? computed[property.cssName] ?? "";
+  }
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function shouldWriteSvgPresentationAttribute(node, property, value) {
+  if (!isUsableSvgPresentationValue(value)) {
+    return false;
+  }
+  if (hasSvgAttribute(node, property.attrName) || styleAttributeContainsSvgProperty(node, property.cssName)) {
+    return true;
+  }
+  if (property.tagNames) {
+    return !isDefaultSvgPresentationValue(value, property.defaultValue);
+  }
+  if (!hasSvgAttribute(node, "class") && !hasSvgAttribute(node, "style")) {
+    return false;
+  }
+  return !isDefaultSvgPresentationValue(value, property.defaultValue);
+}
+
+function isUsableSvgPresentationValue(value) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return normalized.length > 0 &&
+    normalized !== "normal" &&
+    normalized !== "auto" &&
+    normalized !== "initial" &&
+    normalized !== "inherit" &&
+    normalized !== "unset";
+}
+
+function isDefaultSvgPresentationValue(value, defaultValue) {
+  if (!defaultValue) {
+    return false;
+  }
+  return String(value ?? "").trim().toLowerCase() === String(defaultValue).trim().toLowerCase();
+}
+
+function styleAttributeContainsSvgProperty(node, cssName) {
+  const style = svgAttributeValue(node, "style");
+  if (!style) {
+    return false;
+  }
+  return new RegExp(`(?:^|;)\\s*${escapeRegExp(cssName)}\\s*:`, "i").test(style);
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizedSvgPresentationValue(value) {
+  const text = String(value ?? "").trim();
+  const urlMatch = text.match(/^url\((['"]?)([^'")]+)\1\)(?:\s+(.+))?$/i);
+  if (!urlMatch) {
+    return text;
+  }
+  const url = urlMatch[2];
+  const hashIndex = url.lastIndexOf("#");
+  if (hashIndex < 0) {
+    return text;
+  }
+  return `url(#${url.slice(hashIndex + 1)})`;
+}
+
+function serializeSvgClone(clone, fallback) {
+  try {
+    const Serializer = clone?.ownerDocument?.defaultView?.XMLSerializer ?? globalThis.XMLSerializer;
+    if (typeof Serializer === "function") {
+      return new Serializer().serializeToString(clone);
+    }
+  } catch {
+    return fallback;
+  }
+  return typeof clone?.outerHTML === "string" ? clone.outerHTML : fallback;
+}
+
+function hasSvgAttribute(node, name) {
+  if (typeof node?.hasAttribute === "function") {
+    return node.hasAttribute(name);
+  }
+  return svgAttributeValue(node, name) !== "";
+}
+
+function svgAttributeValue(node, name) {
+  if (typeof node?.getAttribute === "function") {
+    return node.getAttribute(name) ?? "";
+  }
+  const attributes = node?.attributes;
+  if (!attributes) {
+    return "";
+  }
+  if (!Array.isArray(attributes) && typeof attributes === "object" && typeof attributes.length !== "number") {
+    return attributes[name] ?? "";
+  }
+  const found = Array.from(attributes).find((attribute) => attribute?.name === name);
+  return found?.value ?? "";
+}
+
+function setSvgAttribute(node, name, value) {
+  if (typeof node?.setAttribute === "function") {
+    node.setAttribute(name, value);
   }
 }
 

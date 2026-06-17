@@ -1314,6 +1314,154 @@ test("content capture records visual asset sources from DOM and computed styles"
   assert.equal(capture.root.children[2].styles.webkitMaskImage, "url(data:image/svg+xml,%3Csvg%2F%3E)");
 });
 
+test("content capture normalizes inline SVG presentation styles for Figma import", () => {
+  const rect = createTestSvgElement("rect", {
+    x: "0",
+    y: "0",
+    width: "12",
+    height: "12",
+    fill: "var(--b-theme-primary, var(--bs-primary, #4c6ef5))"
+  });
+  const label = createTestSvgElement("text", {
+    x: "6",
+    y: "20",
+    fill: "currentColor",
+    "font-weight": "600"
+  }, { text: "50k" });
+  const classStyledPath = createTestSvgElement("path", {
+    class: "series-line",
+    d: "M0 0L12 12"
+  });
+  const svg = createTestSvgElement("svg", {
+    xmlns: "http://www.w3.org/2000/svg",
+    viewBox: "0 0 24 24",
+    style: "color: #111827"
+  }, {
+    rect: { x: 10, y: 10, width: 24, height: 24 },
+    children: [rect, label, classStyledPath]
+  });
+  const body = createTestSvgElement("body", {}, {
+    rect: { x: 0, y: 0, width: 120, height: 80 },
+    children: [svg]
+  });
+  const styles = new Map([
+    [body, styleDeclaration({ display: "block" })],
+    [svg, styleDeclaration({ display: "block", color: "rgb(17, 24, 39)" })],
+    [rect, styleDeclaration({ fill: "rgb(76, 110, 245)", stroke: "none" })],
+    [label, styleDeclaration({ fill: "rgb(17, 24, 39)", fontSize: "11px", fontWeight: "600" })],
+    [classStyledPath, styleDeclaration({ fill: "none", stroke: "rgb(34, 139, 230)", strokeWidth: "2px" })]
+  ]);
+
+  const capture = captureVisibleViewportFromDocument({
+    body,
+    documentElement: body,
+    title: "SVG style normalization",
+    location: { href: "https://app.example.com/svg" }
+  }, testWindowForSvgStyles(styles), {
+    captureTimestamp: "2026-06-17T09:00:00.000Z"
+  });
+
+  const markup = capture.root.children[0].attributes.svgMarkup;
+  assert.match(markup, /fill="rgb\(76, 110, 245\)"/);
+  assert.doesNotMatch(markup, /var\(--b-theme-primary/);
+  assert.match(markup, /fill="rgb\(17, 24, 39\)"/);
+  assert.match(markup, /stroke="rgb\(34, 139, 230\)"/);
+  assert.match(markup, /stroke-width="2px"/);
+});
+
+test("content capture preserves SVG gradient stops while normalizing presentation styles", () => {
+  const stopStart = createTestSvgElement("stop", {
+    offset: "0%",
+    "stop-color": "var(--chart-start, #ff6b6b)"
+  });
+  const stopEnd = createTestSvgElement("stop", {
+    offset: "100%",
+    class: "chart-stop-end"
+  });
+  const gradient = createTestSvgElement("linearGradient", {
+    id: "chart-gradient",
+    x1: "0",
+    x2: "1"
+  }, { children: [stopStart, stopEnd] });
+  const defs = createTestSvgElement("defs", {}, { children: [gradient] });
+  const rect = createTestSvgElement("rect", {
+    x: "0",
+    y: "0",
+    width: "80",
+    height: "24",
+    fill: "url(#chart-gradient)"
+  });
+  const svg = createTestSvgElement("svg", {
+    xmlns: "http://www.w3.org/2000/svg",
+    viewBox: "0 0 80 24"
+  }, {
+    rect: { x: 20, y: 20, width: 80, height: 24 },
+    children: [defs, rect]
+  });
+  const body = createTestSvgElement("body", {}, {
+    rect: { x: 0, y: 0, width: 160, height: 100 },
+    children: [svg]
+  });
+  const styles = new Map([
+    [body, styleDeclaration({ display: "block" })],
+    [svg, styleDeclaration({ display: "block" })],
+    [defs, styleDeclaration({ display: "block" })],
+    [gradient, styleDeclaration({ display: "block" })],
+    [stopStart, styleDeclaration({ stopColor: "rgb(255, 107, 107)", stopOpacity: "0.72" })],
+    [stopEnd, styleDeclaration({ stopColor: "rgb(34, 139, 230)", stopOpacity: "0.86" })],
+    [rect, styleDeclaration({ fill: "url(\"https://app.example.com/svg#chart-gradient\")" })]
+  ]);
+
+  const capture = captureVisibleViewportFromDocument({
+    body,
+    documentElement: body,
+    title: "SVG gradient normalization",
+    location: { href: "https://app.example.com/svg" }
+  }, testWindowForSvgStyles(styles), {
+    captureTimestamp: "2026-06-17T09:10:00.000Z"
+  });
+
+  const markup = capture.root.children[0].attributes.svgMarkup;
+  assert.match(markup, /<linearGradient[^>]+id="chart-gradient"/);
+  assert.match(markup, /fill="url\(#chart-gradient\)"/);
+  assert.match(markup, /stop-color="rgb\(255, 107, 107\)"/);
+  assert.match(markup, /stop-opacity="0.72"/);
+  assert.match(markup, /stop-color="rgb\(34, 139, 230\)"/);
+  assert.match(markup, /stop-opacity="0.86"/);
+});
+
+test("content capture falls back to raw inline SVG markup when normalization cannot serialize", () => {
+  const svg = createTestSvgElement("svg", {
+    viewBox: "0 0 12 12"
+  }, {
+    rect: { x: 10, y: 10, width: 12, height: 12 },
+    children: [createTestSvgElement("path", { d: "M0 0L12 12", fill: "currentColor" })]
+  });
+  svg.cloneNode = () => {
+    throw new Error("clone failed");
+  };
+  const rawMarkup = svg.outerHTML;
+  const body = createTestSvgElement("body", {}, {
+    rect: { x: 0, y: 0, width: 120, height: 80 },
+    children: [svg]
+  });
+  const styles = new Map([
+    [body, styleDeclaration({ display: "block" })],
+    [svg, styleDeclaration({ display: "block", color: "rgb(17, 24, 39)" })]
+  ]);
+
+  const capture = captureVisibleViewportFromDocument({
+    body,
+    documentElement: body,
+    title: "SVG fallback",
+    location: { href: "https://app.example.com/svg" }
+  }, testWindowForSvgStyles(styles), {
+    captureTimestamp: "2026-06-17T09:20:00.000Z"
+  });
+
+  assert.equal(capture.root.children[0].attributes.svgMarkup, rawMarkup);
+});
+
 function textElement(sourceNodeId, textContent, styles) {
   return {
     tagName: "div",
@@ -1323,6 +1471,132 @@ function textElement(sourceNodeId, textContent, styles) {
     styles: { display: "block", ...styles },
     attributes: {},
     children: []
+  };
+}
+
+class TestSvgElement {
+  constructor(tagName, attributes = {}, options = {}) {
+    this.tagName = tagName;
+    this.nodeName = tagName;
+    this.nodeType = 1;
+    this.currentSrc = "";
+    this._attributes = new Map(Object.entries(attributes).map(([name, value]) => [name, String(value)]));
+    this._text = options.text ?? "";
+    this._rect = options.rect ?? { x: 0, y: 0, width: 8, height: 8 };
+    this.children = options.children ?? [];
+    for (const child of this.children) {
+      child.parentNode = this;
+    }
+    this.childNodes = [
+      ...(this._text ? [{ nodeType: 3, textContent: this._text }] : []),
+      ...this.children
+    ];
+  }
+
+  get attributes() {
+    return Array.from(this._attributes, ([name, value]) => ({ name, value }));
+  }
+
+  get outerHTML() {
+    return serializeTestSvgElement(this);
+  }
+
+  getAttribute(name) {
+    return this._attributes.has(name) ? this._attributes.get(name) : null;
+  }
+
+  hasAttribute(name) {
+    return this._attributes.has(name);
+  }
+
+  setAttribute(name, value) {
+    this._attributes.set(name, String(value));
+  }
+
+  cloneNode(deep = false) {
+    return new TestSvgElement(
+      this.tagName,
+      Object.fromEntries(this._attributes),
+      {
+        text: this._text,
+        rect: this._rect,
+        children: deep ? this.children.map((child) => child.cloneNode(true)) : []
+      }
+    );
+  }
+
+  querySelectorAll(selector) {
+    if (selector !== "*") {
+      return [];
+    }
+    const descendants = [];
+    const visit = (node) => {
+      for (const child of node.children ?? []) {
+        descendants.push(child);
+        visit(child);
+      }
+    };
+    visit(this);
+    return descendants;
+  }
+
+  getBoundingClientRect() {
+    return this._rect;
+  }
+}
+
+function createTestSvgElement(tagName, attributes = {}, options = {}) {
+  return new TestSvgElement(tagName, attributes, options);
+}
+
+function serializeTestSvgElement(node) {
+  const attributes = node.attributes
+    .map((attribute) => `${attribute.name}="${escapeTestSvgAttribute(attribute.value)}"`)
+    .join(" ");
+  const openTag = attributes.length > 0 ? `<${node.tagName} ${attributes}>` : `<${node.tagName}>`;
+  const children = (node.children ?? []).map((child) => child.outerHTML).join("");
+  return `${openTag}${escapeTestSvgText(node._text)}${children}</${node.tagName}>`;
+}
+
+function escapeTestSvgAttribute(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("\"", "&quot;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+function escapeTestSvgText(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+function styleDeclaration(values = {}) {
+  return {
+    ...values,
+    getPropertyValue(name) {
+      return values[name] ?? values[cssPropertyToDomName(name)] ?? "";
+    }
+  };
+}
+
+function cssPropertyToDomName(name) {
+  return String(name).replace(/-([a-z])/g, (_match, char) => char.toUpperCase());
+}
+
+function testWindowForSvgStyles(styles) {
+  return {
+    innerWidth: 240,
+    innerHeight: 160,
+    devicePixelRatio: 2,
+    scrollX: 0,
+    scrollY: 0,
+    location: { href: "https://app.example.com/svg" },
+    getComputedStyle(element) {
+      return styles.get(element) ?? styleDeclaration();
+    }
   };
 }
 

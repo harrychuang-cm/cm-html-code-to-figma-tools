@@ -231,7 +231,7 @@ export function needsRasterFallback(node) {
   if (isClosedShadowHostNode(node)) {
     return true;
   }
-  return node.tagName === "svg" && isComplexSvg(node);
+  return node.tagName === "svg" && needsSvgRasterFallback(node);
 }
 
 export function isClosedShadowHostNode(node) {
@@ -374,7 +374,36 @@ const SVG_NON_RENDERING_TAGS = new Set([
   "title"
 ]);
 const SVG_TEXT_TAGS = new Set(["text", "textpath", "tspan"]);
+const SVG_HIGH_RISK_TAGS = new Set(["foreignobject", "script", "iframe", "canvas", "video"]);
 const COMPLEX_SVG_VISUAL_NODE_THRESHOLD = 4;
+
+function needsSvgRasterFallback(node) {
+  if (!node.attributes?.svgMarkup) {
+    return isComplexSvg(node);
+  }
+  return hasHighRiskSvgFeature(node);
+}
+
+function hasHighRiskSvgFeature(node) {
+  const markup = String(node.attributes?.svgMarkup ?? "");
+  if (/<\s*(?:foreignObject|script|iframe|canvas|video)\b/i.test(markup) || /\son[a-z]+\s*=/i.test(markup)) {
+    return true;
+  }
+  return svgTreeHasHighRiskFeature(node);
+}
+
+function svgTreeHasHighRiskFeature(node) {
+  const tagName = String(node.tagName ?? "").toLowerCase();
+  if (SVG_HIGH_RISK_TAGS.has(tagName)) {
+    return true;
+  }
+  for (const attribute of Object.keys(node.attributes ?? {})) {
+    if (/^on[a-z]+$/i.test(attribute)) {
+      return true;
+    }
+  }
+  return (node.children ?? []).some((child) => svgTreeHasHighRiskFeature(child));
+}
 
 function isComplexSvg(node) {
   if (node.attributes?.role === "img" || Boolean(node.textContent)) {
