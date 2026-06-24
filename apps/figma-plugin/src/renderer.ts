@@ -433,6 +433,8 @@ export function createMemoryFigmaAdapter() {
         style: model.style,
         layoutMode: model.autoLayout?.applied ? model.autoLayout.layoutMode : "NONE",
         itemSpacing: model.autoLayout?.applied ? model.autoLayout.itemSpacing : 0,
+        primaryAxisSizingMode: model.autoLayout?.applied ? model.autoLayout.primaryAxisSizingMode : undefined,
+        counterAxisSizingMode: model.autoLayout?.applied ? model.autoLayout.counterAxisSizingMode : undefined,
         primaryAxisAlignItems: model.autoLayout?.applied ? model.autoLayout.primaryAxisAlignItems : undefined,
         counterAxisAlignItems: model.autoLayout?.applied ? model.autoLayout.counterAxisAlignItems : undefined,
         paddingLeft: model.autoLayout?.applied ? model.autoLayout.paddingLeft : 0,

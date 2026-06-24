@@ -393,6 +393,7 @@ function snapshotDomElement(element, documentRef, windowRef, containingBlockRect
   const nextContainingBlockRect = establishesContainingBlock(styles)
     ? rect
     : containingBlockRect;
+  const children = snapshotRenderedChildren(element, tagName, rect, nextContainingBlockRect, documentRef, windowRef, options);
 
   return {
     tagName,
@@ -402,13 +403,73 @@ function snapshotDomElement(element, documentRef, windowRef, containingBlockRect
     styles,
     attributes,
     children: [
-      ...renderedChildEntries(element, options)
-        .map((entry) => entry.slot
-          ? snapshotSlottedTextNode(entry.textNode, entry.slot, documentRef, windowRef)
-          : snapshotDomElement(entry.element, documentRef, windowRef, nextContainingBlockRect, options))
-        .filter(Boolean),
+      ...children,
       ...snapshotPseudoElements(element, rect, nextContainingBlockRect, windowRef)
     ]
+  };
+}
+
+function snapshotRenderedChildren(element, tagName, rect, containingBlockRect, documentRef, windowRef, options = {}) {
+  if (tagName === "iframe") {
+    const iframeChildren = snapshotAccessibleIframeChildren(element, rect, options);
+    if (iframeChildren) {
+      return iframeChildren;
+    }
+  }
+  return renderedChildEntries(element, options)
+    .map((entry) => entry.slot
+      ? snapshotSlottedTextNode(entry.textNode, entry.slot, documentRef, windowRef)
+      : snapshotDomElement(entry.element, documentRef, windowRef, containingBlockRect, options))
+    .filter(Boolean);
+}
+
+function snapshotAccessibleIframeChildren(element, iframeRect, options = {}) {
+  const frameDocument = accessibleIframeDocument(element);
+  const frameWindow = frameDocument?.defaultView ?? accessibleIframeWindow(element);
+  const frameRoot = frameDocument?.body ?? frameDocument?.documentElement;
+  if (!frameDocument || !frameWindow || !frameRoot || typeof frameWindow.getComputedStyle !== "function") {
+    return null;
+  }
+
+  const children = renderedChildEntries(frameRoot, options)
+    .map((entry) => entry.slot
+      ? snapshotSlottedTextNode(entry.textNode, entry.slot, frameDocument, frameWindow)
+      : snapshotDomElement(entry.element, frameDocument, frameWindow, null, options))
+    .filter(Boolean)
+    .map((child) => translateSnapshotNode(child, { x: iframeRect.x, y: iframeRect.y }));
+
+  return children.length > 0 ? children : null;
+}
+
+function accessibleIframeDocument(element) {
+  try {
+    return element.contentDocument ?? element.contentWindow?.document ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function accessibleIframeWindow(element) {
+  try {
+    return element.contentWindow ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function translateSnapshotNode(node, offset) {
+  if (!node) {
+    return node;
+  }
+  const rect = normalizeRect(node.rect ?? {});
+  return {
+    ...node,
+    rect: {
+      ...rect,
+      x: round(rect.x + offset.x),
+      y: round(rect.y + offset.y)
+    },
+    children: (node.children ?? []).map((child) => translateSnapshotNode(child, offset))
   };
 }
 

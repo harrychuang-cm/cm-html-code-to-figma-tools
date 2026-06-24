@@ -976,8 +976,8 @@
     }
     try {
       frame.layoutMode = autoLayout.layoutMode || "NONE";
-      frame.primaryAxisSizingMode = "FIXED";
-      frame.counterAxisSizingMode = "FIXED";
+      frame.primaryAxisSizingMode = autoLayout.primaryAxisSizingMode || "FIXED";
+      frame.counterAxisSizingMode = autoLayout.counterAxisSizingMode || "FIXED";
       if (autoLayout.primaryAxisAlignItems) {
         frame.primaryAxisAlignItems = autoLayout.primaryAxisAlignItems;
       }
@@ -1301,7 +1301,7 @@
     var fitted = style && style.assetRole === "css-background"
       ? cssBackgroundSvgRect(safeRect, intrinsic, style || {})
       : fittedSvgRect(safeRect, intrinsic, shouldPreserveSvgAspectRatio(svgText));
-    var svgNode = figma.createNodeFromSvg(svgTextWithFigmaImportSize(svgText, fitted));
+    var svgNode = figma.createNodeFromSvg(svgTextForFigmaImport(svgText, fitted));
     var rectWidth = Math.max(0, Number(safeRect.width) || 0);
     var rectHeight = Math.max(0, Number(safeRect.height) || 0);
     var requiresWrapper = rotation !== 0 ||
@@ -1367,6 +1367,10 @@
     return svgText.replace(/\bcurrentColor\b/gi, cssColorToSvgColor(color));
   }
 
+  function svgTextForFigmaImport(svgText, size) {
+    return svgTextWithFigmaImportSize(stripFullLengthStrokeDasharrays(svgText), size);
+  }
+
   function svgTextWithFigmaImportSize(svgText, size) {
     var width = Number(size && size.width);
     var height = Number(size && size.height);
@@ -1393,6 +1397,215 @@
 
   function formatSvgLength(value) {
     return String(round(value));
+  }
+
+  function stripFullLengthStrokeDasharrays(svgText) {
+    return String(svgText || "").replace(/<(path|polyline|polygon|line)\b([^>]*)>/gi, function (match, tagName, attributes) {
+      var dasharray = extractSvgTagAttribute(attributes, "stroke-dasharray");
+      if (!dasharray || !isFullLengthStrokeDasharray(tagName, attributes, dasharray)) {
+        return match;
+      }
+      return removeSvgTagAttribute(match, "stroke-dasharray");
+    });
+  }
+
+  function isFullLengthStrokeDasharray(tagName, attributes, dasharray) {
+    var dashLength = firstSvgNumber(dasharray);
+    var dashOffset;
+    var pathLength;
+    if (!(dashLength > 0)) {
+      return false;
+    }
+    dashOffset = firstSvgNumber(extractSvgTagAttribute(attributes, "stroke-dashoffset"));
+    if (Math.abs(dashOffset) > 0.01) {
+      return false;
+    }
+    pathLength = svgGeometryLength(tagName, attributes);
+    if (!(pathLength > 0)) {
+      return false;
+    }
+    return dashLength >= pathLength - Math.max(0.5, pathLength * 0.02);
+  }
+
+  function svgGeometryLength(tagName, attributes) {
+    var tag = String(tagName || "").toLowerCase();
+    var x1;
+    var y1;
+    var x2;
+    var y2;
+    var points;
+    var length;
+    var index;
+    if (tag === "path") {
+      return approximateSvgPathLength(extractSvgTagAttribute(attributes, "d"));
+    }
+    if (tag === "line") {
+      x1 = firstSvgNumber(extractSvgTagAttribute(attributes, "x1"));
+      y1 = firstSvgNumber(extractSvgTagAttribute(attributes, "y1"));
+      x2 = firstSvgNumber(extractSvgTagAttribute(attributes, "x2"));
+      y2 = firstSvgNumber(extractSvgTagAttribute(attributes, "y2"));
+      return distance(x1, y1, x2, y2);
+    }
+    if (tag === "polyline" || tag === "polygon") {
+      points = parseSvgPoints(extractSvgTagAttribute(attributes, "points"));
+      if (points.length < 2) {
+        return 0;
+      }
+      length = 0;
+      for (index = 1; index < points.length; index += 1) {
+        length += distance(points[index - 1].x, points[index - 1].y, points[index].x, points[index].y);
+      }
+      if (tag === "polygon") {
+        length += distance(points[points.length - 1].x, points[points.length - 1].y, points[0].x, points[0].y);
+      }
+      return length;
+    }
+    return 0;
+  }
+
+  function approximateSvgPathLength(pathData) {
+    var tokens = String(pathData || "").match(/[a-zA-Z]|[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?/g) || [];
+    var index = 0;
+    var command = "";
+    var x = 0;
+    var y = 0;
+    var startX = 0;
+    var startY = 0;
+    var length = 0;
+
+    function isCommand(token) {
+      return /^[a-zA-Z]$/.test(token);
+    }
+    function hasNumber() {
+      return index < tokens.length && !isCommand(tokens[index]);
+    }
+    function readNumber() {
+      var value;
+      if (!hasNumber()) {
+        return null;
+      }
+      value = Number(tokens[index]);
+      index += 1;
+      return isFinite(value) ? value : null;
+    }
+    function readPoint() {
+      var pointX = readNumber();
+      var pointY = readNumber();
+      return pointX === null || pointY === null ? null : { x: pointX, y: pointY };
+    }
+    function lineTo(nextX, nextY) {
+      length += distance(x, y, nextX, nextY);
+      x = nextX;
+      y = nextY;
+    }
+
+    while (index < tokens.length) {
+      if (isCommand(tokens[index])) {
+        command = tokens[index];
+        index += 1;
+      } else if (!command) {
+        return 0;
+      }
+
+      var relative = command === command.toLowerCase();
+      switch (command.toUpperCase()) {
+        case "M": {
+          var movePoint = readPoint();
+          if (!movePoint) {
+            return 0;
+          }
+          x = relative ? x + movePoint.x : movePoint.x;
+          y = relative ? y + movePoint.y : movePoint.y;
+          startX = x;
+          startY = y;
+          while (hasNumber()) {
+            var moveNext = readPoint();
+            if (!moveNext) {
+              return 0;
+            }
+            lineTo(relative ? x + moveNext.x : moveNext.x, relative ? y + moveNext.y : moveNext.y);
+          }
+          break;
+        }
+        case "L":
+          while (hasNumber()) {
+            var linePoint = readPoint();
+            if (!linePoint) {
+              return 0;
+            }
+            lineTo(relative ? x + linePoint.x : linePoint.x, relative ? y + linePoint.y : linePoint.y);
+          }
+          break;
+        case "H":
+          while (hasNumber()) {
+            var horizontal = readNumber();
+            if (horizontal === null) {
+              return 0;
+            }
+            lineTo(relative ? x + horizontal : horizontal, y);
+          }
+          break;
+        case "V":
+          while (hasNumber()) {
+            var vertical = readNumber();
+            if (vertical === null) {
+              return 0;
+            }
+            lineTo(x, relative ? y + vertical : vertical);
+          }
+          break;
+        case "Z":
+          lineTo(startX, startY);
+          command = "";
+          break;
+        default:
+          return 0;
+      }
+    }
+
+    return length;
+  }
+
+  function parseSvgPoints(value) {
+    var numbers = svgNumberList(value);
+    var points = [];
+    var index;
+    for (index = 0; index + 1 < numbers.length; index += 2) {
+      points.push({ x: numbers[index], y: numbers[index + 1] });
+    }
+    return points;
+  }
+
+  function firstSvgNumber(value) {
+    var numbers = svgNumberList(value);
+    return numbers[0] || 0;
+  }
+
+  function svgNumberList(value) {
+    return (String(value || "").match(/[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?/gi) || [])
+      .map(function (item) { return Number(item); })
+      .filter(function (item) { return isFinite(item); });
+  }
+
+  function distance(x1, y1, x2, y2) {
+    var dx = x2 - x1;
+    var dy = y2 - y1;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+
+  function extractSvgTagAttribute(attributes, attribute) {
+    var pattern = new RegExp("\\s" + escapeRegExp(attribute) + "\\s*=\\s*[\"']([^\"']+)[\"']", "i");
+    var match = String(attributes || "").match(pattern);
+    return match ? match[1] : "";
+  }
+
+  function removeSvgTagAttribute(tag, attribute) {
+    var pattern = new RegExp("\\s" + escapeRegExp(attribute) + "\\s*=\\s*([\"'])[^\"']*\\1", "i");
+    return String(tag || "").replace(pattern, "");
+  }
+
+  function escapeRegExp(value) {
+    return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
 
   function cssColorToSvgColor(color) {
@@ -4178,6 +4391,10 @@
 
     primaryAxisAlignItems = inferPrimaryAxisAlignment(styles, children, layoutMode, parentRect);
     counterAxisAlignItems = inferCounterAxisAlignment(styles, children, layoutMode, parentRect);
+    var shouldHugCounterAxis = shouldHugLeadingTextRowCounterAxis(node, children, layoutMode, parentRect);
+    if (shouldHugCounterAxis) {
+      counterAxisAlignItems = "CENTER";
+    }
     if (hasNonUniformImplicitSpacing(styles, children, layoutMode, primaryAxisAlignItems)) {
       return skippedLayout("non-uniform-spacing");
     }
@@ -4198,7 +4415,7 @@
       paddingResult.explicit
     );
 
-    return {
+    var autoLayout = {
       applied: true,
       layoutMode: layoutMode,
       itemSpacing: spacing,
@@ -4211,6 +4428,10 @@
       reversedChildren: isReverseFlexDirection(flexDirection),
       confidence: 0.92
     };
+    if (shouldHugCounterAxis) {
+      autoLayout.counterAxisSizingMode = "AUTO";
+    }
+    return autoLayout;
   }
 
   function inferNonFlexFlowAutoLayout(node, children, parentRect) {
@@ -4218,6 +4439,7 @@
     var layoutMode;
     var primaryAxisAlignItems;
     var counterAxisAlignItems;
+    var shouldHugCounterAxis;
     var spacing;
     var paddingResult;
     var padding;
@@ -4233,6 +4455,12 @@
 
     primaryAxisAlignItems = inferNonFlexFlowPrimaryAxisAlignment(styles, children, layoutMode, parentRect);
     counterAxisAlignItems = inferNonFlexFlowCounterAxisAlignment(styles, children, layoutMode, parentRect);
+    shouldHugCounterAxis = shouldHugLeadingTextRowCounterAxis(node, children, layoutMode, parentRect, {
+      requireFlexDisplay: false
+    });
+    if (shouldHugCounterAxis) {
+      counterAxisAlignItems = "CENTER";
+    }
     spacing = explicitSpacing(styles, layoutMode);
     if (spacing === null) {
       spacing = measuredSpacing(children, layoutMode);
@@ -4252,6 +4480,7 @@
       itemSpacing: spacing,
       primaryAxisAlignItems: primaryAxisAlignItems,
       counterAxisAlignItems: counterAxisAlignItems,
+      counterAxisSizingMode: shouldHugCounterAxis ? "AUTO" : undefined,
       paddingLeft: padding.left,
       paddingRight: padding.right,
       paddingTop: padding.top,
@@ -4333,6 +4562,40 @@
       return "CENTER";
     }
     return "MIN";
+  }
+
+  function shouldHugLeadingTextRowCounterAxis(node, children, layoutMode, parentRect, options) {
+    var styles;
+    var display;
+    var bounds;
+    var spareCounterSpace;
+    var startsAtLeadingEdge;
+    options = options || {};
+    if (layoutMode !== "HORIZONTAL" || children.length < 2) {
+      return false;
+    }
+    styles = node.styles || {};
+    display = normalizeCssKeyword(styles.display);
+    if (options.requireFlexDisplay !== false && display !== "flex" && display !== "inline-flex") {
+      return false;
+    }
+    if (hasVisualBoxStyle(styles)) {
+      return false;
+    }
+    if (!children.every(function (child) {
+      return child.type === "TEXT" && String(child.text || "").indexOf("\n") < 0;
+    })) {
+      return false;
+    }
+    bounds = unionAbsoluteRect(children);
+    if (!bounds || parentRect.height <= 0) {
+      return false;
+    }
+    spareCounterSpace = parentRect.height - bounds.height;
+    startsAtLeadingEdge = Math.abs(bounds.y - parentRect.y) <= 1;
+    return startsAtLeadingEdge &&
+      spareCounterSpace >= 8 &&
+      bounds.height <= Math.max(30, parentRect.height * 0.45);
   }
 
   function centeredChildrenBounds(children, parentRect, layoutMode) {

@@ -54,6 +54,99 @@ test("asset capture creates image assets and raster fallback assets", async () =
   ]);
 });
 
+test("asset capture skips iframe fallback when an accessible subtree was captured", async () => {
+  const capture = captureElementTree(
+    {
+      tagName: "main",
+      rect: { x: 0, y: 0, width: 800, height: 600 },
+      styles: {},
+      attributes: {},
+      children: [
+        {
+          tagName: "iframe",
+          sourceNodeId: "dom-iframe",
+          rect: { x: 20, y: 20, width: 320, height: 180 },
+          styles: {},
+          attributes: { src: "about:blank" },
+          children: [
+            {
+              tagName: "div",
+              sourceNodeId: "dom-iframe-child",
+              textContent: "可編輯內容",
+              rect: { x: 32, y: 32, width: 120, height: 24 },
+              styles: {},
+              attributes: {},
+              children: []
+            }
+          ]
+        }
+      ]
+    },
+    { width: 800, height: 600, devicePixelRatio: 1, scrollX: 0, scrollY: 0 },
+    {
+      sourceUrl: "https://app.example.com/embed",
+      captureTimestamp: "2026-06-24T04:00:00.000Z"
+    }
+  );
+  let fallbackCalls = 0;
+
+  const result = await captureVisualAssets(capture, {
+    fallbackRasterProvider() {
+      fallbackCalls += 1;
+      return new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+    }
+  });
+
+  assert.equal(fallbackCalls, 0);
+  assert.deepEqual(Object.keys(result.assets), []);
+  assert.equal(result.capture.root.children[0].fallbackRef, undefined);
+  assert.equal(result.diagnostics.counts.fallbacks, 0);
+  assert.deepEqual(result.diagnostics.fallbackReasons, []);
+  assert.deepEqual(result.sourceNodeMap, []);
+});
+
+test("asset capture keeps iframe fallback when no subtree was captured", async () => {
+  const capture = captureElementTree(
+    {
+      tagName: "main",
+      rect: { x: 0, y: 0, width: 800, height: 600 },
+      styles: {},
+      attributes: {},
+      children: [
+        {
+          tagName: "iframe",
+          sourceNodeId: "dom-empty-iframe",
+          rect: { x: 20, y: 20, width: 320, height: 180 },
+          styles: {},
+          attributes: { src: "https://remote.example.com/frame" },
+          children: []
+        }
+      ]
+    },
+    { width: 800, height: 600, devicePixelRatio: 1, scrollX: 0, scrollY: 0 },
+    {
+      sourceUrl: "https://app.example.com/embed",
+      captureTimestamp: "2026-06-24T04:00:00.000Z"
+    }
+  );
+  const cropBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 81]);
+
+  const result = await captureVisualAssets(capture, {
+    fallbackRasterProvider(node) {
+      assert.equal(node.sourceNodeId, "dom-empty-iframe");
+      return cropBytes;
+    }
+  });
+
+  assert.deepEqual(Object.keys(result.assets), ["assets/fallback-1.png"]);
+  assert.equal(result.capture.root.children[0].fallbackRef, "assets/fallback-1.png");
+  assert.deepEqual(Array.from(result.assets["assets/fallback-1.png"]), Array.from(cropBytes));
+  assert.equal(result.diagnostics.counts.fallbacks, 1);
+  assert.deepEqual(result.diagnostics.fallbackReasons, [
+    { sourceNodeId: "dom-empty-iframe", reason: "iframe fallback" }
+  ]);
+});
+
 test("asset capture uses serialized canvas bitmap bytes when available", async () => {
   const capture = captureElementTree(
     {

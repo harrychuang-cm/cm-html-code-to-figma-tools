@@ -1138,6 +1138,35 @@ test("Figma API adapter reapplies absolute positioning after appending to auto l
   assert.equal(child.layoutPositioning, "ABSOLUTE");
 });
 
+test("Figma API adapter applies auto counter-axis sizing for hug-height rows", () => {
+  const figmaApi = createMockFigmaApi();
+  const adapter = createFigmaApiAdapter(figmaApi);
+
+  const frame = adapter.createFrameLayer({
+    name: "Frame / date header",
+    sourceNodeId: "dom-calendar-date-header",
+    rect: { x: 0, y: 0, width: 157.57, height: 173.6 },
+    style: { fills: [], strokes: [], effects: [], text: null },
+    autoLayout: {
+      applied: true,
+      layoutMode: "HORIZONTAL",
+      itemSpacing: 0,
+      primaryAxisAlignItems: "CENTER",
+      counterAxisAlignItems: "CENTER",
+      counterAxisSizingMode: "AUTO",
+      paddingLeft: 0,
+      paddingRight: 0,
+      paddingTop: 0,
+      paddingBottom: 0
+    },
+    children: []
+  });
+
+  assert.equal(frame.primaryAxisSizingMode, "FIXED");
+  assert.equal(frame.counterAxisSizingMode, "AUTO");
+  assert.equal(frame.counterAxisAlignItems, "CENTER");
+});
+
 test("Figma API adapter preserves SVG image aspect ratio and CSS rotation", () => {
   const svgBytes = new TextEncoder().encode(
     "<svg width=\"10\" height=\"17\" viewBox=\"0 0 10 17\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\"><path d=\"M0 0L10 8.5L0 17Z\" fill=\"#676767\"/></svg>"
@@ -1232,6 +1261,33 @@ test("Figma API adapter imports stroked SVG icons at rendered size before Figma 
   assert.match(node.svg, /<svg[^>]+height="14"/);
   assert.match(node.svg, /viewBox="0 0 24 24"/);
   assert.match(node.svg, /stroke-width="4px"/);
+  assert.equal(node.svg.includes("stroke-dasharray"), false);
+});
+
+test("Figma API adapter preserves intentionally dashed SVG strokes", () => {
+  const svgBytes = new TextEncoder().encode(
+    "<svg width=\"100\" height=\"10\" viewBox=\"0 0 100 10\"><path fill=\"none\" d=\"M0 5L100 5\" stroke=\"rgb(255, 255, 255)\" stroke-width=\"2px\" stroke-dasharray=\"4 4\"/></svg>"
+  );
+  const figmaApi = createMockFigmaApi();
+  const adapter = createFigmaApiAdapter(figmaApi, {
+    assets: {
+      "assets/dashed.svg": svgBytes
+    }
+  });
+
+  const node = adapter.createImageLayer({
+    name: "Vector / dashed",
+    sourceNodeId: "dom-dashed-line",
+    assetRef: "assets/dashed.svg",
+    assetKind: "svg",
+    rect: { x: 0, y: 0, width: 100, height: 10 },
+    style: {
+      objectFit: "fill"
+    }
+  });
+
+  assert.equal(node.type, "VECTOR");
+  assert.match(node.svg, /stroke-dasharray="4 4"/);
 });
 
 test("Figma API adapter clips auto-sized CSS background SVG assets to the captured box", () => {

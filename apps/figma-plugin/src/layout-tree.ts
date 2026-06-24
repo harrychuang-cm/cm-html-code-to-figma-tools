@@ -1291,7 +1291,11 @@ function inferAutoLayout(node, children) {
   }
 
   const primaryAxisAlignItems = inferPrimaryAxisAlignment(styles, children, layoutMode, parentRect);
-  const counterAxisAlignItems = inferCounterAxisAlignment(styles, children, layoutMode, parentRect);
+  let counterAxisAlignItems = inferCounterAxisAlignment(styles, children, layoutMode, parentRect);
+  const shouldHugCounterAxis = shouldHugLeadingTextRowCounterAxis(node, children, layoutMode, parentRect);
+  if (shouldHugCounterAxis) {
+    counterAxisAlignItems = "CENTER";
+  }
   if (hasNonUniformImplicitSpacing(styles, children, layoutMode, primaryAxisAlignItems)) {
     return skippedLayout("non-uniform-spacing");
   }
@@ -1313,6 +1317,7 @@ function inferAutoLayout(node, children) {
     itemSpacing: spacing,
     primaryAxisAlignItems,
     counterAxisAlignItems,
+    ...(shouldHugCounterAxis ? { counterAxisSizingMode: "AUTO" } : {}),
     paddingLeft: padding.left,
     paddingRight: padding.right,
     paddingTop: padding.top,
@@ -1334,7 +1339,13 @@ function inferNonFlexFlowAutoLayout(node, children, parentRect) {
   }
 
   const primaryAxisAlignItems = inferNonFlexFlowPrimaryAxisAlignment(styles, children, layoutMode, parentRect);
-  const counterAxisAlignItems = inferNonFlexFlowCounterAxisAlignment(styles, children, layoutMode, parentRect);
+  let counterAxisAlignItems = inferNonFlexFlowCounterAxisAlignment(styles, children, layoutMode, parentRect);
+  const shouldHugCounterAxis = shouldHugLeadingTextRowCounterAxis(node, children, layoutMode, parentRect, {
+    requireFlexDisplay: false
+  });
+  if (shouldHugCounterAxis) {
+    counterAxisAlignItems = "CENTER";
+  }
   const spacing = explicitSpacing(styles, layoutMode) ?? measuredSpacing(children, layoutMode);
   const paddingResult = resolvePadding(styles, parentRect, children);
   const padding = alignmentAwarePadding(
@@ -1351,6 +1362,7 @@ function inferNonFlexFlowAutoLayout(node, children, parentRect) {
     itemSpacing: spacing,
     primaryAxisAlignItems,
     counterAxisAlignItems,
+    ...(shouldHugCounterAxis ? { counterAxisSizingMode: "AUTO" } : {}),
     paddingLeft: padding.left,
     paddingRight: padding.right,
     paddingTop: padding.top,
@@ -1429,6 +1441,32 @@ function inferNonFlexFlowCounterAxisAlignment(styles, children, layoutMode, pare
     return "CENTER";
   }
   return "MIN";
+}
+
+function shouldHugLeadingTextRowCounterAxis(node, children, layoutMode, parentRect, options = {}) {
+  if (layoutMode !== "HORIZONTAL" || children.length < 2) {
+    return false;
+  }
+  const styles = node.styles ?? {};
+  const display = normalizeCssKeyword(styles.display);
+  if (options.requireFlexDisplay !== false && display !== "flex" && display !== "inline-flex") {
+    return false;
+  }
+  if (hasVisualBoxStyle(styles)) {
+    return false;
+  }
+  if (!children.every((child) => child.type === "TEXT" && !child.text?.includes("\n"))) {
+    return false;
+  }
+  const bounds = unionAbsoluteRect(children);
+  if (!bounds || parentRect.height <= 0) {
+    return false;
+  }
+  const spareCounterSpace = parentRect.height - bounds.height;
+  const startsAtLeadingEdge = Math.abs(bounds.y - parentRect.y) <= 1;
+  return startsAtLeadingEdge &&
+    spareCounterSpace >= 8 &&
+    bounds.height <= Math.max(30, parentRect.height * 0.45);
 }
 
 function centeredChildrenBounds(children, parentRect, layoutMode) {

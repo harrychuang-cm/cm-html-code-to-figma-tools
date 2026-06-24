@@ -2639,6 +2639,113 @@ test("single-child date table cells center their button with auto layout", () =>
   assert.equal(button.autoLayout.counterAxisAlignItems, "CENTER");
 });
 
+test("leading date header text rows hug height and center mixed-height labels", () => {
+  const dateHeader = node("dom-calendar-date-header", "div", { x: 0, y: 0, width: 157.57, height: 173.6 }, {
+    styles: {
+      display: "flex",
+      flexDirection: "row",
+      justifyContent: "center",
+      alignItems: "normal",
+      textAlign: "center",
+      backgroundColor: "rgba(0, 0, 0, 0)"
+    },
+    children: [
+      text("dom-calendar-day-number", "7", { x: 50.79, y: 0, width: 24, height: 16 }, {
+        fontSize: "12px",
+        lineHeight: "16px",
+        color: "rgb(31, 31, 31)"
+      }),
+      text("dom-calendar-lunar-date", "(廿二)", { x: 74.79, y: 0, width: 32, height: 30 }, {
+        fontSize: "12px",
+        lineHeight: "30px",
+        whiteSpace: "nowrap",
+        color: "rgb(68, 71, 70)"
+      })
+    ]
+  });
+
+  const model = createEditableLayoutNodeModels(packageWithRoot(dateHeader))[0];
+
+  assert.equal(model.type, "FRAME");
+  assert.equal(model.autoLayout.layoutMode, "HORIZONTAL");
+  assert.equal(model.autoLayout.primaryAxisAlignItems, "CENTER");
+  assert.equal(model.autoLayout.counterAxisAlignItems, "CENTER");
+  assert.equal(model.autoLayout.counterAxisSizingMode, "AUTO");
+  assert.equal(model.children[0].layoutSizingVertical, "HUG");
+  assert.equal(model.children[1].layoutSizingVertical, "HUG");
+});
+
+test("equivalent leading text row uses hug height without node or label specific rules", () => {
+  const textRow = node("generic-leading-text-row", "div", { x: 0, y: 0, width: 157.57, height: 173.59 }, {
+    styles: {
+      display: "flex",
+      flexDirection: "row",
+      justifyContent: "center",
+      alignItems: "normal",
+      textAlign: "center",
+      backgroundColor: "rgba(0, 0, 0, 0)"
+    },
+    children: [
+      text("generic-primary-label", "31", { x: 50.79, y: 0, width: 24, height: 16 }, {
+        fontSize: "12px",
+        lineHeight: "16px",
+        color: "rgb(68, 71, 70)"
+      }),
+      text("generic-secondary-label", "(十五)", { x: 74.79, y: 0, width: 32, height: 30 }, {
+        fontSize: "12px",
+        lineHeight: "30px",
+        whiteSpace: "nowrap",
+        color: "rgb(68, 71, 70)"
+      })
+    ]
+  });
+
+  const model = createEditableLayoutNodeModels(packageWithRoot(textRow))[0];
+
+  assert.equal(model.type, "FRAME");
+  assert.equal(model.autoLayout.layoutMode, "HORIZONTAL");
+  assert.equal(model.autoLayout.primaryAxisAlignItems, "CENTER");
+  assert.equal(model.autoLayout.counterAxisAlignItems, "CENTER");
+  assert.equal(model.autoLayout.counterAxisSizingMode, "AUTO");
+  assert.equal(model.children[0].layoutSizingVertical, "HUG");
+  assert.equal(model.children[1].layoutSizingVertical, "HUG");
+});
+
+test("non-flex leading text rows hug height after horizontal flow inference", () => {
+  const textRow = node("generic-non-flex-leading-text-row", "div", { x: 265, y: 258.59, width: 157.57, height: 173.6 }, {
+    styles: {
+      display: "block",
+      textAlign: "center",
+      backgroundColor: "rgba(0, 0, 0, 0)",
+      color: "rgb(68, 71, 70)",
+      fontSize: "12px"
+    },
+    children: [
+      text("generic-non-flex-primary-label", "7", { x: 314.75, y: 266.59, width: 24, height: 16 }, {
+        fontSize: "12px",
+        lineHeight: "16px",
+        color: "rgb(31, 31, 31)"
+      }),
+      text("generic-non-flex-secondary-label", "(廿二)", { x: 338.75, y: 259.59, width: 34.06, height: 30 }, {
+        fontSize: "12px",
+        lineHeight: "30px",
+        whiteSpace: "nowrap",
+        color: "rgb(68, 71, 70)"
+      })
+    ]
+  });
+
+  const model = createEditableLayoutNodeModels(packageWithRoot(textRow))[0];
+
+  assert.equal(model.type, "FRAME");
+  assert.equal(model.autoLayout.layoutMode, "HORIZONTAL");
+  assert.equal(model.autoLayout.primaryAxisAlignItems, "CENTER");
+  assert.equal(model.autoLayout.counterAxisAlignItems, "CENTER");
+  assert.equal(model.autoLayout.counterAxisSizingMode, "AUTO");
+  assert.equal(model.children[0].layoutSizingVertical, "HUG");
+  assert.equal(model.children[1].layoutSizingVertical, "HUG");
+});
+
 test("visually hidden accessibility headings are omitted instead of rendering ellipsis", () => {
   const hiddenHeading = node("dom-hidden-day-heading", "h2", { x: 265, y: 832.4, width: 1, height: 1 }, {
     textContent: "6月 28日 (星期日)沒有活動",

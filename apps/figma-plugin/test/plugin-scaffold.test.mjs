@@ -704,6 +704,7 @@ test("classic Figma runtime imports stroked SVG icons at rendered size", async (
   assert.match(icon.svg, /<svg[^>]+height="14"/);
   assert.match(icon.svg, /viewBox="0 0 24 24"/);
   assert.match(icon.svg, /stroke-width="4px"/);
+  assert.equal(icon.svg.includes("stroke-dasharray"), false);
 });
 
 test("classic Figma runtime omits transparent viewport-clipped table spacers", async () => {
@@ -4400,6 +4401,67 @@ test("classic Figma runtime centers date table cells and omits hidden headings",
           })
         ]
       }),
+      captureNode("dom-calendar-date-header", "div", { x: 0, y: 0, width: 157.57, height: 173.6 }, {
+        styles: {
+          display: "flex",
+          flexDirection: "row",
+          justifyContent: "center",
+          alignItems: "normal",
+          textAlign: "center",
+          backgroundColor: "rgba(0, 0, 0, 0)"
+        },
+        children: [
+          captureNode("dom-calendar-day-number", "div", { x: 50.79, y: 0, width: 24, height: 16 }, {
+            textContent: "7",
+            styles: {
+              display: "block",
+              fontSize: "12px",
+              lineHeight: "16px",
+              color: "rgb(31, 31, 31)"
+            }
+          }),
+          captureNode("dom-calendar-lunar-date", "div", { x: 74.79, y: 0, width: 32, height: 30 }, {
+            textContent: "(廿二)",
+            styles: {
+              display: "block",
+              fontSize: "12px",
+              lineHeight: "30px",
+              whiteSpace: "nowrap",
+              color: "rgb(68, 71, 70)"
+            }
+          })
+        ]
+      }),
+      captureNode("dom-calendar-non-flex-date-header", "div", { x: 265, y: 258.59, width: 157.57, height: 173.6 }, {
+        styles: {
+          display: "block",
+          textAlign: "center",
+          backgroundColor: "rgba(0, 0, 0, 0)",
+          color: "rgb(68, 71, 70)",
+          fontSize: "12px"
+        },
+        children: [
+          captureNode("dom-calendar-non-flex-day-number", "div", { x: 314.75, y: 266.59, width: 24, height: 16 }, {
+            textContent: "7",
+            styles: {
+              display: "block",
+              fontSize: "12px",
+              lineHeight: "16px",
+              color: "rgb(31, 31, 31)"
+            }
+          }),
+          captureNode("dom-calendar-non-flex-lunar-date", "div", { x: 338.75, y: 259.59, width: 34.06, height: 30 }, {
+            textContent: "(廿二)",
+            styles: {
+              display: "block",
+              fontSize: "12px",
+              lineHeight: "30px",
+              whiteSpace: "nowrap",
+              color: "rgb(68, 71, 70)"
+            }
+          })
+        ]
+      }),
       captureNode("dom-hidden-day-heading", "h2", { x: 265, y: 832.4, width: 1, height: 1 }, {
         textContent: hiddenHeadingText,
         styles: {
@@ -4470,6 +4532,8 @@ test("classic Figma runtime centers date table cells and omits hidden headings",
   const nodes = flattenNodes(accurateFrame.children);
   const dateCell = nodes.find((node) => node.pluginData?.sourceNodeId === "dom-calendar-date-cell");
   const dateButton = nodes.find((node) => node.pluginData?.sourceNodeId === "dom-calendar-date-button");
+  const dateHeader = nodes.find((node) => node.pluginData?.sourceNodeId === "dom-calendar-date-header");
+  const nonFlexDateHeader = nodes.find((node) => node.pluginData?.sourceNodeId === "dom-calendar-non-flex-date-header");
 
   assert(dateCell);
   assert.equal(dateCell.layoutMode, "HORIZONTAL");
@@ -4483,6 +4547,16 @@ test("classic Figma runtime centers date table cells and omits hidden headings",
   assert.equal(dateButton.layoutMode, "HORIZONTAL");
   assert.equal(dateButton.primaryAxisAlignItems, "CENTER");
   assert.equal(dateButton.counterAxisAlignItems, "CENTER");
+  assert(dateHeader);
+  assert.equal(dateHeader.layoutMode, "HORIZONTAL");
+  assert.equal(dateHeader.primaryAxisAlignItems, "CENTER");
+  assert.equal(dateHeader.counterAxisAlignItems, "CENTER");
+  assert.equal(dateHeader.counterAxisSizingMode, "AUTO");
+  assert(nonFlexDateHeader);
+  assert.equal(nonFlexDateHeader.layoutMode, "HORIZONTAL");
+  assert.equal(nonFlexDateHeader.primaryAxisAlignItems, "CENTER");
+  assert.equal(nonFlexDateHeader.counterAxisAlignItems, "CENTER");
+  assert.equal(nonFlexDateHeader.counterAxisSizingMode, "AUTO");
   assert.equal(nodes.some((node) => node.pluginData?.sourceNodeId === "dom-hidden-day-heading"), false);
   assert.equal(nodes.some((node) => node.type === "TEXT" && node.characters === hiddenHeadingText), false);
 });

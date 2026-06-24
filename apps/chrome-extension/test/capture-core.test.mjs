@@ -1859,6 +1859,8 @@ function shadowTestElement(tagName, options = {}) {
     children: options.children ?? [],
     ...(options.shadowRoot ? { shadowRoot: options.shadowRoot } : {}),
     ...(options.assignedNodes ? { assignedNodes: options.assignedNodes } : {}),
+    ...(options.contentDocument ? { contentDocument: options.contentDocument } : {}),
+    ...(options.contentWindow ? { contentWindow: options.contentWindow } : {}),
     getBoundingClientRect() {
       return options.rect ?? { x: 0, y: 0, width: 100, height: 40 };
     }
@@ -1894,6 +1896,62 @@ function shadowTestDocument(body, extra = {}) {
     ...extra
   };
 }
+
+test("accessible iframe subtree is captured with parent-page coordinates", () => {
+  const frameChild = shadowTestElement("div", {
+    rect: { x: 12, y: 8, width: 160, height: 24 },
+    childNodes: [{ nodeType: 3, textContent: "Frame 內容" }]
+  });
+  const frameBody = shadowTestElement("body", {
+    rect: { x: 0, y: 0, width: 436, height: 210 },
+    children: [frameChild]
+  });
+  const frameWindow = {
+    getComputedStyle() {
+      return {
+        display: "block",
+        position: "static",
+        visibility: "visible",
+        opacity: "1",
+        fontSize: "12px",
+        whiteSpace: "normal",
+        color: "rgb(68, 71, 70)"
+      };
+    }
+  };
+  const frameDocument = {
+    body: frameBody,
+    documentElement: frameBody,
+    defaultView: frameWindow,
+    title: "Frame",
+    location: { href: "about:blank" }
+  };
+  const iframe = shadowTestElement("iframe", {
+    rect: { x: 1000, y: 64, width: 436, height: 210 },
+    attributes: [{ name: "src", value: "about:blank" }],
+    contentDocument: frameDocument,
+    contentWindow: frameWindow
+  });
+  const body = shadowTestElement("body", {
+    rect: { x: 0, y: 0, width: 1440, height: 973 },
+    children: [iframe]
+  });
+
+  const capture = captureVisibleViewportFromDocument(shadowTestDocument(body), {
+    ...shadowTestWindow,
+    innerWidth: 1440,
+    innerHeight: 973
+  });
+  const iframeNode = capture.root.children[0];
+  const capturedChild = iframeNode.children[0];
+
+  assert.equal(iframeNode.tagName, "iframe");
+  assert.equal(iframeNode.attributes.src, "about:blank");
+  assert.equal(iframeNode.children.length, 1);
+  assert.equal(capturedChild.tagName, "div");
+  assert.equal(capturedChild.textContent, "Frame 內容");
+  assert.deepEqual(capturedChild.rect, { x: 1012, y: 72, width: 160, height: 24 });
+});
 
 test("open shadow root subtree is captured instead of light DOM children", () => {
   const shadowChild = shadowTestElement("div", {

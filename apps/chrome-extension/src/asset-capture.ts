@@ -235,6 +235,9 @@ export function captureVisualAssets(capture, options = {}) {
 }
 
 export function needsRasterFallback(node) {
+  if (node.tagName === "iframe") {
+    return (node.children ?? []).length === 0;
+  }
   if (FALLBACK_TAGS.has(node.tagName)) {
     return true;
   }

@@ -834,7 +834,7 @@ function createSvgImageLayer(figmaApi, model, imageBytes) {
   const fitted = model.assetRole === "css-background"
     ? cssBackgroundSvgRect(rect, intrinsic, model)
     : fittedSvgRect(rect, intrinsic, shouldPreserveSvgAspectRatio(svgText));
-  const svgNode = figmaApi.createNodeFromSvg(svgTextWithFigmaImportSize(svgText, fitted));
+  const svgNode = figmaApi.createNodeFromSvg(svgTextForFigmaImport(svgText, fitted));
   const requiresWrapper = rotation !== 0 ||
     fitted.x !== 0 ||
     fitted.y !== 0 ||
@@ -898,6 +898,10 @@ function resolveSvgCurrentColor(svgText, colorValue) {
   return svgText.replace(/\bcurrentColor\b/gi, cssColorToSvgColor(color));
 }
 
+function svgTextForFigmaImport(svgText, size = {}) {
+  return svgTextWithFigmaImportSize(stripFullLengthStrokeDasharrays(svgText), size);
+}
+
 function svgTextWithFigmaImportSize(svgText, size = {}) {
   const width = Number(size.width);
   const height = Number(size.height);
@@ -924,6 +928,199 @@ function setSvgRootLengthAttribute(svgText, attribute, value) {
 
 function formatSvgLength(value) {
   return String(round(value));
+}
+
+function stripFullLengthStrokeDasharrays(svgText) {
+  return String(svgText ?? "").replace(/<(path|polyline|polygon|line)\b([^>]*)>/gi, (match, tagName, attributes) => {
+    const dasharray = extractSvgTagAttribute(attributes, "stroke-dasharray");
+    if (!dasharray || !isFullLengthStrokeDasharray(tagName, attributes, dasharray)) {
+      return match;
+    }
+    return removeSvgTagAttribute(match, "stroke-dasharray");
+  });
+}
+
+function isFullLengthStrokeDasharray(tagName, attributes, dasharray) {
+  const dashLength = firstSvgNumber(dasharray);
+  if (!(dashLength > 0)) {
+    return false;
+  }
+  const dashOffset = firstSvgNumber(extractSvgTagAttribute(attributes, "stroke-dashoffset"));
+  if (Math.abs(dashOffset) > 0.01) {
+    return false;
+  }
+  const pathLength = svgGeometryLength(tagName, attributes);
+  if (!(pathLength > 0)) {
+    return false;
+  }
+  return dashLength >= pathLength - Math.max(0.5, pathLength * 0.02);
+}
+
+function svgGeometryLength(tagName, attributes) {
+  const tag = String(tagName ?? "").toLowerCase();
+  if (tag === "path") {
+    return approximateSvgPathLength(extractSvgTagAttribute(attributes, "d"));
+  }
+  if (tag === "line") {
+    const x1 = firstSvgNumber(extractSvgTagAttribute(attributes, "x1"));
+    const y1 = firstSvgNumber(extractSvgTagAttribute(attributes, "y1"));
+    const x2 = firstSvgNumber(extractSvgTagAttribute(attributes, "x2"));
+    const y2 = firstSvgNumber(extractSvgTagAttribute(attributes, "y2"));
+    return distance(x1, y1, x2, y2);
+  }
+  if (tag === "polyline" || tag === "polygon") {
+    const points = parseSvgPoints(extractSvgTagAttribute(attributes, "points"));
+    if (points.length < 2) {
+      return 0;
+    }
+    let length = 0;
+    for (let index = 1; index < points.length; index += 1) {
+      length += distance(points[index - 1].x, points[index - 1].y, points[index].x, points[index].y);
+    }
+    if (tag === "polygon") {
+      length += distance(points[points.length - 1].x, points[points.length - 1].y, points[0].x, points[0].y);
+    }
+    return length;
+  }
+  return 0;
+}
+
+function approximateSvgPathLength(pathData) {
+  const tokens = String(pathData ?? "").match(/[a-zA-Z]|[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?/g) ?? [];
+  let index = 0;
+  let command = "";
+  let x = 0;
+  let y = 0;
+  let startX = 0;
+  let startY = 0;
+  let length = 0;
+
+  const isCommand = (token) => /^[a-zA-Z]$/.test(token);
+  const hasNumber = () => index < tokens.length && !isCommand(tokens[index]);
+  const readNumber = () => {
+    if (!hasNumber()) {
+      return null;
+    }
+    const value = Number(tokens[index]);
+    index += 1;
+    return Number.isFinite(value) ? value : null;
+  };
+  const readPoint = () => {
+    const pointX = readNumber();
+    const pointY = readNumber();
+    return pointX === null || pointY === null ? null : { x: pointX, y: pointY };
+  };
+  const lineTo = (nextX, nextY) => {
+    length += distance(x, y, nextX, nextY);
+    x = nextX;
+    y = nextY;
+  };
+
+  while (index < tokens.length) {
+    if (isCommand(tokens[index])) {
+      command = tokens[index];
+      index += 1;
+    } else if (!command) {
+      return 0;
+    }
+
+    const relative = command === command.toLowerCase();
+    switch (command.toUpperCase()) {
+      case "M": {
+        const point = readPoint();
+        if (!point) {
+          return 0;
+        }
+        x = relative ? x + point.x : point.x;
+        y = relative ? y + point.y : point.y;
+        startX = x;
+        startY = y;
+        while (hasNumber()) {
+          const next = readPoint();
+          if (!next) {
+            return 0;
+          }
+          lineTo(relative ? x + next.x : next.x, relative ? y + next.y : next.y);
+        }
+        break;
+      }
+      case "L":
+        while (hasNumber()) {
+          const point = readPoint();
+          if (!point) {
+            return 0;
+          }
+          lineTo(relative ? x + point.x : point.x, relative ? y + point.y : point.y);
+        }
+        break;
+      case "H":
+        while (hasNumber()) {
+          const value = readNumber();
+          if (value === null) {
+            return 0;
+          }
+          lineTo(relative ? x + value : value, y);
+        }
+        break;
+      case "V":
+        while (hasNumber()) {
+          const value = readNumber();
+          if (value === null) {
+            return 0;
+          }
+          lineTo(x, relative ? y + value : value);
+        }
+        break;
+      case "Z":
+        lineTo(startX, startY);
+        command = "";
+        break;
+      default:
+        return 0;
+    }
+  }
+
+  return length;
+}
+
+function parseSvgPoints(value) {
+  const numbers = svgNumberList(value);
+  const points = [];
+  for (let index = 0; index + 1 < numbers.length; index += 2) {
+    points.push({ x: numbers[index], y: numbers[index + 1] });
+  }
+  return points;
+}
+
+function firstSvgNumber(value) {
+  return svgNumberList(value)[0] ?? 0;
+}
+
+function svgNumberList(value) {
+  return (String(value ?? "").match(/[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?/gi) ?? [])
+    .map((item) => Number(item))
+    .filter((item) => Number.isFinite(item));
+}
+
+function distance(x1, y1, x2, y2) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+function extractSvgTagAttribute(attributes, attribute) {
+  const pattern = new RegExp(`\\s${escapeRegExp(attribute)}\\s*=\\s*["']([^"']+)["']`, "i");
+  const match = String(attributes ?? "").match(pattern);
+  return match ? match[1] : "";
+}
+
+function removeSvgTagAttribute(tag, attribute) {
+  const pattern = new RegExp(`\\s${escapeRegExp(attribute)}\\s*=\\s*(["'])[^"']*\\1`, "i");
+  return String(tag ?? "").replace(pattern, "");
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function cssColorToSvgColor(color) {
@@ -1524,8 +1721,8 @@ function applyAutoLayout(frame, autoLayout) {
     return;
   }
   frame.layoutMode = autoLayout.layoutMode;
-  frame.primaryAxisSizingMode = "FIXED";
-  frame.counterAxisSizingMode = "FIXED";
+  frame.primaryAxisSizingMode = autoLayout.primaryAxisSizingMode ?? "FIXED";
+  frame.counterAxisSizingMode = autoLayout.counterAxisSizingMode ?? "FIXED";
   if (autoLayout.primaryAxisAlignItems) {
     frame.primaryAxisAlignItems = autoLayout.primaryAxisAlignItems;
   }
