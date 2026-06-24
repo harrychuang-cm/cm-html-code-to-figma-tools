@@ -55,6 +55,7 @@ function rewriteImports(source, workspace) {
     .replaceAll("./stitch-screenshot.ts", "./stitch-screenshot.js")
     .replaceAll("./renderer.ts", "./renderer.js")
     .replaceAll("./layout-tree.ts", "./layout-tree.js")
+    .replaceAll("./icon-font.ts", "./icon-font.js")
     .replaceAll("./semantic-naming.ts", "./semantic-naming.js")
     .replaceAll("./auto-layout.ts", "./auto-layout.js")
     .replaceAll("./importer.ts", "./importer.js")

@@ -55,6 +55,99 @@ export function createEmptyDiagnostics(overrides = {}) {
   };
 }
 
+const MATERIAL_ICON_PATHS = new Map([
+  ["add", "M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"],
+  ["arrow_drop_down", "M7 10l5 5 5-5z"],
+  ["date_range", "M7 10h5v5H7zM19 3h-1V1h-2v2H8V1H6v2H5c-1.11 0-1.99 0.9-1.99 2L3 19c0 1.1 0.89 2 2 2h14c1.1 0 2-0.9 2-2V5c0-1.1-0.9-2-2-2zm0 16H5V8h14v11z"],
+  ["keyboard_arrow_up", "M7.41 15.41 12 10.83l4.59 4.58L18 14l-6-6-6 6z"],
+  ["link", "M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7c-2.76 0-5 2.24-5 5s2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4c2.76 0 5-2.24 5-5s-2.24-5-5-5z"],
+  ["more_vert", "M12 8c1.1 0 2-0.9 2-2s-0.9-2-2-2-2 0.9-2 2 0.9 2 2 2zm0 2c-1.1 0-2 0.9-2 2s0.9 2 2 2 2-0.9 2-2-0.9-2-2-2zm0 6c-1.1 0-2 0.9-2 2s0.9 2 2 2 2-0.9 2-2-0.9-2-2-2z"],
+  ["search", "M9.5 3C5.91 3 3 5.91 3 9.5S5.91 16 9.5 16c1.61 0 3.09-0.59 4.23-1.57l0.27 0.28v0.79l4.99 4.98 1.49-1.49-4.98-4.99h-0.79l-0.28-0.27C15.41 12.59 16 11.11 16 9.5C16 5.91 13.09 3 9.5 3zm0 2C11.99 5 14 7.01 14 9.5S11.99 14 9.5 14 5 11.99 5 9.5 7.01 5 9.5 5z"]
+]);
+
+const ICON_FONT_FAMILY_RE = /\b(?:google\s+material\s+icons|material\s+icons|material\s+symbols)\b/i;
+const ICON_FONT_CLASS_RE = /(?:^|\s)(?:google-material-icons|material-icons|material-symbols(?:-[a-z0-9-]+)?)(?:\s|$)/i;
+
+export function materialIconAssetSourceForNode(node) {
+  const ligature = materialIconLigatureForNode(node);
+  if (!ligature) {
+    return null;
+  }
+  const path = MATERIAL_ICON_PATHS.get(ligature);
+  if (!path) {
+    return null;
+  }
+  return {
+    bytes: materialIconSvgBytes(path, materialIconColor(node)),
+    extension: "svg",
+    assetKind: "svg",
+    assetRole: "icon-font",
+    assetSource: `material-icon:${ligature}`,
+    iconFontLigature: ligature
+  };
+}
+
+export function materialIconLigatureForNode(node) {
+  const ligature = String(node?.textContent ?? "").trim();
+  if (!ligature || /\s/.test(ligature)) {
+    return "";
+  }
+  if (!isMaterialIconFontNode(node)) {
+    return "";
+  }
+  return ligature;
+}
+
+function isMaterialIconFontNode(node) {
+  const styles = node?.styles ?? {};
+  const attributes = node?.attributes ?? {};
+  return ICON_FONT_FAMILY_RE.test(String(styles.fontFamily ?? "")) ||
+    ICON_FONT_CLASS_RE.test(String(attributes.class ?? ""));
+}
+
+function materialIconColor(node) {
+  const styles = node?.styles ?? {};
+  const color = firstVisibleColor(styles.webkitTextFillColor, styles["-webkit-text-fill-color"], styles.color);
+  return color || "#000000";
+}
+
+function firstVisibleColor(...values) {
+  return values
+    .map((value) => String(value ?? "").trim())
+    .find((value) =>
+      value &&
+      value !== "transparent" &&
+      value !== "rgba(0, 0, 0, 0)" &&
+      value !== "rgba(0,0,0,0)"
+    ) ?? "";
+}
+
+function materialIconSvgBytes(path, fill) {
+  return encodeAsciiText(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="${escapeSvgAttribute(fill)}" d="${path}"/></svg>`
+  );
+}
+
+function encodeAsciiText(value) {
+  const text = String(value ?? "");
+  if (typeof TextEncoder !== "undefined") {
+    return new TextEncoder().encode(text);
+  }
+  const bytes = new Uint8Array(text.length);
+  for (let index = 0; index < text.length; index += 1) {
+    bytes[index] = text.charCodeAt(index) & 0xff;
+  }
+  return bytes;
+}
+
+function escapeSvgAttribute(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("\"", "&quot;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
 export function validateManifest(value) {
   const errors = [];
   if (!isRecord(value)) {

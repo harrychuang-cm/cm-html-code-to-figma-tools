@@ -823,7 +823,6 @@ function createScreenshotCropTileModels(assets = {}, viewportWidth, viewportHeig
 
 function createSvgImageLayer(figmaApi, model, imageBytes) {
   const svgText = resolveSvgCurrentColor(decodeUtf8(imageBytes), svgCurrentColor(model));
-  const svgNode = figmaApi.createNodeFromSvg(svgText);
   const rect = model.rect ?? {
     x: model.x ?? 0,
     y: model.y ?? 0,
@@ -835,6 +834,7 @@ function createSvgImageLayer(figmaApi, model, imageBytes) {
   const fitted = model.assetRole === "css-background"
     ? cssBackgroundSvgRect(rect, intrinsic, model)
     : fittedSvgRect(rect, intrinsic, shouldPreserveSvgAspectRatio(svgText));
+  const svgNode = figmaApi.createNodeFromSvg(svgTextWithFigmaImportSize(svgText, fitted));
   const requiresWrapper = rotation !== 0 ||
     fitted.x !== 0 ||
     fitted.y !== 0 ||
@@ -896,6 +896,34 @@ function resolveSvgCurrentColor(svgText, colorValue) {
     return svgText;
   }
   return svgText.replace(/\bcurrentColor\b/gi, cssColorToSvgColor(color));
+}
+
+function svgTextWithFigmaImportSize(svgText, size = {}) {
+  const width = Number(size.width);
+  const height = Number(size.height);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return svgText;
+  }
+  return setSvgRootLengthAttribute(
+    setSvgRootLengthAttribute(svgText, "width", formatSvgLength(width)),
+    "height",
+    formatSvgLength(height)
+  );
+}
+
+function setSvgRootLengthAttribute(svgText, attribute, value) {
+  const source = String(svgText ?? "");
+  const attrPattern = new RegExp(`(\\s${attribute}\\s*=\\s*)(["'])([^"']*)(\\2)`, "i");
+  return source.replace(/<svg\b([^>]*)>/i, (match, attributes) => {
+    if (attrPattern.test(attributes)) {
+      return match.replace(attrPattern, `$1$2${value}$4`);
+    }
+    return match.replace(/>$/, ` ${attribute}="${value}">`);
+  });
+}
+
+function formatSvgLength(value) {
+  return String(round(value));
 }
 
 function cssColorToSvgColor(color) {

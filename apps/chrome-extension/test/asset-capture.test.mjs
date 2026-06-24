@@ -268,6 +268,100 @@ test("asset capture packages inline svg and css mask icon assets", async () => {
   assert.match(new TextDecoder().decode(result.assets["assets/icon-1.svg"]), /<svg/);
 });
 
+test("asset capture packages supported Material icon font ligatures as SVG assets", async () => {
+  for (const [ligature, fontFamily, className] of [
+    ["search", "\"Google Material Icons\"", "google-material-icons notranslate"],
+    ["add", "\"Google Material Icons\"", "google-material-icons notranslate"],
+    ["arrow_drop_down", "\"Google Material Icons\"", "google-material-icons notranslate"]
+  ]) {
+    const capture = captureElementTree(
+      {
+        tagName: "main",
+        rect: { x: 0, y: 0, width: 800, height: 600 },
+        styles: {},
+        attributes: {},
+        children: [
+          {
+            tagName: "i",
+            sourceNodeId: `dom-${ligature}`,
+            textContent: ligature,
+            rect: { x: 20, y: 20, width: 24, height: 24 },
+            styles: {
+              color: "rgb(68, 71, 70)",
+              fontFamily,
+              fontSize: "24px"
+            },
+            attributes: { class: className },
+            children: []
+          }
+        ]
+      },
+      { width: 800, height: 600, devicePixelRatio: 1, scrollX: 0, scrollY: 0 },
+      {
+        sourceUrl: "https://calendar.google.com",
+        captureTimestamp: "2026-06-24T02:00:58.699Z"
+      }
+    );
+
+    const result = await captureVisualAssets(capture);
+    const icon = result.capture.root.children[0];
+    const svg = new TextDecoder().decode(result.assets["assets/icon-font-1.svg"]);
+
+    assert.deepEqual(Object.keys(result.assets), ["assets/icon-font-1.svg"]);
+    assert.equal(icon.textContent, ligature);
+    assert.equal(icon.assetRef, "assets/icon-font-1.svg");
+    assert.equal(icon.attributes.assetKind, "svg");
+    assert.equal(icon.attributes.assetRole, "icon-font");
+    assert.equal(icon.attributes.iconFontLigature, ligature);
+    assert.equal(icon.attributes.assetSource, `material-icon:${ligature}`);
+    assert.match(svg, /<svg[^>]+viewBox="0 0 24 24"/);
+    assert.match(svg, /fill="rgb\(68, 71, 70\)"/);
+    assert.deepEqual(result.sourceNodeMap, [
+      { sourceNodeId: `dom-${ligature}`, assetRef: "assets/icon-font-1.svg" }
+    ]);
+  }
+});
+
+test("asset capture keeps unsupported Material icon font ligatures as text", async () => {
+  const capture = captureElementTree(
+    {
+      tagName: "main",
+      rect: { x: 0, y: 0, width: 800, height: 600 },
+      styles: {},
+      attributes: {},
+      children: [
+        {
+          tagName: "i",
+          sourceNodeId: "dom-unknown-icon",
+          textContent: "not_a_real_material_icon",
+          rect: { x: 20, y: 20, width: 24, height: 24 },
+          styles: {
+            fontFamily: "\"Google Material Icons\"",
+            fontSize: "24px"
+          },
+          attributes: { class: "google-material-icons notranslate" },
+          children: []
+        }
+      ]
+    },
+    { width: 800, height: 600, devicePixelRatio: 1, scrollX: 0, scrollY: 0 },
+    {
+      sourceUrl: "https://calendar.google.com",
+      captureTimestamp: "2026-06-24T02:00:58.699Z"
+    }
+  );
+
+  const result = await captureVisualAssets(capture);
+  const icon = result.capture.root.children[0];
+
+  assert.deepEqual(Object.keys(result.assets), []);
+  assert.equal(icon.textContent, "not_a_real_material_icon");
+  assert.equal(icon.assetRef, undefined);
+  assert.equal(icon.attributes.assetKind, undefined);
+  assert.equal(icon.attributes.assetRole, undefined);
+  assert.deepEqual(result.sourceNodeMap, []);
+});
+
 test("asset capture keeps simple inline svg icons as vector assets", async () => {
   const capture = captureElementTree(
     {

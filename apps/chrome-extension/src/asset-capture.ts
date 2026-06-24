@@ -1,4 +1,4 @@
-import { createEmptyDiagnostics } from "@figma-capture/capture-schema";
+import { createEmptyDiagnostics, materialIconAssetSourceForNode } from "@figma-capture/capture-schema";
 
 export const FALLBACK_TAGS = new Set(["canvas", "iframe", "video"]);
 const RASTER_EXTENSIONS = new Set(["png", "jpg", "jpeg", "webp", "gif"]);
@@ -59,7 +59,8 @@ export function captureVisualAssets(capture, options = {}) {
       ...(node.attributes ?? {}),
       assetKind,
       ...(source?.assetRole ? { assetRole: source.assetRole } : {}),
-      ...(source?.url ? { assetSource: source.url } : {})
+      ...(source?.url || source?.assetSource ? { assetSource: source.url ?? source.assetSource } : {}),
+      ...(source?.iconFontLigature ? { iconFontLigature: source.iconFontLigature } : {})
     };
   }
 
@@ -185,14 +186,23 @@ export function captureVisualAssets(capture, options = {}) {
         extension: "svg",
         assetKind: "svg"
       }, "vector", "svg");
-    } else if (canUseCssImageAsset(node)) {
-      const cssSource = cssImageSourceForNode(node);
-      if (cssSource) {
+    } else {
+      const materialIconSource = materialIconAssetSourceForNode(node);
+      if (materialIconSource) {
         iconIndex += 1;
         storeAssetSource(node, {
-          ...cssSource,
+          ...materialIconSource,
           index: iconIndex
-        }, "icon", "png");
+        }, "icon-font", "svg");
+      } else if (canUseCssImageAsset(node)) {
+        const cssSource = cssImageSourceForNode(node);
+        if (cssSource) {
+          iconIndex += 1;
+          storeAssetSource(node, {
+            ...cssSource,
+            index: iconIndex
+          }, "icon", "png");
+        }
       }
     }
 

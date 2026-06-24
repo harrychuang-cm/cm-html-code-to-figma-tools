@@ -1,4 +1,5 @@
 import { createSemanticNameMap } from "./semantic-naming.ts";
+import { iconFontImageAssetForNode } from "./icon-font.ts";
 
 export function createEditableLayoutNodeModels(packageData) {
   const fallbackReasons = new Map(
@@ -210,6 +211,19 @@ function createModel(node, context) {
     }));
   }
   children = repairStaticPseudoFlexGeometry(node, absoluteRect, children);
+  const iconFontAsset = iconFontImageAssetForNode(node);
+  if (iconFontAsset) {
+    const style = imageVisualStyleForNode(node, context);
+    style.assetRole = iconFontAsset.assetRole;
+    return baseModel(node, "IMAGE", rect, absoluteRect, {
+      assetRef: iconFontAsset.assetRef,
+      assetKind: iconFontAsset.assetKind,
+      assetRole: iconFontAsset.assetRole,
+      ...(iconFontAsset.bytes ? { bytes: iconFontAsset.bytes } : {}),
+      style,
+      children: []
+    });
+  }
   if (node.textContent && shouldSuppressTinyClippedText(node, rect)) {
     return null;
   }
@@ -1230,7 +1244,12 @@ function inferAutoLayout(node, children) {
   }
   const isFlex = display === "flex" || display === "inline-flex";
   const canTrySingleChildAlignment = children.length === 1 &&
-    (isFlex || hasPotentialLineHeightAlignment(node, children[0]) || hasButtonTextAlignmentPotential(node, children[0]));
+    (
+      isFlex ||
+      hasPotentialLineHeightAlignment(node, children[0]) ||
+      hasButtonTextAlignmentPotential(node, children[0]) ||
+      hasTableCellSingleChildAlignmentPotential(node, children[0])
+    );
   const canTryNonFlexFlow = children.length > 1 && hasNonFlexFlowStyleEvidence(node);
   if (!isFlex && !canTrySingleChildAlignment && !canTryNonFlexFlow) {
     return null;
@@ -1658,7 +1677,8 @@ function inferSingleChildTextAutoLayout(node, child, parentRect) {
   const display = styles.display ?? "";
   const isFlex = display === "flex" || display === "inline-flex";
   const text = String(child.text ?? "");
-  if (child.type !== "TEXT" || text.includes("\n")) {
+  const hasTableCellChildAlignment = hasTableCellSingleChildAlignmentEvidence(node, child, parentRect);
+  if (!hasTableCellChildAlignment && (child.type !== "TEXT" || text.includes("\n"))) {
     return null;
   }
 
@@ -1669,11 +1689,15 @@ function inferSingleChildTextAutoLayout(node, child, parentRect) {
   const hasFlexAlignment = isFlex && Boolean(primaryAxisAlignItems || counterAxisAlignItems);
   const hasLineHeightAlignment = hasLineHeightAlignmentEvidence(styles, child, parentRect);
   const hasButtonTextAlignment = hasButtonTextAlignmentEvidence(node, child, parentRect);
-  if (!hasFlexAlignment && !hasButtonTextAlignment && parentRect.height <= child.absoluteRect.height + 1) {
+  if (!hasFlexAlignment && !hasButtonTextAlignment && !hasTableCellChildAlignment && parentRect.height <= child.absoluteRect.height + 1) {
     return null;
   }
-  if (!hasFlexAlignment && !hasLineHeightAlignment && !hasButtonTextAlignment) {
+  if (!hasFlexAlignment && !hasLineHeightAlignment && !hasButtonTextAlignment && !hasTableCellChildAlignment) {
     return null;
+  }
+  if (hasTableCellChildAlignment) {
+    primaryAxisAlignItems = "CENTER";
+    counterAxisAlignItems = "CENTER";
   }
   if (hasButtonTextAlignment && !primaryAxisAlignItems) {
     primaryAxisAlignItems = "CENTER";
@@ -1741,6 +1765,30 @@ function hasButtonTextAlignmentEvidence(node, child, parentRect) {
     (parentRect.y + parentRect.height / 2)
   ) <= Math.max(2, parentRect.height * 0.08);
   return (textAlign === "center" || horizontallyCentered) && verticallyCentered;
+}
+
+function hasTableCellSingleChildAlignmentPotential(node, child) {
+  const childRect = child?.rect ?? child?.absoluteRect;
+  return isDirectTableCellTextNode(node) &&
+    child?.type === "FRAME" &&
+    hasUsableBounds(node.rect) &&
+    hasUsableBounds(childRect);
+}
+
+function hasTableCellSingleChildAlignmentEvidence(node, child, parentRect) {
+  if (!hasTableCellSingleChildAlignmentPotential(node, child) || !hasUsableBounds(parentRect)) {
+    return false;
+  }
+  const childRect = child.absoluteRect;
+  const horizontallyCentered = Math.abs(
+    (childRect.x + childRect.width / 2) -
+    (parentRect.x + parentRect.width / 2)
+  ) <= Math.max(1, parentRect.width * 0.03);
+  const verticallyCentered = Math.abs(
+    (childRect.y + childRect.height / 2) -
+    (parentRect.y + parentRect.height / 2)
+  ) <= Math.max(1, parentRect.height * 0.05);
+  return horizontallyCentered && verticallyCentered;
 }
 
 function approximatelyEqual(value, expected, tolerance) {
@@ -2021,12 +2069,31 @@ function shouldSuppressTinyClippedText(node, rect) {
   const explicitWidth = parseCssNumber(styles.width);
   const fontSize = parseCssNumber(styles.fontSize) || 14;
   const tinyWidth = Math.max(4, fontSize * 0.3);
+  if (isVisuallyHiddenAccessibilityText(node, rect, styles, fontSize)) {
+    return true;
+  }
   if (explicitWidthMatchesTransformedRect(styles, rect)) {
     return false;
   }
   return explicitWidth > rect.width + 1.5 &&
     rect.width <= tinyWidth &&
     estimateTextPrimarySize(node.textContent, styles) > rect.width + Math.max(2, fontSize * 0.25);
+}
+
+function isVisuallyHiddenAccessibilityText(node, rect, styles, fontSize) {
+  const position = normalizeCssKeyword(styles.position);
+  const explicitWidth = parseCssNumber(styles.width);
+  const explicitHeight = parseCssNumber(styles.height);
+  const text = String(node.textContent ?? "").trim();
+  return (position === "absolute" || position === "fixed") &&
+    rect.width <= 2 &&
+    rect.height <= 2 &&
+    explicitWidth > 0 &&
+    explicitWidth <= 2 &&
+    explicitHeight > 0 &&
+    explicitHeight <= 2 &&
+    clipsTextOverflow(styles) &&
+    estimateTextPrimarySize(text, styles) > rect.width + Math.max(2, fontSize * 0.25);
 }
 
 function explicitWidthMatchesTransformedRect(styles = {}, rect) {

@@ -1,4 +1,5 @@
 import { createAutoLayoutNodeModels } from "./auto-layout.ts";
+import { iconFontImageAssetForNode } from "./icon-font.ts";
 import {
   createEditableLayoutNodeModels,
   summarizeAutoLayoutModels,
@@ -242,19 +243,25 @@ export function createAccurateNodeModels(packageData) {
       return;
     }
 
+    const iconFontAsset = iconFontImageAssetForNode(node);
+    const style = extractVisualStyle(node);
+    if (iconFontAsset?.assetRole) {
+      style.assetRole = iconFontAsset.assetRole;
+    }
     models.push({
       id: node.sourceNodeId,
-      type: layerTypeForNode(node),
+      type: layerTypeForNode(node, iconFontAsset),
       name: semanticNames.get(node.sourceNodeId) ?? layerNameForNode(node),
       sourceNodeId: node.sourceNodeId,
       cssZIndex: numericZIndex(node.styles?.zIndex) !== null ? String(node.styles.zIndex).trim() : undefined,
       rect: node.rect,
       text: node.textContent,
-      assetRef: node.assetRef ?? node.fallbackRef ?? null,
-      assetKind: assetKindForNode(node),
-      assetRole: node.attributes?.assetRole ?? "",
+      assetRef: iconFontAsset?.assetRef ?? node.assetRef ?? node.fallbackRef ?? null,
+      assetKind: iconFontAsset?.assetKind ?? assetKindForNode(node),
+      assetRole: iconFontAsset?.assetRole ?? node.attributes?.assetRole ?? "",
+      ...(iconFontAsset?.bytes ? { bytes: iconFontAsset.bytes } : {}),
       fallbackReason: node.fallbackRef ? fallbackReasons.get(node.sourceNodeId) ?? "raster fallback" : null,
-      style: extractVisualStyle(node)
+      style
     });
   });
 
@@ -498,11 +505,11 @@ function hasVisualBoxStyle(styles = {}) {
   );
 }
 
-function layerTypeForNode(node) {
+function layerTypeForNode(node, iconFontAsset = null) {
   if (node.fallbackRef) {
     return "FALLBACK_IMAGE";
   }
-  if (node.assetRef || node.tagName === "img") {
+  if (iconFontAsset || node.assetRef || node.tagName === "img") {
     return "IMAGE";
   }
   if (node.textContent) {

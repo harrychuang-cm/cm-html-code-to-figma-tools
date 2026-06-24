@@ -127,6 +127,15 @@ export interface CapturePackageData {
   assets: Record<string, Uint8Array | ArrayBuffer>;
 }
 
+export interface MaterialIconAssetSource {
+  bytes: Uint8Array;
+  extension: "svg";
+  assetKind: "svg";
+  assetRole: "icon-font";
+  assetSource: string;
+  iconFontLigature: string;
+}
+
 export interface MultiCaptureEntry {
   index: number;
   width: number;
@@ -161,6 +170,8 @@ export declare class FigcaptureValidationError extends Error {
 
 export declare function describeCaptureSchema(): CaptureSchemaDescription;
 export declare function createEmptyDiagnostics(overrides?: Partial<Diagnostics>): Diagnostics;
+export declare function materialIconAssetSourceForNode(node: unknown): MaterialIconAssetSource | null;
+export declare function materialIconLigatureForNode(node: unknown): string;
 export declare function validateManifest(value: unknown): ValidationResult;
 export declare function validateCapture(value: unknown): ValidationResult;
 export declare function validateFigmaPlan(value: unknown): ValidationResult;

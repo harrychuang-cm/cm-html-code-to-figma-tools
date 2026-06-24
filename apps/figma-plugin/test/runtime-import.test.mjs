@@ -176,6 +176,138 @@ test("Figma API adapter creates real frame, image, text, rectangle, fallback, an
   assert.deepEqual(result.report.fontSubstitutions[0].used, { family: "Inter", style: "Regular" });
 });
 
+test("Figma API adapter imports icon-font SVG assets without loading text fonts", async () => {
+  const figmaApi = createMockFigmaApi();
+  const basePackage = createRuntimePackage();
+  const packageData = createRuntimePackage({
+    capture: {
+      ...basePackage.capture,
+      root: {
+        id: "node-root",
+        sourceNodeId: "dom-root",
+        nodeType: "element",
+        tagName: "main",
+        rect: { x: 0, y: 0, width: 1440, height: 900 },
+        styles: {},
+        attributes: {},
+        children: [
+          {
+            id: "node-search-icon",
+            sourceNodeId: "dom-search-icon",
+            nodeType: "element",
+            tagName: "i",
+            textContent: "search",
+            rect: { x: 893, y: 20, width: 24, height: 24 },
+            styles: {
+              color: "rgb(68, 71, 70)",
+              fontFamily: "\"Google Material Icons\"",
+              fontSize: "24px"
+            },
+            attributes: {
+              assetKind: "svg",
+              assetRole: "icon-font",
+              class: "google-material-icons notranslate",
+              iconFontLigature: "search"
+            },
+            assetRef: "assets/icon-font-1.svg",
+            children: []
+          }
+        ]
+      }
+    },
+    diagnostics: {
+      ...basePackage.diagnostics,
+      fallbackReasons: [],
+      counts: {
+        fallbacks: 0,
+        missingAssets: 0,
+        unsupportedStyles: 0
+      }
+    },
+    assets: {
+      "assets/icon-font-1.svg": new TextEncoder().encode(
+        "<svg width=\"24\" height=\"24\" viewBox=\"0 0 24 24\"><path fill=\"rgb(68, 71, 70)\" d=\"M9.5 3C5.91 3 3 5.91 3 9.5S5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l4.99 4.98 1.49-1.49-4.98-4.99h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5C16 5.91 13.09 3 9.5 3z\"/></svg>"
+      )
+    }
+  });
+
+  const result = await importPackageBytes(packFigcapture(packageData), { figmaApi });
+  const editableNodes = flattenNodes(result.renderResult.frames[1].children);
+  const icon = editableNodes.find((node) => node.pluginData?.sourceNodeId === "dom-search-icon");
+
+  assert.equal(result.status, "success");
+  assert(icon);
+  assert.equal(icon.type, "VECTOR");
+  assert.equal(icon.assetRef, "assets/icon-font-1.svg");
+  assert.equal(icon.pluginData.assetRole, "icon-font");
+  assert.match(icon.svg, /<path/);
+  assert.equal(editableNodes.some((node) => node.type === "TEXT" && node.characters === "search"), false);
+  assert.deepEqual(figmaApi.loadedFonts, []);
+  assert.deepEqual(result.report.fontSubstitutions, []);
+});
+
+test("Figma API adapter synthesizes legacy icon-font text nodes as vectors", async () => {
+  const figmaApi = createMockFigmaApi();
+  const basePackage = createRuntimePackage();
+  const packageData = createRuntimePackage({
+    capture: {
+      ...basePackage.capture,
+      root: {
+        id: "node-root",
+        sourceNodeId: "dom-root",
+        nodeType: "element",
+        tagName: "main",
+        rect: { x: 0, y: 0, width: 1440, height: 900 },
+        styles: {},
+        attributes: {},
+        children: [
+          {
+            id: "node-search-icon",
+            sourceNodeId: "dom-search-icon",
+            nodeType: "element",
+            tagName: "i",
+            textContent: "search",
+            rect: { x: 893, y: 20, width: 24, height: 24 },
+            styles: {
+              color: "rgb(68, 71, 70)",
+              fontFamily: "\"Google Material Icons\"",
+              fontSize: "24px"
+            },
+            attributes: {
+              class: "google-material-icons notranslate"
+            },
+            children: []
+          }
+        ]
+      }
+    },
+    diagnostics: {
+      ...basePackage.diagnostics,
+      fallbackReasons: [],
+      counts: {
+        fallbacks: 0,
+        missingAssets: 0,
+        unsupportedStyles: 0
+      }
+    },
+    assets: {}
+  });
+
+  const result = await importPackageBytes(packFigcapture(packageData), { figmaApi });
+  const editableNodes = flattenNodes(result.renderResult.frames[1].children);
+  const icon = editableNodes.find((node) => node.pluginData?.sourceNodeId === "dom-search-icon");
+
+  assert.equal(result.status, "success");
+  assert(icon);
+  assert.equal(icon.type, "VECTOR");
+  assert.equal(icon.assetRef, "assets/icon-font-legacy-dom-search-icon.svg");
+  assert.equal(icon.pluginData.assetRole, "icon-font");
+  assert.match(icon.svg, /<path/);
+  assert.equal(editableNodes.some((node) => node.type === "TEXT" && node.characters === "search"), false);
+  assert.deepEqual(figmaApi.loadedFonts, []);
+  assert.deepEqual(result.report.fontSubstitutions, []);
+});
+
 test("Figma API adapter maps browser-ordered CSS box-shadow values to effects", async () => {
   const figmaApi = createMockFigmaApi();
   const basePackage = createRuntimePackage();
@@ -1070,6 +1202,36 @@ test("Figma API adapter resolves SVG currentColor from captured computed color",
   assert.equal(node.svg.includes("currentColor"), false);
   assert.match(node.svg, /fill="rgb\(217, 221, 228\)"/);
   assert.match(node.svg, /stroke="rgb\(217, 221, 228\)"/);
+});
+
+test("Figma API adapter imports stroked SVG icons at rendered size before Figma resizing", () => {
+  const svgBytes = new TextEncoder().encode(
+    "<svg xmlns=\"http://www.w3.org/2000/svg\" aria-hidden=\"true\" viewBox=\"0 0 24 24\"><path fill=\"none\" d=\"M1.73,12.91 8.1,19.28 22.79,4.59\" stroke=\"rgb(255, 255, 255)\" stroke-width=\"4px\" stroke-dasharray=\"29.7833px\"/></svg>"
+  );
+  const figmaApi = createMockFigmaApi();
+  const adapter = createFigmaApiAdapter(figmaApi, {
+    assets: {
+      "assets/checked.svg": svgBytes
+    }
+  });
+
+  const node = adapter.createImageLayer({
+    name: "Vector / checked",
+    sourceNodeId: "dom-checked-icon",
+    assetRef: "assets/checked.svg",
+    assetKind: "svg",
+    rect: { x: 29, y: 752, width: 14, height: 14 },
+    style: {
+      color: "rgb(255, 255, 255)",
+      objectFit: "fill"
+    }
+  });
+
+  assert.equal(node.type, "VECTOR");
+  assert.match(node.svg, /<svg[^>]+width="14"/);
+  assert.match(node.svg, /<svg[^>]+height="14"/);
+  assert.match(node.svg, /viewBox="0 0 24 24"/);
+  assert.match(node.svg, /stroke-width="4px"/);
 });
 
 test("Figma API adapter clips auto-sized CSS background SVG assets to the captured box", () => {

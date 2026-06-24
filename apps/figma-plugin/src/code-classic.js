@@ -916,7 +916,7 @@
       assetRef = model.assetRef || null;
       layer = createImageNode(
         model.name,
-        packageData.assets[assetRef] || new Uint8Array(0),
+        packageData.assets[assetRef] || model.bytes || new Uint8Array(0),
         model.rect,
         false,
         assetRef,
@@ -1295,13 +1295,13 @@
 
   function createSvgImageNode(name, imageBytes, rect, locked, assetRef, style, sourceNodeId, cssZIndex) {
     var svgText = resolveSvgCurrentColor(decodeUtf8(imageBytes), svgCurrentColorFromStyle(style || {}));
-    var svgNode = figma.createNodeFromSvg(svgText);
     var safeRect = rect || {};
     var rotation = rotationFromTransform(style && style.transform);
     var intrinsic = svgIntrinsicSize(svgText);
     var fitted = style && style.assetRole === "css-background"
       ? cssBackgroundSvgRect(safeRect, intrinsic, style || {})
       : fittedSvgRect(safeRect, intrinsic, shouldPreserveSvgAspectRatio(svgText));
+    var svgNode = figma.createNodeFromSvg(svgTextWithFigmaImportSize(svgText, fitted));
     var rectWidth = Math.max(0, Number(safeRect.width) || 0);
     var rectHeight = Math.max(0, Number(safeRect.height) || 0);
     var requiresWrapper = rotation !== 0 ||
@@ -1365,6 +1365,34 @@
       return svgText;
     }
     return svgText.replace(/\bcurrentColor\b/gi, cssColorToSvgColor(color));
+  }
+
+  function svgTextWithFigmaImportSize(svgText, size) {
+    var width = Number(size && size.width);
+    var height = Number(size && size.height);
+    if (!isFinite(width) || !isFinite(height) || width <= 0 || height <= 0) {
+      return svgText;
+    }
+    return setSvgRootLengthAttribute(
+      setSvgRootLengthAttribute(svgText, "width", formatSvgLength(width)),
+      "height",
+      formatSvgLength(height)
+    );
+  }
+
+  function setSvgRootLengthAttribute(svgText, attribute, value) {
+    var source = String(svgText || "");
+    var attrPattern = new RegExp("(\\s" + attribute + "\\s*=\\s*)([\"'])([^\"']*)(\\2)", "i");
+    return source.replace(/<svg\b([^>]*)>/i, function (match, attributes) {
+      if (attrPattern.test(attributes)) {
+        return match.replace(attrPattern, "$1$2" + value + "$4");
+      }
+      return match.replace(/>$/, " " + attribute + "=\"" + value + "\">");
+    });
+  }
+
+  function formatSvgLength(value) {
+    return String(round(value));
   }
 
   function cssColorToSvgColor(color) {
@@ -2861,6 +2889,7 @@
     var textFillGradient;
     var textGeometry;
     var autoLayout;
+    var iconFontAsset;
 
     if (!node) {
       return null;
@@ -2897,6 +2926,21 @@
       });
     }
     children = repairStaticPseudoFlexGeometry(node, absoluteRect, children);
+    iconFontAsset = iconFontImageAssetForNode(node);
+    if (iconFontAsset) {
+      model = baseLayoutModel(node, "IMAGE", rect, absoluteRect, [], context);
+      model.assetRef = iconFontAsset.assetRef;
+      model.assetKind = iconFontAsset.assetKind;
+      model.assetRole = iconFontAsset.assetRole;
+      if (iconFontAsset.bytes) {
+        model.bytes = iconFontAsset.bytes;
+      }
+      model.style = imageVisualStyleForNode(node, context);
+      if (model.assetRole) {
+        model.style.assetRole = model.assetRole;
+      }
+      return model;
+    }
     if (node.textContent && shouldSuppressTinyClippedText(node, rect)) {
       return null;
     }
@@ -4082,7 +4126,12 @@
     }
     isFlex = display === "flex" || display === "inline-flex";
     canTrySingleChildAlignment = children.length === 1 &&
-      (isFlex || hasPotentialLineHeightAlignment(node, children[0]) || hasButtonTextAlignmentPotential(node, children[0]));
+      (
+        isFlex ||
+        hasPotentialLineHeightAlignment(node, children[0]) ||
+        hasButtonTextAlignmentPotential(node, children[0]) ||
+        hasTableCellSingleChildAlignmentPotential(node, children[0])
+      );
     canTryNonFlexFlow = children.length > 1 && hasNonFlexFlowStyleEvidence(node);
     if (!isFlex && !canTrySingleChildAlignment && !canTryNonFlexFlow) {
       return null;
@@ -4607,10 +4656,12 @@
     var hasFlexAlignment;
     var hasLineHeightAlignment;
     var hasButtonTextAlignment;
+    var hasTableCellChildAlignment;
     var padding;
     var paddingResult;
 
-    if (child.type !== "TEXT" || text.indexOf("\n") >= 0) {
+    hasTableCellChildAlignment = hasTableCellSingleChildAlignmentEvidence(node, child, parentRect);
+    if (!hasTableCellChildAlignment && (child.type !== "TEXT" || text.indexOf("\n") >= 0)) {
       return null;
     }
 
@@ -4621,11 +4672,15 @@
     hasFlexAlignment = isFlex && Boolean(primaryAxisAlignItems || counterAxisAlignItems);
     hasLineHeightAlignment = hasLineHeightAlignmentEvidence(styles, child, parentRect);
     hasButtonTextAlignment = hasButtonTextAlignmentEvidence(node, child, parentRect);
-    if (!hasFlexAlignment && !hasButtonTextAlignment && parentRect.height <= child.absoluteRect.height + 1) {
+    if (!hasFlexAlignment && !hasButtonTextAlignment && !hasTableCellChildAlignment && parentRect.height <= child.absoluteRect.height + 1) {
       return null;
     }
-    if (!hasFlexAlignment && !hasLineHeightAlignment && !hasButtonTextAlignment) {
+    if (!hasFlexAlignment && !hasLineHeightAlignment && !hasButtonTextAlignment && !hasTableCellChildAlignment) {
       return null;
+    }
+    if (hasTableCellChildAlignment) {
+      primaryAxisAlignItems = "CENTER";
+      counterAxisAlignItems = "CENTER";
     }
     if (hasButtonTextAlignment && !primaryAxisAlignItems) {
       primaryAxisAlignItems = "CENTER";
@@ -4700,6 +4755,33 @@
       (parentRect.y + parentRect.height / 2)
     ) <= Math.max(2, parentRect.height * 0.08);
     return (textAlign === "center" || horizontallyCentered) && verticallyCentered;
+  }
+
+  function hasTableCellSingleChildAlignmentPotential(node, child) {
+    var childRect = child && (child.rect || child.absoluteRect);
+    return isDirectTableCellTextNode(node) &&
+      child && child.type === "FRAME" &&
+      hasUsableBounds(node.rect) &&
+      hasUsableBounds(childRect);
+  }
+
+  function hasTableCellSingleChildAlignmentEvidence(node, child, parentRect) {
+    var childRect;
+    var horizontallyCentered;
+    var verticallyCentered;
+    if (!hasTableCellSingleChildAlignmentPotential(node, child) || !hasUsableBounds(parentRect)) {
+      return false;
+    }
+    childRect = child.absoluteRect;
+    horizontallyCentered = Math.abs(
+      (childRect.x + childRect.width / 2) -
+      (parentRect.x + parentRect.width / 2)
+    ) <= Math.max(1, parentRect.width * 0.03);
+    verticallyCentered = Math.abs(
+      (childRect.y + childRect.height / 2) -
+      (parentRect.y + parentRect.height / 2)
+    ) <= Math.max(1, parentRect.height * 0.05);
+    return horizontallyCentered && verticallyCentered;
   }
 
   function approximatelyEqual(value, expected, tolerance) {
@@ -5022,12 +5104,31 @@
     explicitWidth = numberFromCss(styles.width);
     fontSize = numberFromCss(styles.fontSize) || 14;
     tinyWidth = Math.max(4, fontSize * 0.3);
+    if (isVisuallyHiddenAccessibilityText(node, rect, styles, fontSize)) {
+      return true;
+    }
     if (explicitWidthMatchesTransformedRect(styles, rect)) {
       return false;
     }
     return explicitWidth > rect.width + 1.5 &&
       rect.width <= tinyWidth &&
       estimateTextPrimarySize(node.textContent, styles) > rect.width + Math.max(2, fontSize * 0.25);
+  }
+
+  function isVisuallyHiddenAccessibilityText(node, rect, styles, fontSize) {
+    var position = normalizeCssKeyword(styles && styles.position);
+    var explicitWidth = numberFromCss(styles && styles.width);
+    var explicitHeight = numberFromCss(styles && styles.height);
+    var text = String(node && node.textContent || "").replace(/^\s+|\s+$/g, "");
+    return (position === "absolute" || position === "fixed") &&
+      rect.width <= 2 &&
+      rect.height <= 2 &&
+      explicitWidth > 0 &&
+      explicitWidth <= 2 &&
+      explicitHeight > 0 &&
+      explicitHeight <= 2 &&
+      clipsTextOverflow(styles) &&
+      estimateTextPrimarySize(text, styles) > rect.width + Math.max(2, fontSize * 0.25);
   }
 
   function explicitWidthMatchesTransformedRect(styles, rect) {
@@ -5862,6 +5963,133 @@
       return node.attributes.assetRole;
     }
     return hasCssImageUrl(node.styles) ? "css-background" : "";
+  }
+
+  var MATERIAL_ICON_PATHS = {
+    add: "M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z",
+    arrow_drop_down: "M7 10l5 5 5-5z",
+    date_range: "M7 10h5v5H7zM19 3h-1V1h-2v2H8V1H6v2H5c-1.11 0-1.99 0.9-1.99 2L3 19c0 1.1 0.89 2 2 2h14c1.1 0 2-0.9 2-2V5c0-1.1-0.9-2-2-2zm0 16H5V8h14v11z",
+    keyboard_arrow_up: "M7.41 15.41 12 10.83l4.59 4.58L18 14l-6-6-6 6z",
+    link: "M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7c-2.76 0-5 2.24-5 5s2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4c2.76 0 5-2.24 5-5s-2.24-5-5-5z",
+    more_vert: "M12 8c1.1 0 2-0.9 2-2s-0.9-2-2-2-2 0.9-2 2 0.9 2 2 2zm0 2c-1.1 0-2 0.9-2 2s0.9 2 2 2 2-0.9 2-2-0.9-2-2-2zm0 6c-1.1 0-2 0.9-2 2s0.9 2 2 2 2-0.9 2-2-0.9-2-2-2z",
+    search: "M9.5 3C5.91 3 3 5.91 3 9.5S5.91 16 9.5 16c1.61 0 3.09-0.59 4.23-1.57l0.27 0.28v0.79l4.99 4.98 1.49-1.49-4.98-4.99h-0.79l-0.28-0.27C15.41 12.59 16 11.11 16 9.5C16 5.91 13.09 3 9.5 3zm0 2C11.99 5 14 7.01 14 9.5S11.99 14 9.5 14 5 11.99 5 9.5 7.01 5 9.5 5z"
+  };
+  var ICON_FONT_FAMILY_RE = /\b(?:google\s+material\s+icons|material\s+icons|material\s+symbols)\b/i;
+  var ICON_FONT_CLASS_RE = /(?:^|\s)(?:google-material-icons|material-icons|material-symbols(?:-[a-z0-9-]+)?)(?:\s|$)/i;
+
+  function isIconFontAssetNode(node) {
+    return Boolean(node && node.assetRef && node.attributes && node.attributes.assetRole === "icon-font");
+  }
+
+  function iconFontImageAssetForNode(node) {
+    var source;
+    if (isIconFontAssetNode(node)) {
+      return {
+        assetRef: node.assetRef,
+        assetKind: "svg",
+        assetRole: "icon-font",
+        bytes: null
+      };
+    }
+    if (!node || node.assetRef) {
+      return null;
+    }
+    source = materialIconAssetSourceForNode(node);
+    if (!source) {
+      return null;
+    }
+    return {
+      assetRef: syntheticIconFontAssetRef(node, source.iconFontLigature),
+      assetKind: source.assetKind,
+      assetRole: source.assetRole,
+      bytes: source.bytes
+    };
+  }
+
+  function materialIconAssetSourceForNode(node) {
+    var ligature = materialIconLigatureForNode(node);
+    var path = ligature ? MATERIAL_ICON_PATHS[ligature] : "";
+    if (!path) {
+      return null;
+    }
+    return {
+      bytes: materialIconSvgBytes(path, materialIconColor(node)),
+      assetKind: "svg",
+      assetRole: "icon-font",
+      iconFontLigature: ligature
+    };
+  }
+
+  function materialIconLigatureForNode(node) {
+    var ligature = String(node && node.textContent || "").replace(/^\s+|\s+$/g, "");
+    if (!ligature || /\s/.test(ligature) || !isMaterialIconFontNode(node)) {
+      return "";
+    }
+    return ligature;
+  }
+
+  function isMaterialIconFontNode(node) {
+    var styles = node && node.styles || {};
+    var attributes = node && node.attributes || {};
+    return ICON_FONT_FAMILY_RE.test(String(styles.fontFamily || "")) ||
+      ICON_FONT_CLASS_RE.test(String(attributes.class || ""));
+  }
+
+  function materialIconColor(node) {
+    var styles = node && node.styles || {};
+    return firstVisibleColor(styles.webkitTextFillColor, styles["-webkit-text-fill-color"], styles.color) || "#000000";
+  }
+
+  function firstVisibleColor() {
+    var index;
+    var value;
+    for (index = 0; index < arguments.length; index += 1) {
+      value = String(arguments[index] || "").replace(/^\s+|\s+$/g, "");
+      if (value && value !== "transparent" && value !== "rgba(0, 0, 0, 0)" && value !== "rgba(0,0,0,0)") {
+        return value;
+      }
+    }
+    return "";
+  }
+
+  function materialIconSvgBytes(path, fill) {
+    return encodeAsciiText(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="' +
+        escapeSvgAttribute(fill) +
+        '" d="' +
+        path +
+        '"/></svg>'
+    );
+  }
+
+  function encodeAsciiText(value) {
+    var text = String(value || "");
+    var bytes;
+    var index;
+    if (typeof TextEncoder !== "undefined") {
+      return new TextEncoder().encode(text);
+    }
+    bytes = new Uint8Array(text.length);
+    for (index = 0; index < text.length; index += 1) {
+      bytes[index] = text.charCodeAt(index) & 0xff;
+    }
+    return bytes;
+  }
+
+  function escapeSvgAttribute(value) {
+    return String(value || "")
+      .replace(/&/g, "&amp;")
+      .replace(/"/g, "&quot;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+  }
+
+  function syntheticIconFontAssetRef(node, ligature) {
+    var sourceId = String(node && (node.sourceNodeId || node.id) || ligature || "icon")
+      .replace(/[^a-z0-9_-]+/gi, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 80);
+    return "assets/icon-font-legacy-" + (sourceId || "icon") + ".svg";
   }
 
   function imageVisualStyleForNode(node, context) {

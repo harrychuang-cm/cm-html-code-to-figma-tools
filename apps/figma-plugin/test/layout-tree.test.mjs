@@ -146,6 +146,62 @@ test("near-fit explicit-width text keeps hug sizing to avoid Figma wrapping", ()
   assert.equal(model.layoutSizingHorizontal, "HUG");
 });
 
+test("icon-font asset text nodes model as image instead of text", () => {
+  const searchIcon = node("dom-search-icon", "i", { x: 893, y: 20, width: 24, height: 24 }, {
+    textContent: "search",
+    assetRef: "assets/icon-font-1.svg",
+    attributes: {
+      assetKind: "svg",
+      assetRole: "icon-font",
+      class: "google-material-icons notranslate",
+      iconFontLigature: "search"
+    },
+    styles: {
+      color: "rgb(68, 71, 70)",
+      fontFamily: "\"Google Material Icons\"",
+      fontSize: "24px"
+    }
+  });
+
+  const model = createEditableLayoutNodeModels(packageWithRoot(searchIcon))[0];
+
+  assert.equal(model.type, "IMAGE");
+  assert.equal(model.name, "Vector / i");
+  assert.equal(model.sourceNodeId, "dom-search-icon");
+  assert.equal(model.assetRef, "assets/icon-font-1.svg");
+  assert.equal(model.assetKind, "svg");
+  assert.equal(model.assetRole, "icon-font");
+  assert.equal(model.text, undefined);
+  assert.deepEqual(model.rect, { x: 893, y: 20, width: 24, height: 24 });
+});
+
+test("legacy icon-font text nodes without assetRef synthesize image bytes", () => {
+  const searchIcon = node("dom-search-icon", "i", { x: 893, y: 20, width: 24, height: 24 }, {
+    textContent: "search",
+    attributes: {
+      class: "google-material-icons notranslate"
+    },
+    styles: {
+      color: "rgb(68, 71, 70)",
+      fontFamily: "\"Google Material Icons\"",
+      fontSize: "24px"
+    }
+  });
+
+  const model = createEditableLayoutNodeModels(packageWithRoot(searchIcon))[0];
+  const svg = new TextDecoder().decode(model.bytes);
+
+  assert.equal(model.type, "IMAGE");
+  assert.equal(model.sourceNodeId, "dom-search-icon");
+  assert.equal(model.assetRef, "assets/icon-font-legacy-dom-search-icon.svg");
+  assert.equal(model.assetKind, "svg");
+  assert.equal(model.assetRole, "icon-font");
+  assert.equal(model.text, undefined);
+  assert.match(svg, /<svg/);
+  assert.match(svg, /<path/);
+  assert.match(svg, /rgb\(68, 71, 70\)/);
+});
+
 test("horizontal flex row receives auto layout with explicit gap and inferred padding", () => {
   const toolbar = node("dom-toolbar", "div", { x: 100, y: 20, width: 240, height: 48 }, {
     styles: { display: "flex", flexDirection: "row", gap: "16px" },
@@ -2519,6 +2575,92 @@ test("direct table-cell text imports as fixed cell with vertically centered edit
   assert.equal(priceCell.children[0].layoutSizingHorizontal, "HUG");
   assert.equal(priceCell.children[0].layoutSizingVertical, "HUG");
   assert.equal(changeCell.children[0].style.text.color, "rgb(0, 163, 108)");
+});
+
+test("single-child date table cells center their button with auto layout", () => {
+  const dateCell = node("dom-calendar-date-cell", "td", { x: 19, y: 333, width: 30.71, height: 28 }, {
+    styles: {
+      display: "table-cell",
+      textAlign: "center",
+      verticalAlign: "middle"
+    },
+    children: [
+      node("dom-calendar-date-button", "button", { x: 22.35, y: 335, width: 24, height: 24 }, {
+        styles: {
+          display: "inline-block",
+          position: "relative",
+          width: "24px",
+          height: "24px",
+          textAlign: "center",
+          borderTopLeftRadius: "9999px",
+          borderTopRightRadius: "9999px",
+          borderBottomRightRadius: "9999px",
+          borderBottomLeftRadius: "9999px"
+        },
+        attributes: {
+          type: "button",
+          "aria-label": "28，星期日"
+        },
+        children: [
+          node("dom-calendar-date-label", "div", { x: 22.35, y: 340.75, width: 24, height: 12.5 }, {
+            textContent: "28",
+            styles: {
+              display: "block",
+              position: "relative",
+              width: "24px",
+              height: "12.5px",
+              fontSize: "10px",
+              lineHeight: "normal",
+              textAlign: "center",
+              color: "rgb(68, 71, 70)"
+            }
+          })
+        ]
+      })
+    ]
+  });
+
+  const model = createEditableLayoutNodeModels(packageWithRoot(dateCell))[0];
+  const button = model.children[0];
+
+  assert.equal(model.type, "FRAME");
+  assert.equal(model.name, "Frame / td");
+  assert.equal(model.autoLayout.applied, true);
+  assert.equal(model.autoLayout.layoutMode, "HORIZONTAL");
+  assert.equal(model.autoLayout.primaryAxisAlignItems, "CENTER");
+  assert.equal(model.autoLayout.counterAxisAlignItems, "CENTER");
+  assert.equal(model.autoLayout.paddingLeft, 0);
+  assert.equal(model.autoLayout.paddingRight, 0);
+  assert.equal(model.autoLayout.paddingTop, 0);
+  assert.equal(model.autoLayout.paddingBottom, 0);
+  assert.equal(button.name, "Button / 28，星期日");
+  assert.equal(button.autoLayout.applied, true);
+  assert.equal(button.autoLayout.primaryAxisAlignItems, "CENTER");
+  assert.equal(button.autoLayout.counterAxisAlignItems, "CENTER");
+});
+
+test("visually hidden accessibility headings are omitted instead of rendering ellipsis", () => {
+  const hiddenHeading = node("dom-hidden-day-heading", "h2", { x: 265, y: 832.4, width: 1, height: 1 }, {
+    textContent: "6月 28日 (星期日)沒有活動",
+    styles: {
+      display: "block",
+      position: "absolute",
+      width: "1px",
+      height: "1px",
+      overflow: "hidden",
+      overflowX: "hidden",
+      overflowY: "hidden",
+      textOverflow: "clip",
+      whiteSpace: "nowrap",
+      fontSize: "36px",
+      fontWeight: "700",
+      color: "rgb(31, 31, 31)"
+    }
+  });
+
+  const models = createEditableLayoutNodeModels(packageWithRoot(hiddenHeading));
+
+  assert.equal(models.length, 0);
 });
 
 test("tall single-line tab buttons center text geometry after hug normalization", () => {

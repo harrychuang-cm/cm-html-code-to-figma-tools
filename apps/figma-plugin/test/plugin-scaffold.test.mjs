@@ -236,6 +236,476 @@ test("classic Figma runtime imports chunked package transfers", async () => {
   assert.equal(noScreenshotResult.report.createdFrameCount, 1);
 });
 
+test("classic Figma runtime imports icon-font SVG assets as vectors instead of text", async () => {
+  const main = await readFile("apps/figma-plugin/dist/code.js", "utf8");
+  const posted = [];
+  const loadedFonts = [];
+
+  function createNode(type) {
+    return {
+      type,
+      name: "",
+      children: [],
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0,
+      fills: [],
+      strokes: [],
+      pluginData: {},
+      resize(width, height) {
+        this.width = width;
+        this.height = height;
+      },
+      appendChild(child) {
+        this.children.push(child);
+      },
+      setPluginData(key, value) {
+        this.pluginData[key] = value;
+      }
+    };
+  }
+
+  const figma = {
+    currentPage: {
+      children: [],
+      appendChild(child) {
+        this.children.push(child);
+      }
+    },
+    ui: {
+      onmessage: null,
+      postMessage(message) {
+        posted.push(message);
+      }
+    },
+    showUI() {},
+    createFrame() {
+      return createNode("FRAME");
+    },
+    createRectangle() {
+      return createNode("RECTANGLE");
+    },
+    createText() {
+      const node = createNode("TEXT");
+      node.characters = "";
+      return node;
+    },
+    createImage(bytes) {
+      return {
+        hash: `hash-${bytes.length}`
+      };
+    },
+    createNodeFromSvg(svg) {
+      const node = createNode("VECTOR");
+      node.svg = svg;
+      return node;
+    },
+    async loadFontAsync(fontName) {
+      loadedFonts.push(fontName);
+    }
+  };
+
+  const basePackage = createValidPackage();
+  const packageData = {
+    ...basePackage,
+    capture: {
+      ...basePackage.capture,
+      root: {
+        id: "node-root",
+        sourceNodeId: "dom-root",
+        nodeType: "element",
+        tagName: "main",
+        rect: { x: 0, y: 0, width: 1440, height: 900 },
+        styles: {},
+        attributes: {},
+        children: [
+          {
+            id: "node-search-icon",
+            sourceNodeId: "dom-search-icon",
+            nodeType: "element",
+            tagName: "i",
+            textContent: "search",
+            rect: { x: 893, y: 20, width: 24, height: 24 },
+            styles: {
+              color: "rgb(68, 71, 70)",
+              fontFamily: "\"Google Material Icons\"",
+              fontSize: "24px"
+            },
+            attributes: {
+              assetKind: "svg",
+              assetRole: "icon-font",
+              class: "google-material-icons notranslate",
+              iconFontLigature: "search"
+            },
+            assetRef: "assets/icon-font-1.svg",
+            children: []
+          }
+        ]
+      }
+    },
+    diagnostics: {
+      ...basePackage.diagnostics,
+      fallbackReasons: [],
+      counts: {
+        fallbacks: 0,
+        missingAssets: 0,
+        unsupportedStyles: 0
+      }
+    },
+    assets: {
+      "assets/icon-font-1.svg": new TextEncoder().encode(
+        "<svg width=\"24\" height=\"24\" viewBox=\"0 0 24 24\"><path fill=\"rgb(68, 71, 70)\" d=\"M9.5 3C5.91 3 3 5.91 3 9.5S5.91 16 9.5 16z\"/></svg>"
+      )
+    }
+  };
+
+  vm.runInNewContext(main, {
+    figma,
+    Uint8Array,
+    Uint32Array,
+    ArrayBuffer,
+    DataView,
+    Error,
+    JSON,
+    Math,
+    Number,
+    Object,
+    Promise,
+    String,
+    Boolean,
+    Array,
+    isFinite,
+    parseFloat
+  });
+
+  await figma.ui.onmessage({
+    type: "IMPORT_PACKAGE",
+    filename: "material-icon.figcapture",
+    bytes: packFigcapture(packageData),
+    importScreenshot: false
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(resultMessage(posted).type, "IMPORT_SUCCESS");
+  const editableFrame = figma.currentPage.children.find((frame) => frame.name.includes("Editable Accurate"));
+  const nodes = flattenNodes(editableFrame.children);
+  const icon = nodes.find((node) => node.pluginData.sourceNodeId === "dom-search-icon");
+
+  assert(icon);
+  assert.equal(icon.type, "VECTOR");
+  assert.equal(icon.pluginData.assetRef, "assets/icon-font-1.svg");
+  assert.equal(icon.pluginData.assetRole, "icon-font");
+  assert.equal(nodes.some((node) => node.type === "TEXT" && node.characters === "search"), false);
+  assert.deepEqual(loadedFonts, []);
+});
+
+test("classic Figma runtime synthesizes legacy icon-font text nodes as vectors", async () => {
+  const main = await readFile("apps/figma-plugin/dist/code.js", "utf8");
+  const posted = [];
+  const loadedFonts = [];
+
+  function createNode(type) {
+    return {
+      type,
+      name: "",
+      children: [],
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0,
+      fills: [],
+      strokes: [],
+      pluginData: {},
+      resize(width, height) {
+        this.width = width;
+        this.height = height;
+      },
+      appendChild(child) {
+        this.children.push(child);
+      },
+      setPluginData(key, value) {
+        this.pluginData[key] = value;
+      }
+    };
+  }
+
+  const figma = {
+    currentPage: {
+      children: [],
+      appendChild(child) {
+        this.children.push(child);
+      }
+    },
+    ui: {
+      onmessage: null,
+      postMessage(message) {
+        posted.push(message);
+      }
+    },
+    showUI() {},
+    createFrame() {
+      return createNode("FRAME");
+    },
+    createRectangle() {
+      return createNode("RECTANGLE");
+    },
+    createText() {
+      const node = createNode("TEXT");
+      node.characters = "";
+      return node;
+    },
+    createImage(bytes) {
+      return {
+        hash: `hash-${bytes.length}`
+      };
+    },
+    createNodeFromSvg(svg) {
+      const node = createNode("VECTOR");
+      node.svg = svg;
+      return node;
+    },
+    async loadFontAsync(fontName) {
+      loadedFonts.push(fontName);
+    }
+  };
+
+  const basePackage = createValidPackage();
+  const packageData = {
+    ...basePackage,
+    capture: {
+      ...basePackage.capture,
+      root: {
+        id: "node-root",
+        sourceNodeId: "dom-root",
+        nodeType: "element",
+        tagName: "main",
+        rect: { x: 0, y: 0, width: 1440, height: 900 },
+        styles: {},
+        attributes: {},
+        children: [
+          {
+            id: "node-search-icon",
+            sourceNodeId: "dom-search-icon",
+            nodeType: "element",
+            tagName: "i",
+            textContent: "search",
+            rect: { x: 893, y: 20, width: 24, height: 24 },
+            styles: {
+              color: "rgb(68, 71, 70)",
+              fontFamily: "\"Google Material Icons\"",
+              fontSize: "24px"
+            },
+            attributes: {
+              class: "google-material-icons notranslate"
+            },
+            children: []
+          }
+        ]
+      }
+    },
+    diagnostics: {
+      ...basePackage.diagnostics,
+      fallbackReasons: [],
+      counts: {
+        fallbacks: 0,
+        missingAssets: 0,
+        unsupportedStyles: 0
+      }
+    },
+    assets: {}
+  };
+
+  vm.runInNewContext(main, {
+    figma,
+    Uint8Array,
+    Uint32Array,
+    ArrayBuffer,
+    DataView,
+    Error,
+    JSON,
+    Math,
+    Number,
+    Object,
+    Promise,
+    String,
+    Boolean,
+    Array,
+    isFinite,
+    parseFloat
+  });
+
+  await figma.ui.onmessage({
+    type: "IMPORT_PACKAGE",
+    filename: "legacy-material-icon.figcapture",
+    bytes: packFigcapture(packageData),
+    importScreenshot: false
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(resultMessage(posted).type, "IMPORT_SUCCESS");
+  const editableFrame = figma.currentPage.children.find((frame) => frame.name.includes("Editable Accurate"));
+  const nodes = flattenNodes(editableFrame.children);
+  const icon = nodes.find((node) => node.pluginData.sourceNodeId === "dom-search-icon");
+
+  assert(icon);
+  assert.equal(icon.type, "VECTOR");
+  assert.equal(icon.pluginData.assetRef, "assets/icon-font-legacy-dom-search-icon.svg");
+  assert.equal(icon.pluginData.assetRole, "icon-font");
+  assert.match(icon.svg, /<path/);
+  assert.equal(nodes.some((node) => node.type === "TEXT" && node.characters === "search"), false);
+  assert.deepEqual(loadedFonts, []);
+});
+
+test("classic Figma runtime imports stroked SVG icons at rendered size", async () => {
+  const main = await readFile("apps/figma-plugin/dist/code.js", "utf8");
+  const posted = [];
+
+  function createNode(type) {
+    return {
+      type,
+      name: "",
+      children: [],
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0,
+      fills: [],
+      strokes: [],
+      pluginData: {},
+      resize(width, height) {
+        this.width = width;
+        this.height = height;
+      },
+      appendChild(child) {
+        this.children.push(child);
+      },
+      setPluginData(key, value) {
+        this.pluginData[key] = value;
+      }
+    };
+  }
+
+  const figma = {
+    currentPage: {
+      children: [],
+      appendChild(child) {
+        this.children.push(child);
+      }
+    },
+    ui: {
+      onmessage: null,
+      postMessage(message) {
+        posted.push(message);
+      }
+    },
+    showUI() {},
+    createFrame() {
+      return createNode("FRAME");
+    },
+    createRectangle() {
+      return createNode("RECTANGLE");
+    },
+    createText() {
+      const node = createNode("TEXT");
+      node.characters = "";
+      return node;
+    },
+    createImage(bytes) {
+      return {
+        hash: `hash-${bytes.length}`
+      };
+    },
+    createNodeFromSvg(svg) {
+      const node = createNode("VECTOR");
+      node.svg = svg;
+      return node;
+    },
+    async loadFontAsync() {}
+  };
+
+  const checkedSvg = "<svg xmlns=\"http://www.w3.org/2000/svg\" aria-hidden=\"true\" viewBox=\"0 0 24 24\"><path fill=\"none\" d=\"M1.73,12.91 8.1,19.28 22.79,4.59\" stroke=\"rgb(255, 255, 255)\" stroke-width=\"4px\" stroke-dasharray=\"29.7833px\"/></svg>";
+  const basePackage = createValidPackage();
+  const packageData = {
+    ...basePackage,
+    capture: {
+      ...basePackage.capture,
+      root: {
+        id: "node-root",
+        sourceNodeId: "dom-root",
+        nodeType: "element",
+        tagName: "main",
+        rect: { x: 0, y: 0, width: 1440, height: 900 },
+        styles: {},
+        attributes: {},
+        children: [
+          {
+            id: "node-checked-icon",
+            sourceNodeId: "dom-checked-icon",
+            nodeType: "element",
+            tagName: "svg",
+            textContent: "",
+            rect: { x: 29, y: 752, width: 14, height: 14 },
+            styles: {
+              display: "block",
+              color: "rgb(255, 255, 255)",
+              objectFit: "fill"
+            },
+            attributes: {
+              assetKind: "svg",
+              svgMarkup: checkedSvg
+            },
+            assetRef: "assets/checked.svg",
+            children: []
+          }
+        ]
+      }
+    },
+    assets: {
+      "assets/checked.svg": new TextEncoder().encode(checkedSvg)
+    }
+  };
+
+  vm.runInNewContext(main, {
+    figma,
+    Uint8Array,
+    Uint32Array,
+    ArrayBuffer,
+    DataView,
+    Error,
+    JSON,
+    Math,
+    Number,
+    Object,
+    Promise,
+    String,
+    Boolean,
+    Array,
+    isFinite,
+    parseFloat
+  });
+
+  await figma.ui.onmessage({
+    type: "IMPORT_PACKAGE",
+    filename: "checked-icon.figcapture",
+    bytes: packFigcapture(packageData),
+    importScreenshot: false
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(resultMessage(posted).type, "IMPORT_SUCCESS");
+  const editableFrame = figma.currentPage.children.find((frame) => frame.name.includes("Editable Accurate"));
+  const nodes = flattenNodes(editableFrame.children);
+  const icon = nodes.find((node) => node.pluginData.sourceNodeId === "dom-checked-icon");
+
+  assert(icon);
+  assert.equal(icon.type, "VECTOR");
+  assert.match(icon.svg, /<svg[^>]+width="14"/);
+  assert.match(icon.svg, /<svg[^>]+height="14"/);
+  assert.match(icon.svg, /viewBox="0 0 24 24"/);
+  assert.match(icon.svg, /stroke-width="4px"/);
+});
+
 test("classic Figma runtime omits transparent viewport-clipped table spacers", async () => {
   const main = await readFile("apps/figma-plugin/dist/code.js", "utf8");
   const posted = [];
@@ -3832,6 +4302,189 @@ test("classic Figma runtime applies auto layout to centered non-flex flow groups
     "dom-metric-section::text",
     "dom-metric-value"
   ]);
+});
+
+test("classic Figma runtime centers date table cells and omits hidden headings", async () => {
+  const main = await readFile("apps/figma-plugin/dist/code.js", "utf8");
+  const posted = [];
+
+  function captureNode(sourceNodeId, tagName, rect, extra = {}) {
+    return {
+      id: `node-${sourceNodeId}`,
+      sourceNodeId,
+      nodeType: extra.nodeType ?? "element",
+      tagName,
+      textContent: extra.textContent ?? "",
+      rect,
+      styles: extra.styles ?? {},
+      attributes: extra.attributes ?? {},
+      children: extra.children ?? []
+    };
+  }
+
+  function createNode(type) {
+    return {
+      type,
+      name: "",
+      children: [],
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0,
+      fills: [],
+      strokes: [],
+      effects: [],
+      cornerRadius: 0,
+      clipsContent: false,
+      layoutMode: "",
+      primaryAxisSizingMode: "",
+      counterAxisSizingMode: "",
+      primaryAxisAlignItems: "",
+      counterAxisAlignItems: "",
+      itemSpacing: 0,
+      paddingLeft: 0,
+      paddingRight: 0,
+      paddingTop: 0,
+      paddingBottom: 0,
+      pluginData: {},
+      resize(width, height) {
+        this.width = width;
+        this.height = height;
+      },
+      appendChild(child) {
+        this.children.push(child);
+      },
+      setPluginData(key, value) {
+        this.pluginData[key] = value;
+      }
+    };
+  }
+
+  const hiddenHeadingText = "6月 28日 (星期日)沒有活動";
+  const root = captureNode("dom-root", "body", { x: 0, y: 0, width: 1440, height: 900 }, {
+    children: [
+      captureNode("dom-calendar-date-cell", "td", { x: 19, y: 333, width: 30.71, height: 28 }, {
+        styles: {
+          display: "table-cell",
+          textAlign: "center",
+          verticalAlign: "middle"
+        },
+        children: [
+          captureNode("dom-calendar-date-button", "button", { x: 22.35, y: 335, width: 24, height: 24 }, {
+            styles: {
+              display: "inline-block",
+              position: "relative",
+              width: "24px",
+              height: "24px",
+              textAlign: "center"
+            },
+            attributes: {
+              type: "button",
+              "aria-label": "28，星期日"
+            },
+            children: [
+              captureNode("dom-calendar-date-label", "div", { x: 22.35, y: 340.75, width: 24, height: 12.5 }, {
+                textContent: "28",
+                styles: {
+                  display: "block",
+                  position: "relative",
+                  width: "24px",
+                  height: "12.5px",
+                  fontSize: "10px",
+                  lineHeight: "normal",
+                  textAlign: "center",
+                  color: "rgb(68, 71, 70)"
+                }
+              })
+            ]
+          })
+        ]
+      }),
+      captureNode("dom-hidden-day-heading", "h2", { x: 265, y: 832.4, width: 1, height: 1 }, {
+        textContent: hiddenHeadingText,
+        styles: {
+          display: "block",
+          position: "absolute",
+          width: "1px",
+          height: "1px",
+          overflow: "hidden",
+          overflowX: "hidden",
+          overflowY: "hidden",
+          textOverflow: "clip",
+          whiteSpace: "nowrap",
+          fontSize: "36px",
+          fontWeight: "700",
+          color: "rgb(31, 31, 31)"
+        }
+      })
+    ]
+  });
+  const basePackage = createValidPackage();
+  const packageData = createValidPackage({
+    capture: {
+      ...basePackage.capture,
+      root
+    }
+  });
+  const figma = {
+    currentPage: { children: [], appendChild(child) { this.children.push(child); } },
+    ui: { onmessage: null, postMessage(message) { posted.push(message); } },
+    showUI() {},
+    createFrame() { return createNode("FRAME"); },
+    createRectangle() { return createNode("RECTANGLE"); },
+    createText() { return createNode("TEXT"); },
+    createImage(bytes) { return { hash: `hash-${bytes.length}` }; },
+    async loadFontAsync() {}
+  };
+
+  vm.runInNewContext(main, {
+    figma,
+    Uint8Array,
+    Uint32Array,
+    ArrayBuffer,
+    DataView,
+    Error,
+    JSON,
+    Math,
+    Number,
+    Object,
+    Promise,
+    String,
+    Boolean,
+    Array,
+    isFinite,
+    parseFloat
+  });
+  await figma.ui.onmessage({
+    type: "IMPORT_PACKAGE",
+    filename: "calendar-date-cell.figcapture",
+    bytes: packFigcapture(packageData),
+    importScreenshot: false
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const success = resultMessage(posted);
+  assert.equal(success.type, "IMPORT_SUCCESS");
+
+  const accurateFrame = figma.currentPage.children.find((frame) => frame.name.includes("Editable Accurate"));
+  const nodes = flattenNodes(accurateFrame.children);
+  const dateCell = nodes.find((node) => node.pluginData?.sourceNodeId === "dom-calendar-date-cell");
+  const dateButton = nodes.find((node) => node.pluginData?.sourceNodeId === "dom-calendar-date-button");
+
+  assert(dateCell);
+  assert.equal(dateCell.layoutMode, "HORIZONTAL");
+  assert.equal(dateCell.primaryAxisAlignItems, "CENTER");
+  assert.equal(dateCell.counterAxisAlignItems, "CENTER");
+  assert.equal(dateCell.paddingLeft, 0);
+  assert.equal(dateCell.paddingRight, 0);
+  assert.equal(dateCell.paddingTop, 0);
+  assert.equal(dateCell.paddingBottom, 0);
+  assert(dateButton);
+  assert.equal(dateButton.layoutMode, "HORIZONTAL");
+  assert.equal(dateButton.primaryAxisAlignItems, "CENTER");
+  assert.equal(dateButton.counterAxisAlignItems, "CENTER");
+  assert.equal(nodes.some((node) => node.pluginData?.sourceNodeId === "dom-hidden-day-heading"), false);
+  assert.equal(nodes.some((node) => node.type === "TEXT" && node.characters === hiddenHeadingText), false);
 });
 
 test("classic Figma runtime sizes full-page frames to the document dimensions", async () => {
